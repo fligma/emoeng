@@ -1,0 +1,16 @@
+{
+ "name": "demo",
+ "title": "Emotion Engine Demo",
+ "start": "gallery",
+ "size": [
+  1152,
+  700
+ ],
+ "render_scale": 0.58,
+ "post": [
+  "dither",
+  "scanlines",
+  "vignette"
+ ],
+ "seed": 13
+}

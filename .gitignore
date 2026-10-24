@@ -1,0 +1,4 @@
+*.ignored*
+*__pycache__*
+tools
+settings.json
