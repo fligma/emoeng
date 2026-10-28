@@ -1,0 +1,18 @@
+{
+ "format": 1,
+ "_help": "an object document: script is the class, type is the node, the rest is where it sits and how it looks",
+ "name": "lamp",
+ "type": "object3d",
+ "script": "scripts/objects/lamp.py",
+ "pos": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "yaw": 0.0,
+ "scale": 1.0,
+ "knobs": {
+  "uv_tile": 0.6
+ },
+ "nodes": []
+}

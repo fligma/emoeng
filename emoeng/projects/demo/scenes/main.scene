@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "name": "main",
+  "kind": "scene3d",
+  "script": "scripts/scenes/main.py",
+  "objects": []
+}

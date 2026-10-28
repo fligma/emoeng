@@ -1,0 +1,15 @@
+{
+ "format": 1,
+ "_help": "an object document: script is the class, type is the node, the rest is where it sits and how it looks",
+ "name": "board",
+ "type": "screen3d",
+ "script": "scripts/objects/board.py",
+ "pos": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "yaw": 0.0,
+ "scale": 1.0,
+ "nodes": []
+}

@@ -1,0 +1,21 @@
+{
+ "format": 1,
+ "_help": "how this project's assets are imported",
+ "textures": {
+  "filter": "linear",
+  "wrap": "repeat",
+  "mipmaps": true,
+  "tile": 0.0,
+  "_tile_help": "metres one repeat of a sheet covers in the world; a sheet with a size here is a material and geometry wearing it is re-unwrapped to that size instead of having the picture pulled across it. 0 means the sheet is a picture of one particular thing and keeps the uv it was drawn with",
+  "sheets": {
+   "grid": {
+    "filter": "nearest",
+    "tile": 2.0
+   }
+  }
+ },
+ "audio": {
+  "gain": 1.0,
+  "gains": {}
+ }
+}

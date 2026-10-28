@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "name": "arcade",
+  "kind": "scene2d",
+  "script": "scripts/scenes/arcade.py",
+  "objects": []
+}

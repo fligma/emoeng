@@ -1,0 +1,178 @@
+# Build and release the engine app and its installer for every OS.
+#
+# The version comes from emoeng/const.py - nowhere else. Pushing a new
+# VERSION there (or running this workflow by hand) tags the commit
+# `engineV<version>` and publishes a GitHub release carrying one
+# installable archive per OS, plus the installer that fetches them:
+#
+#   MotionEngine-windows.zip         one-dir bundle, from build_release.py
+#   MotionEngine-linux.tar.gz        (carries docs/ and projects/ beside the exe)
+#   MotionEngine-macos.zip
+#   MotionEngine-installer-windows.zip   the standalone installer app
+#   MotionEngine-installer-linux.tar.gz
+#   MotionEngine-installer-macos.zip
+#
+# The bundle names are what installer/installer.py searches for: it
+# looks for the newest `engineV*` release and picks the file whose name
+# matches this PC. The installer's own archives are always named with
+# the word `installer` in them, which scores zero in its asset picker -
+# it can never grab a copy of itself instead of the engine. A re-run of
+# the same version replaces the files in place rather than failing on
+# the existing tag.
+name: Build and release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - emoeng/const.py            # a version bump is a release
+      - emoeng/docs/**
+      - emoeng/projects/**
+      - tools/build_release.py
+      - installer/installer.py
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write                  # tag, release, assets
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      commit: ${{ steps.read.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        shell: bash
+        run: |
+          v=$(python3 - <<'EOF'
+          import re
+          text = open("emoeng/const.py", encoding="utf-8").read()
+          print(re.search(r'^VERSION = "(.*)"', text, re.M).group(1))
+          EOF
+          )
+          if [ -z "$v" ]; then
+            echo "no VERSION line in emoeng/const.py" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=engineV$v" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "releasing engineV$v from $(git rev-parse --short HEAD)"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows
+          - os: ubuntu-latest
+            label: linux
+          - os: macos-latest
+            label: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pygame moderngl numpy pillow pyinstaller
+
+      # The repo's own build tool: freezes emoeng into
+      # tools/dist/MotionEngine/ with the engine CLI baked in, the
+      # projects folder already copied beside the exe.
+      # --no-run because a headless runner must not try to open a window.
+      - name: Freeze the app
+        run: python tools/build_release.py --no-run
+
+      - name: Pack (windows)
+        if: matrix.label == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path tools/dist/MotionEngine `
+             -DestinationPath MotionEngine-windows.zip
+
+      - name: Pack (macos)
+        if: matrix.label == 'macos'
+        run: ditto -c -k --sequesterRsrc tools/dist/MotionEngine \
+             MotionEngine-macos.zip
+
+      - name: Pack (linux)
+        if: matrix.label == 'linux'
+        run: tar -C tools/dist -czf MotionEngine-linux.tar.gz MotionEngine
+
+      # The updater app, frozen beside its chrome files (xp.py,
+      # winchrome.py, const.py) and its icon assets under the same
+      # relative names the source tree uses, which is where a frozen
+      # installer looks for them. Named with the word `installer`, so
+      # the running installer never picks one as its own download.
+      - name: Freeze the installer
+        shell: bash
+        run: |
+          sep=:
+          if [ "$RUNNER_OS" = "Windows" ]; then sep=';'; fi
+          python -m PyInstaller --noconfirm --onefile --windowed \
+            --name MotionEngine-installer \
+            --distpath installer-dist --workpath installer-build \
+            --specpath installer-build \
+            --add-data "emoeng/engine/xp.py${sep}emoeng/engine" \
+            --add-data "emoeng/engine/winchrome.py${sep}emoeng/engine" \
+            --add-data "emoeng/const.py${sep}emoeng" \
+            --add-data "installer/assets${sep}assets" \
+            installer/installer.py
+
+      - name: Pack installer (windows)
+        if: matrix.label == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path installer-dist/MotionEngine-installer.exe `
+             -DestinationPath MotionEngine-installer-windows.zip
+
+      - name: Pack installer (macos)
+        if: matrix.label == 'macos'
+        run: ditto -c -k --sequesterRsrc installer-dist/MotionEngine-installer \
+             MotionEngine-installer-macos.zip
+
+      - name: Pack installer (linux)
+        if: matrix.label == 'linux'
+        run: tar -C installer-dist -czf MotionEngine-installer-linux.tar.gz \
+             MotionEngine-installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}-bundle
+          path: MotionEngine-*
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-bundle'
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VER: ${{ needs.version.outputs.version }}
+          COMMIT: ${{ needs.version.outputs.commit }}
+        shell: bash
+        run: |
+          ls -l
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$COMMIT" \
+              --title "$TAG" \
+              --notes "Motion Engine $VER, built from emoeng/const.py"
+          fi
+          gh release upload "$TAG" MotionEngine-* --clobber
+          gh release view "$TAG"

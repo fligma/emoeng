@@ -1,4 +1,11 @@
 *.ignored*
 *__pycache__*
 tools
+!tools/
+tools/*
+!tools/build_release.py
 settings.json
+*saves*
+installer/installer.json
+*.ki*
+*.idea*
