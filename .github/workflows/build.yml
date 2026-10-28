@@ -123,6 +123,20 @@ jobs:
             --add-data "../installer/assets${sep}assets" \
             installer/installer.py
 
+      - name: Smoke-test Linux installer startup
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          set +e
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+            timeout 10s installer-dist/MotionEngine-installer
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "Linux installer exited before staying alive for the smoke test (status $status)" >&2
+            exit 1
+          fi
+
       - name: Name installer binary (windows)
         if: matrix.label == 'windows'
         shell: pwsh
