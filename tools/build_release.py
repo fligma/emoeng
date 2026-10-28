@@ -154,6 +154,12 @@ def make_config(console: bool) -> BuildConfig:
     cfg.set("noconfirm", True)
     cfg.set("log_level", "INFO")
     cfg.set("paths", [str(REPO)])
+    # NumPy's random extension imports this stdlib module dynamically.
+    # PyInstaller's static scan misses it, but built-in texture generation
+    # uses numpy.random when the frozen game starts.
+    hidden = set(cfg.get("hidden_import") or ())
+    hidden.add("secrets")
+    cfg.set("hidden_import", sorted(hidden))
     # Bundle the whole `projects/` folder inside the frozen package so
     # `engine.paths.bundled_projects()` finds the demo on first run and
     # copies it beside the exe. The APP plan already points there; this is

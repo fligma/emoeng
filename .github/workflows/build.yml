@@ -133,7 +133,7 @@ jobs:
         if: matrix.label == 'linux'
         shell: bash
         run: |
-          LIBGL_ALWAYS_SOFTWARE=1 PYTHONUNBUFFERED=1 \
+          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy PYTHONUNBUFFERED=1 \
             timeout 60s xvfb-run -a \
             tools/dist/MotionEngine/MotionEngine run \
             tools/dist/MotionEngine/projects/demo --frames 1
