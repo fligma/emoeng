@@ -292,7 +292,8 @@ def _fit(font, text, width):
     return (cut.rstrip() + "...") if cut.strip() else ""
 
 
-def titlebar(surf, rect, title, font, icon=None, dialog=False):
+def titlebar(surf, rect, title, font, icon=None, dialog=False,
+             controls=True):
     """Blue Luna caption with gradient, glow line and title."""
     g = rect.copy()
     gradient_v(surf, (g.x, g.y, g.w, g.h), CAP_HI, CAP_BOT)
@@ -313,14 +314,17 @@ def titlebar(surf, rect, title, font, icon=None, dialog=False):
         x += icon.get_width() + 6
     else:
         x += 20
-    # window buttons own the right end; long paths are cut
-    buttons = 3 + (16 + 3) * (1 if dialog else 3)
+    # Native Linux decorations own the caption controls; the in-app header
+    # keeps the title but leaves them out when custom chrome is unavailable.
+    buttons = (3 + (16 + 3) * (1 if dialog else 3)) if controls else 0
     title = _fit(font, title, g.right - buttons - x - 4)
     t = font.render(title, True, CAPTION)
     shadow = font.render(title, True, CAPTION_SHADOW)
     ty = g.centery - t.get_height() // 2
     surf.blit(shadow, (x + 3, ty + 1))
     surf.blit(t, (x + 2, ty))
+    if not controls:
+        return
     size = 16
     pad = 3
     top = g.y + (g.height - size) // 2

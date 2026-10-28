@@ -767,6 +767,8 @@ class Installer:
 
     # ------------------------------------------------------------ events
     def _caption_press(self, pos):
+        if not self.chrome.supported():
+            return False
         cap = self.rows["cap"]
         b_min, b_max, b_close = winchrome.caption_buttons(cap)
         if b_close.collidepoint(pos):
@@ -963,7 +965,8 @@ class Installer:
         mouse = pygame.mouse.get_pos()
 
         xp.titlebar(surface, rows["cap"], f"{CODENAME} installer",
-                    self.fonts["normal"], icon=icon("icon", 16))
+                    self.fonts["normal"], icon=icon("icon", 16),
+                    controls=self.chrome.supported())
 
         bar = rows["bar"]
         surface.fill(xp.FACE, bar)

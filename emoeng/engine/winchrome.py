@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pygame
 
-try:
-    from pygame._sdl2 import video as _sdl2
-except ImportError:
+if sys.platform.startswith("linux"):
     _sdl2 = None
+else:
+    try:
+        from pygame._sdl2 import video as _sdl2
+    except ImportError:
+        _sdl2 = None
 
 MARGIN = 6          # px near a borderless window edge that grabs a resize
 BTN = 16            # caption button size, mirrors xp.titlebar
@@ -18,13 +21,15 @@ MIN_W, MIN_H = 640, 420
 
 
 def _load_sdl_dll():
-    """The SDL2 library pygame links against, for SDL_GetGlobalMouseState."""
+    """Load SDL2 for global pointer queries on custom-chrome platforms."""
+    if sys.platform.startswith("linux"):
+        return None
     if sys.platform == "win32":
         names = ["SDL2.dll"]
     elif sys.platform == "darwin":
         names = ["libSDL2.dylib", "libSDL2-2.0.0.dylib"]
     else:
-        names = ["libSDL2-2.0.so.0", "libSDL2-2.0.so", "libSDL2.so"]
+        return None
     pkg = Path(pygame.__file__).resolve().parent
     for name in names:
         path = pkg / name

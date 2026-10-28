@@ -748,6 +748,8 @@ class Game(CameraHost):
     def _caption_press(self, pos):
         if self.chrome.fullscreen:
             return False
+        if not self.chrome.supported():
+            return False
         w, _ = self.screen.get_size()
         cap = pygame.Rect(0, 0, w, CAP_H)
         b_min, b_max, b_close = caption_buttons(cap)
@@ -988,7 +990,8 @@ class Game(CameraHost):
         title = self.project.title + (f" - {name}" if name else "")
         cap = pygame.Rect(0, 0, w, CAP_H)
         self.close_rect = xp.titlebar(self.screen, cap, title,
-                                      self.fonts["normal"], icon=self.icon)
+                                      self.fonts["normal"], icon=self.icon,
+                                      controls=self.chrome.supported())
         menu = pygame.Rect(0, CAP_H, w, MENU_H)
         active = MENU_LABELS.index(self.menu_open) \
             if self.menu_open in MENU_LABELS else None

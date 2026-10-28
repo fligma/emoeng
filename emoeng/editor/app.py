@@ -2122,6 +2122,8 @@ class Editor:
                            "fligma-img")
 
     def _caption_press(self, pos):
+        if not self.chrome.supported():
+            return False
         w = self.screen.get_width()
         cap = pygame.Rect(0, 0, w, CAP_H)
         b_min, b_max, b_close = caption_buttons(cap)
@@ -2634,7 +2636,8 @@ class Editor:
         if self.tab == TAB_MODEL and self.model.dirty:
             title += "*"
         xp.titlebar(surface, cap, title, self.fonts["normal"],
-                    icon=widgets.icon("icon", 16))
+                    icon=widgets.icon("icon", 16),
+                    controls=self.chrome.supported())
 
     def _draw_menubar(self, surface):
         w = surface.get_width()

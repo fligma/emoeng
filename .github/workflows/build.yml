@@ -130,6 +130,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes xvfb xauth libgl1-mesa-dri
 
+      - name: Verify Linux uses native window decorations
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          SDL_AUDIODRIVER=dummy xvfb-run -a python -c '
+          import sys
+          import pygame
+          pygame.display.init()
+          pygame.display.set_mode((32, 32))
+          from emoeng.engine import winchrome
+          assert winchrome._sdl2 is None
+          assert not winchrome.WindowChrome().supported()
+          assert "pygame._sdl2.video" not in sys.modules
+          pygame.quit()
+          '
+
       - name: Smoke-test Linux app rendering
         if: matrix.label == 'linux'
         shell: bash

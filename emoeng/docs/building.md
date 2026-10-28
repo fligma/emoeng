@@ -48,7 +48,9 @@ target. Do not build a Windows executable on Linux or a Linux executable on
 Windows; use the matching native runner.
 The Linux CI job also runs the frozen game for one rendered demo frame and
 starts both the project manager and standalone installer under Xvfb. The
-installer excludes NumPy, which is not part of its runtime requirements.
+Linux app uses the desktop's native window decorations instead of importing
+pygame's optional SDL2 window-control extension. The installer excludes
+NumPy, which is not part of its runtime requirements.
 These runtime checks catch Linux GUI/OpenGL startup failures that a
 successful PyInstaller build alone cannot detect.
 
