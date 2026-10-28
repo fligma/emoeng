@@ -120,14 +120,16 @@ jobs:
         run: |
           sep=:
           if [ "$RUNNER_OS" = "Windows" ]; then sep=';'; fi
+          # PyInstaller resolves relative --add-data sources from the spec
+          # directory (installer-build), not the repository root.
           python -m PyInstaller --noconfirm --onefile --windowed \
             --name MotionEngine-installer \
             --distpath installer-dist --workpath installer-build \
             --specpath installer-build \
-            --add-data "emoeng/engine/xp.py${sep}emoeng/engine" \
-            --add-data "emoeng/engine/winchrome.py${sep}emoeng/engine" \
-            --add-data "emoeng/const.py${sep}emoeng" \
-            --add-data "installer/assets${sep}assets" \
+            --add-data "../emoeng/engine/xp.py${sep}emoeng/engine" \
+            --add-data "../emoeng/engine/winchrome.py${sep}emoeng/engine" \
+            --add-data "../emoeng/const.py${sep}emoeng" \
+            --add-data "../installer/assets${sep}assets" \
             installer/installer.py
 
       - name: Pack installer (windows)
