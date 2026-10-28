@@ -50,7 +50,10 @@ The Linux CI job also runs the frozen game for one rendered demo frame and
 starts both the project manager and standalone installer under Xvfb. The
 Linux app uses the desktop's native window decorations instead of importing
 pygame's optional SDL2 window-control extension. The installer excludes
-NumPy, which is not part of its runtime requirements.
+NumPy, which is not part of its runtime requirements. Linux bundles are built
+with Ubuntu's system Python and the installer is smoke-tested under QEMU's
+baseline x86-64 CPU model; the game, project manager, and installer are tested
+there to catch illegal-instruction crashes on older CPUs.
 These runtime checks catch Linux GUI/OpenGL startup failures that a
 successful PyInstaller build alone cannot detect.
 

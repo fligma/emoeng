@@ -25,6 +25,8 @@ on:
     paths:
       - emoeng/const.py            # a version bump is a release
       - emoeng/docs/**
+      - emoeng/engine/**
+      - emoeng/editor/**
       - emoeng/projects/**
       - tools/build_release.py
       - installer/installer.py
@@ -69,20 +71,34 @@ jobs:
         include:
           - os: windows-latest
             label: windows
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             label: linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
+        if: matrix.label == 'windows'
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
+      - name: Install Windows dependencies
+        if: matrix.label == 'windows'
         run: |
           python -m pip install --upgrade pip
           python -m pip install pygame moderngl numpy pillow pyinstaller
+
+      - name: Install Linux baseline Python and dependencies
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3.12-venv python3.12-dev \
+            xvfb xauth libgl1-mesa-dri qemu-user
+          /usr/bin/python3.12 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install pygame moderngl numpy pillow pyinstaller
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       # The repo's own build tool: freezes emoeng into
       # tools/dist/MotionEngine/ with the engine CLI baked in, the
@@ -124,12 +140,6 @@ jobs:
             --add-data "../installer/assets${sep}assets" \
             installer/installer.py
 
-      - name: Install Linux GUI smoke-test dependencies
-        if: matrix.label == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes xvfb xauth libgl1-mesa-dri
-
       - name: Verify Linux uses native window decorations
         if: matrix.label == 'linux'
         shell: bash
@@ -145,6 +155,45 @@ jobs:
           assert "pygame._sdl2.video" not in sys.modules
           pygame.quit()
           '
+
+      - name: Smoke-test Linux game on baseline x86-64 CPU
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy timeout 120s \
+            xvfb-run -a qemu-x86_64 -cpu qemu64 -L / \
+            tools/dist/MotionEngine/MotionEngine run \
+            tools/dist/MotionEngine/projects/demo --frames 1
+
+      - name: Smoke-test Linux project manager on baseline x86-64 CPU
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          set +e
+          SDL_AUDIODRIVER=dummy timeout 60s xvfb-run -a \
+            qemu-x86_64 -cpu qemu64 -L / \
+            tools/dist/MotionEngine/MotionEngine
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "Linux project manager failed to stay alive on a baseline x86-64 CPU (status $status)" >&2
+            exit 1
+          fi
+
+      - name: Smoke-test Linux installer on baseline x86-64 CPU
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          set +e
+          SDL_AUDIODRIVER=dummy timeout 60s xvfb-run -a \
+            qemu-x86_64 -cpu qemu64 -L / \
+            installer-dist/MotionEngine-installer
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "Linux installer failed to stay alive on a baseline x86-64 CPU (status $status)" >&2
+            exit 1
+          fi
 
       - name: Smoke-test Linux app rendering
         if: matrix.label == 'linux'
