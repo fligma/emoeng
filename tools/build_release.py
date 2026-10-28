@@ -1,6 +1,6 @@
 """Freeze the `emoeng` package into a stand-alone app and run it.
 
-    python tools/build_release.py                # one-dir bundle, then launch
+    python tools/build_release.py                # one-file bundle, then launch
     python tools/build_release.py --console      # keep a console next to the window
     python tools/build_release.py --no-run       # build only, don't launch
 
@@ -19,23 +19,21 @@ That last bit is what the "Create Shortcut" button in the manager leans
 on: it writes a `.lnk` / `.desktop` / `.command` on the user's Desktop
 that calls `<MotionEngine> --run <project>`.
 
-Layout:
+Layout (one-file):
 
     emoeng/                      the package, analysed in place: its folder
-                                 name is its import name, so the entry
-                                 script's `from emoeng.__main__ import main`
-                                 resolves for PyInstaller without staging
+                                  name is its import name, so the entry
+                                  script's `from emoeng.__main__ import main`
+                                  resolves for PyInstaller without staging
     tools/.build/                PyInstaller work files and the entry script
-    tools/dist/MotionEngine/     the finished one-dir bundle
-      MotionEngine[.exe]
-      _internal/                 (Python, pygame, engine code, projects/)
+    tools/dist/MotionEngine.exe  the finished one-file bundle
 
 On first run `engine.paths.projects_dir` copies the bundled
-`emoeng/projects` beside the exe, so `tools/dist/MotionEngine/projects/`
-appears after one launch and the manager already has `demo` in it. The
-release packs copy `projects/` and `docs/` beside the exe at build time,
-so a fresh unzip includes the demo and offline manual immediately. The
-same thing happens wherever an end-user unzips a copy of that folder.
+`emoeng/projects` beside the exe, so `projects/` appears after one launch
+and the manager already has `demo` in it. The release packs copy `projects/`
+and `docs/` beside the exe at build time, so a fresh unzip includes the
+demo and offline manual immediately. The same thing happens wherever an
+end-user unzips a copy of that folder.
 """
 
 from __future__ import annotations
@@ -72,6 +70,7 @@ DIST = TOOLS / "dist"
 
 IS_WINDOWS = os.name == "nt"
 IS_MACOS = sys.platform == "darwin"
+IS_LINUX = sys.platform == "linux"
 SEP = ";" if IS_WINDOWS else ":"
 
 
@@ -114,7 +113,9 @@ def exe_name():
 
 
 def exe_path():
-    return DIST / ENGINE_NAME / exe_name()
+    if IS_WINDOWS:
+        return DIST / f"{ENGINE_NAME}.exe"
+    return DIST / ENGINE_NAME
 
 
 # ------------------------------------------------------------------- entry
@@ -146,7 +147,7 @@ def make_config(console: bool) -> BuildConfig:
     cfg.set("distpath", str(DIST))
     cfg.set("workpath", str(BUILD))
     cfg.set("specpath", str(BUILD))
-    cfg.set("onefile", False)
+    cfg.set("onefile", True)
     # --windowed is only meaningful on Windows/macOS; on Linux PyInstaller
     # accepts it but it is a no-op, so always keep True unless --console.
     cfg.set("windowed", not console)
@@ -164,17 +165,30 @@ def make_config(console: bool) -> BuildConfig:
     # `engine.paths.bundled_projects()` finds the demo on first run and
     # copies it beside the exe. The APP plan already points there; this is
     # the fallback for a checkout with no default project to scan.
-    if not cfg.get("add_data"):
-        bundled_dest = f"{const.NAME}/{const.PROJECTS_DIRNAME}"
-        cfg.set("add_data",
-                [f"{SRC / const.PROJECTS_DIRNAME}{SEP}{bundled_dest}"])
+    add_data = []
+    bundled_dest = f"{const.NAME}/{const.PROJECTS_DIRNAME}"
+    add_data.append(f"{SRC / const.PROJECTS_DIRNAME}{SEP}{bundled_dest}")
     # Also bundle the docs folder so it ships with the engine
     docs_src = REPO / "emoeng" / "docs"
     if docs_src.is_dir():
         docs_dest = f"{const.NAME}/docs"
-        current_add_data = cfg.get("add_data") or []
-        current_add_data.append(f"{docs_src}{SEP}{docs_dest}")
-        cfg.set("add_data", current_add_data)
+        add_data.append(f"{docs_src}{SEP}{docs_dest}")
+    # Bundle editor UI assets (icons, symbols) so they work in the frozen app
+    app_ui_src = SRC / "editor" / "appUI"
+    if app_ui_src.is_dir():
+        app_ui_dest = f"{const.NAME}/editor/appUI"
+        add_data.append(f"{app_ui_src}{SEP}{app_ui_dest}")
+    # Bundle fonts so they work in the frozen app on all platforms
+    fonts_src = SRC / "fonts"
+    if fonts_src.is_dir():
+        fonts_dest = f"{const.NAME}/fonts"
+        add_data.append(f"{fonts_src}{SEP}{fonts_dest}")
+    # Bundle the engine icon so it shows in the window/taskbar
+    icon_src = SRC / const.ICON_NAME
+    if icon_src.is_file():
+        icon_dest = f"{const.NAME}"
+        add_data.append(f"{icon_src}{SEP}{icon_dest}")
+    cfg.set("add_data", add_data)
     return cfg
 
 
@@ -210,7 +224,7 @@ def stage_projects():
     folder as-is, so the release zip already carries `demo` next to the
     exe and nobody has to launch the app once just to seed it."""
     src = SRC / const.PROJECTS_DIRNAME
-    dest = DIST / ENGINE_NAME / const.PROJECTS_DIRNAME
+    dest = DIST / const.PROJECTS_DIRNAME
     if not src.is_dir() or dest.exists():
         return
     try:
@@ -223,7 +237,7 @@ def stage_projects():
 def stage_docs():
     """Copy the offline manual beside the executable in release bundles."""
     src = SRC / "docs"
-    dest = DIST / ENGINE_NAME / "docs"
+    dest = DIST / "docs"
     if not src.is_dir():
         return
     try:
@@ -231,6 +245,89 @@ def stage_docs():
         log(f"docs beside the exe: {dest}", "ok")
     except OSError as exc:
         log(f"docs not staged: {exc}", "error")
+
+
+def stage_fonts():
+    """Copy fonts beside the executable."""
+    src = SRC / "fonts"
+    dest = DIST / "fonts"
+    if not src.is_dir() or dest.exists():
+        return
+    try:
+        shutil.copytree(src, dest)
+        log(f"fonts beside the exe: {dest}", "ok")
+    except OSError as exc:
+        log(f"fonts not staged: {exc}", "error")
+
+
+def stage_app_ui():
+    """Copy editor UI assets beside the executable."""
+    src = SRC / "editor" / "appUI"
+    dest = DIST / "editor" / "appUI"
+    if not src.is_dir() or dest.exists():
+        return
+    try:
+        shutil.copytree(src, dest, dirs_exist_ok=True)
+        log(f"appUI beside the exe: {dest}", "ok")
+    except OSError as exc:
+        log(f"appUI not staged: {exc}", "error")
+
+
+def stage_icon():
+    """Copy the engine icon beside the executable for window/taskbar."""
+    src = SRC / const.ICON_NAME
+    if not src.is_file():
+        return
+    dest = DIST / const.ICON_NAME
+    try:
+        shutil.copy2(src, dest)
+        log(f"icon beside the exe: {dest}", "ok")
+    except OSError as exc:
+        log(f"icon not staged: {exc}", "error")
+
+
+def pack_release():
+    """Create the release archive for the current platform."""
+    exe = exe_path()
+    if not exe.is_file():
+        log(f"expected exe missing: {exe}", "error")
+        return None
+    # For one-file builds, stage files next to exe before packing
+    if IS_WINDOWS:
+        archive = DIST / f"{ENGINE_NAME}-windows.zip"
+        # Create a temp folder with exe + data files
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            # Copy exe
+            shutil.copy2(exe, tmpdir / exe.name)
+            # Copy data folders if they exist
+            for folder in ("projects", "docs", "fonts", "editor"):
+                src = DIST / folder
+                if src.is_dir():
+                    shutil.copytree(src, tmpdir / folder)
+            # Copy icon if exists
+            icon_src = DIST / const.ICON_NAME
+            if icon_src.is_file():
+                shutil.copy2(icon_src, tmpdir / const.ICON_NAME)
+            # Use Python's zipfile instead of PowerShell
+            import zipfile
+            with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for file in tmpdir.rglob('*'):
+                    if file.is_file():
+                        zf.write(file, file.relative_to(tmpdir))
+    elif IS_MACOS:
+        archive = DIST / f"{ENGINE_NAME}-macos.zip"
+        dest_dir = DIST
+        cmd = ["ditto", "-c", "-k", "--sequesterRsrc", str(dest_dir), str(archive)]
+        subprocess.run(cmd, check=True, capture_output=True)
+    else:
+        archive = DIST / f"{ENGINE_NAME}-linux.tar.gz"
+        dest_dir = DIST
+        cmd = ["tar", "-czf", str(archive), "-C", str(dest_dir), "."]
+        subprocess.run(cmd, check=True, capture_output=True)
+    log(f"packed: {archive}", "ok")
+    return archive
 
 
 def ensure_executable(exe: Path):
@@ -305,6 +402,10 @@ def main(argv=None):
 
     stage_projects()
     stage_docs()
+    stage_fonts()
+    stage_app_ui()
+    stage_icon()
+    pack_release()
     if no_run:
         return 0
     return launch(exe, console)

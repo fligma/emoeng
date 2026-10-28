@@ -66,6 +66,15 @@ def bundled_docs():
     return package_root() / "docs"
 
 
+def bundled_fonts():
+    """Fonts shipped inside the package / build."""
+    for base in (package_root(), bundle_dir() / const.NAME):
+        candidate = base / "fonts"
+        if candidate.is_dir():
+            return candidate
+    return package_root() / "fonts"
+
+
 def projects_dir():
     """The projects folder to use right now."""
     override = os.environ.get("EMOTION_PROJECTS")

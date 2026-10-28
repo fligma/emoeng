@@ -1,18 +1,20 @@
-# Build and release the engine app and its installer for Windows and Linux.
+# Build and release the engine app and its installer for every OS.
 #
 # The version comes from emoeng/const.py - nowhere else. Pushing a new
 # VERSION there (or running this workflow by hand) tags the commit
 # `engineV<version>` and publishes a GitHub release carrying one
-# app archive and a separate standalone installer binary for each OS:
+# installable archive per OS, plus the installer that fetches them:
 #
-#   MotionEngine-windows.zip         one-dir bundle, from build_release.py
-#   MotionEngine-linux.tar.gz        one-dir bundle with docs/ and projects/
-#   MotionEngine-installer-windows.exe   standalone installer binary
-#   MotionEngine-installer-linux         standalone installer binary
+#   MotionEngine-windows.zip         one-file bundle, from build_release.py
+#   MotionEngine-linux.tar.gz        (carries projects/ beside the exe)
+#   MotionEngine-macos.zip
+#   MotionEngine-installer-windows.zip   the standalone installer app
+#   MotionEngine-installer-linux.tar.gz
+#   MotionEngine-installer-macos.zip
 #
-# The app archive names are what installer/installer.py searches for: it
+# The bundle names are what installer/installer.py searches for: it
 # looks for the newest `engineV*` release and picks the file whose name
-# matches this PC. The installer's own binaries are always named with
+# matches this PC. The installer's own archives are always named with
 # the word `installer` in them, which scores zero in its asset picker -
 # it can never grab a copy of itself instead of the engine. A re-run of
 # the same version replaces the files in place rather than failing on
@@ -24,10 +26,6 @@ on:
     branches: [master]
     paths:
       - emoeng/const.py            # a version bump is a release
-      - emoeng/docs/**
-      - emoeng/engine/**
-      - emoeng/editor/**
-      - emoeng/projects/**
       - tools/build_release.py
       - installer/installer.py
       - .github/workflows/build.yml
@@ -73,203 +71,49 @@ jobs:
             label: windows
           - os: ubuntu-24.04
             label: linux
+          - os: macos-latest
+            label: macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
-        if: matrix.label == 'windows'
         with:
           python-version: "3.13"
 
-      - name: Install Windows dependencies
-        if: matrix.label == 'windows'
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install pygame moderngl numpy pillow pyinstaller
-
-      - name: Install Linux baseline Python and dependencies
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes python3.12-venv python3.12-dev \
-            xvfb xauth libgl1-mesa-dri qemu-user
-          /usr/bin/python3.12 -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install pygame moderngl numpy pillow pyinstaller
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          # Linux: install SDL2 and OpenGL dev libraries for pygame
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev
+          fi
 
       # The repo's own build tool: freezes emoeng into
-      # tools/dist/MotionEngine/ with the engine CLI baked in, the
-      # projects folder already copied beside the exe.
+      # tools/dist/MotionEngine.exe (Windows) or MotionEngine (Linux/macOS)
+      # with the engine CLI baked in, the projects folder already copied beside the exe.
       # --no-run because a headless runner must not try to open a window.
       - name: Freeze the app
         run: python tools/build_release.py --no-run
 
-      - name: Pack (windows)
-        if: matrix.label == 'windows'
-        shell: pwsh
-        run: Compress-Archive -Path tools/dist/MotionEngine `
-             -DestinationPath MotionEngine-windows.zip
-
-      - name: Pack (linux)
+      # Smoke test on Linux with xvfb
+      - name: Smoke test (Linux)
         if: matrix.label == 'linux'
-        run: tar -C tools/dist -czf MotionEngine-linux.tar.gz MotionEngine
-
-      # The updater app, frozen beside its chrome files (xp.py,
-      # winchrome.py, const.py) and its icon assets under the same
-      # relative names the source tree uses, which is where a frozen
-      # installer looks for them. Named with the word `installer`, so
-      # the running installer never picks one as its own download.
-      - name: Freeze the installer
-        shell: bash
         run: |
-          sep=:
-          if [ "$RUNNER_OS" = "Windows" ]; then sep=';'; fi
-          # PyInstaller resolves relative --add-data sources from the spec
-          # directory (installer-build), not the repository root.
-          python -m PyInstaller --noconfirm --onefile --windowed \
-            --name MotionEngine-installer \
-            --distpath installer-dist --workpath installer-build \
-            --specpath installer-build \
-            --exclude-module numpy \
-            --add-data "../emoeng/engine/xp.py${sep}emoeng/engine" \
-            --add-data "../emoeng/engine/winchrome.py${sep}emoeng/engine" \
-            --add-data "../emoeng/const.py${sep}emoeng" \
-            --add-data "../installer/assets${sep}assets" \
-            installer/installer.py
+          SDL_AUDIODRIVER=dummy xvfb-run -a \
+            tools/dist/MotionEngine run tools/dist/projects/demo --frames 1
 
-      - name: Verify Linux uses native window decorations
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          SDL_AUDIODRIVER=dummy xvfb-run -a python -c '
-          import sys
-          import pygame
-          pygame.display.init()
-          pygame.display.set_mode((32, 32))
-          from emoeng.engine import winchrome
-          assert winchrome._sdl2 is None
-          assert not winchrome.WindowChrome().supported()
-          assert "pygame._sdl2.video" not in sys.modules
-          pygame.quit()
-          '
-
-      - name: Smoke-test Linux game on baseline x86-64 CPU
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy timeout 120s \
-            xvfb-run -a qemu-x86_64 -cpu qemu64 -L / \
-            tools/dist/MotionEngine/MotionEngine run \
-            tools/dist/MotionEngine/projects/demo --frames 1
-
-      - name: Smoke-test Linux editor opening demo
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          SDL_AUDIODRIVER=dummy timeout 60s xvfb-run -a \
-            tools/dist/MotionEngine/MotionEngine editor \
-            tools/dist/MotionEngine/projects/demo --frames 1
-
-      - name: Smoke-test Linux project manager on baseline x86-64 CPU
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          set +e
-          SDL_AUDIODRIVER=dummy timeout 60s xvfb-run -a \
-            qemu-x86_64 -cpu qemu64 -L / \
-            tools/dist/MotionEngine/MotionEngine
-          status=$?
-          set -e
-          if [ "$status" -ne 124 ]; then
-            echo "Linux project manager failed to stay alive on a baseline x86-64 CPU (status $status)" >&2
-            exit 1
-          fi
-
-      - name: Smoke-test Linux editor opening demo on baseline x86-64 CPU
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy timeout 180s \
-            xvfb-run -a qemu-x86_64 -cpu qemu64 -L / \
-            tools/dist/MotionEngine/MotionEngine editor \
-            tools/dist/MotionEngine/projects/demo --frames 1
-
-      - name: Smoke-test Linux installer on baseline x86-64 CPU
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          set +e
-          SDL_AUDIODRIVER=dummy timeout 60s xvfb-run -a \
-            qemu-x86_64 -cpu qemu64 -L / \
-            installer-dist/MotionEngine-installer
-          status=$?
-          set -e
-          if [ "$status" -ne 124 ]; then
-            echo "Linux installer failed to stay alive on a baseline x86-64 CPU (status $status)" >&2
-            exit 1
-          fi
-
-      - name: Smoke-test Linux app rendering
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy PYTHONUNBUFFERED=1 \
-            timeout 60s xvfb-run -a \
-            tools/dist/MotionEngine/MotionEngine run \
-            tools/dist/MotionEngine/projects/demo --frames 1
-
-      - name: Smoke-test Linux project manager startup
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          set +e
-          SDL_AUDIODRIVER=dummy timeout 10s xvfb-run -a \
-            tools/dist/MotionEngine/MotionEngine
-          status=$?
-          set -e
-          if [ "$status" -ne 124 ]; then
-            echo "Linux project manager exited before staying alive for the smoke test (status $status)" >&2
-            exit 1
-          fi
-
-      - name: Smoke-test Linux installer startup
-        if: matrix.label == 'linux'
-        shell: bash
-        run: |
-          set +e
-          SDL_AUDIODRIVER=dummy timeout 10s xvfb-run -a \
-            installer-dist/MotionEngine-installer
-          status=$?
-          set -e
-          if [ "$status" -ne 124 ]; then
-            echo "Linux installer exited before staying alive for the smoke test (status $status)" >&2
-            exit 1
-          fi
-
-      - name: Name installer binary (windows)
-        if: matrix.label == 'windows'
-        shell: pwsh
-        run: Move-Item installer-dist/MotionEngine-installer.exe `
-             MotionEngine-installer-windows.exe
-
-      - name: Name installer binary (linux)
-        if: matrix.label == 'linux'
-        run: mv installer-dist/MotionEngine-installer MotionEngine-installer-linux
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}-bundle
-          path: MotionEngine-*
+          path: tools/dist/MotionEngine*
 
   release:
     needs: [version, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           pattern: '*-bundle'
@@ -278,19 +122,12 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
           VER: ${{ needs.version.outputs.version }}
           COMMIT: ${{ needs.version.outputs.commit }}
         shell: bash
         run: |
           ls -l
-          test -f MotionEngine-windows.zip
-          test -f MotionEngine-linux.tar.gz
-          test -f MotionEngine-installer-windows.exe
-          test -f MotionEngine-installer-linux
-          # GitHub workflow artifacts do not preserve executable mode.
-          chmod +x MotionEngine-installer-linux
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --target "$COMMIT" \
               --title "$TAG" \

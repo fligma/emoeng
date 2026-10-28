@@ -29,11 +29,11 @@ SHOT_PREFIX = const.ENGINE_NAME.lower() + "_"
 def default_icon_surface(text="", px=32):
     """The fallback window badge: the first two letters of `text`,"""
     try:
-        pygame.font.init()
+        _ensure_font_init()
         surf = pygame.Surface((px, px), pygame.SRCALPHA)
         surf.fill((52, 96, 158, 255))
-        font = pygame.font.SysFont("tahoma", max(8, int(px * 0.55)),
-                                   bold=True)
+        # Use bundled font if available, fall back to system font
+        font = _get_bundled_font("tahoma", max(8, int(px * 0.55)), bold=True)
         initials = (str(text).strip()[:2] or "P").upper()
         img = font.render(initials, True, (255, 255, 255))
         surf.blit(img, ((px - img.get_width()) // 2,
@@ -41,6 +41,44 @@ def default_icon_surface(text="", px=32):
         return surf
     except (pygame.error, OSError, ValueError):
         return None
+
+
+# Global cache for bundled fonts
+_bundled_fonts = {}
+_font_init_done = False
+
+def _ensure_font_init():
+    global _font_init_done
+    if not _font_init_done:
+        pygame.font.init()
+        _font_init_done = True
+
+def _get_bundled_font(name, size, bold=False, italic=False):
+    """Get a font, preferring bundled TTF over system fonts."""
+    _ensure_font_init()
+    key = (name, size, bold, italic)
+    if key in _bundled_fonts:
+        return _bundled_fonts[key]
+    
+    # Try to find bundled font
+    font_path = paths.package_root() / "fonts" / f"{name}.ttf"
+    if font_path.is_file():
+        try:
+            font = pygame.font.Font(str(font_path), size)
+            font.set_bold(bold)
+            font.set_italic(italic)
+            _bundled_fonts[key] = font
+            return font
+        except (pygame.error, OSError):
+            pass
+    
+    # Fall back to system font
+    try:
+        font = pygame.font.SysFont(name, size, bold=bold, italic=italic)
+    except (pygame.error, OSError):
+        font = pygame.font.Font(None, size)
+    _bundled_fonts[key] = font
+    return font
 
 
 def project_icon_surface(project, px=32):
@@ -175,11 +213,11 @@ class Game(CameraHost):
         self.screen = self._set_mode(win_size)
         self.clock = pygame.time.Clock()
         self.fonts = {
-            "small": pygame.font.SysFont("tahoma", 11),
-            "normal": pygame.font.SysFont("tahoma", 13),
-            "big": pygame.font.SysFont("tahoma", 18, bold=True),
-            "title": pygame.font.SysFont("tahoma", 28, bold=True),
-            "mono": pygame.font.SysFont("consolas", 12),
+            "small": _get_bundled_font("tahoma", 11),
+            "normal": _get_bundled_font("tahoma", 13),
+            "big": _get_bundled_font("tahoma", 18, bold=True),
+            "title": _get_bundled_font("tahoma", 28, bold=True),
+            "mono": _get_bundled_font("consolas", 12),
         }
         self.icon = None
 
