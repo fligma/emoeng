@@ -142,6 +142,8 @@ jobs:
     needs: [version, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: '*-bundle'
@@ -150,6 +152,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
           VER: ${{ needs.version.outputs.version }}
           COMMIT: ${{ needs.version.outputs.commit }}
