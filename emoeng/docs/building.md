@@ -47,9 +47,10 @@ wrapped in another archive; the app archive remains the installer’s download
 target. Do not build a Windows executable on Linux or a Linux executable on
 Windows; use the matching native runner.
 The Linux CI job also runs the frozen game for one rendered demo frame and
-starts the standalone installer under Xvfb with Mesa software rendering. These
-runtime checks catch Linux GUI/OpenGL startup failures that a successful
-PyInstaller build alone cannot detect.
+starts both the project manager and standalone installer under Xvfb. The
+installer excludes NumPy, which is not part of its runtime requirements.
+These runtime checks catch Linux GUI/OpenGL startup failures that a
+successful PyInstaller build alone cannot detect.
 
 `name` defaults to the project folder name with spaces replaced by `_`, and to
 `"game"` when there is no project. `icon` is picked up automatically from

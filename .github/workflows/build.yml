@@ -117,6 +117,7 @@ jobs:
             --name MotionEngine-installer \
             --distpath installer-dist --workpath installer-build \
             --specpath installer-build \
+            --exclude-module numpy \
             --add-data "../emoeng/engine/xp.py${sep}emoeng/engine" \
             --add-data "../emoeng/engine/winchrome.py${sep}emoeng/engine" \
             --add-data "../emoeng/const.py${sep}emoeng" \
@@ -137,6 +138,20 @@ jobs:
             timeout 60s xvfb-run -a \
             tools/dist/MotionEngine/MotionEngine run \
             tools/dist/MotionEngine/projects/demo --frames 1
+
+      - name: Smoke-test Linux project manager startup
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          set +e
+          SDL_AUDIODRIVER=dummy timeout 10s xvfb-run -a \
+            tools/dist/MotionEngine/MotionEngine
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "Linux project manager exited before staying alive for the smoke test (status $status)" >&2
+            exit 1
+          fi
 
       - name: Smoke-test Linux installer startup
         if: matrix.label == 'linux'
