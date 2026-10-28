@@ -2999,7 +2999,8 @@ class Editor:
                   hovered=self.notice_ok.collidepoint(
                       pygame.mouse.get_pos()))
 
-    def run(self):
+    def run(self, limit=None):
+        frames = 0
         try:
             while self.running:
                 raw = self.clock.tick(self.fps_cap or 0) / 1000.0
@@ -3019,6 +3020,9 @@ class Editor:
                 self._sync_surface()
                 self.draw()
                 pygame.display.flip()
+                frames += 1
+                if limit is not None and frames >= limit:
+                    break
         finally:
             for part in (self.code, self.model, self.blocks):
                 try:
@@ -3037,8 +3041,8 @@ class Editor:
             pygame.quit()
 
 
-def main(project_path=None):
-    Editor(project_path).run()
+def main(project_path=None, frames=None):
+    Editor(project_path).run(limit=frames)
 
 
 if __name__ == "__main__":

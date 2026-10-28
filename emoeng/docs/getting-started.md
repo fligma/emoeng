@@ -19,6 +19,7 @@ one that contains `project.flig`.
 | --- | --- |
 | `python -m emoeng` | Open the editor on the project manager |
 | `python -m emoeng editor [path]` | Open the editor on one project |
+| `python -m emoeng editor [path] --frames 1` | Open and draw one editor frame (smoke test) |
 | `python -m emoeng run [path]` | Play a project in its own window |
 | `python -m emoeng run [path] --frames 120` | Stop after N frames (used by smoke tests) |
 | `python -m emoeng --run [path]` | Same as `run`; the form desktop shortcuts use |

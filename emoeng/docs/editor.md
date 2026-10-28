@@ -9,6 +9,7 @@ nothing is stored in a private document format.
 ```powershell
 python -m emoeng                       # project manager, then the editor
 python -m emoeng editor mygame         # straight into one project
+python -m emoeng editor mygame --frames 1  # open project and draw one frame
 python -m emoeng run mygame --frames 90
 python -m emoeng build mygame
 python -m emoeng new mygame "My Game"  # scaffold a project folder
@@ -18,7 +19,7 @@ python -m emoeng --run mygame          # the form a desktop shortcut uses
 | First argument | Routed to |
 | --- | --- |
 | *(none)* | `editor.app.main(None)` - shows the project manager |
-| `editor [path]` | `editor.app.main(path)` |
+| `editor [path] [--frames N]` | `editor.app.main(path, frames=N)` |
 | `run [path] [--frames N]` | `engine.game.main(path, frames=N)` |
 | `--run [path]` | rewritten to `run` before dispatch |
 | `build [path] ...` | `engine.build.main(...)` - see [Building](building.md) |

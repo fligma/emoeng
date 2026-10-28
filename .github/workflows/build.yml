@@ -165,6 +165,14 @@ jobs:
             tools/dist/MotionEngine/MotionEngine run \
             tools/dist/MotionEngine/projects/demo --frames 1
 
+      - name: Smoke-test Linux editor opening demo
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          SDL_AUDIODRIVER=dummy timeout 60s xvfb-run -a \
+            tools/dist/MotionEngine/MotionEngine editor \
+            tools/dist/MotionEngine/projects/demo --frames 1
+
       - name: Smoke-test Linux project manager on baseline x86-64 CPU
         if: matrix.label == 'linux'
         shell: bash
@@ -179,6 +187,15 @@ jobs:
             echo "Linux project manager failed to stay alive on a baseline x86-64 CPU (status $status)" >&2
             exit 1
           fi
+
+      - name: Smoke-test Linux editor opening demo on baseline x86-64 CPU
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy timeout 180s \
+            xvfb-run -a qemu-x86_64 -cpu qemu64 -L / \
+            tools/dist/MotionEngine/MotionEngine editor \
+            tools/dist/MotionEngine/projects/demo --frames 1
 
       - name: Smoke-test Linux installer on baseline x86-64 CPU
         if: matrix.label == 'linux'

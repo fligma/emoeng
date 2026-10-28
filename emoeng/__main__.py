@@ -32,8 +32,18 @@ def main(argv=None):
         game_main(rest[0] if rest else None, frames=frames)
         return 0
     if cmd == "editor":
+        rest = args[1:]
+        frames = None
+        if "--frames" in rest:
+            i = rest.index("--frames")
+            try:
+                frames = int(rest[i + 1])
+            except (IndexError, ValueError):
+                print("usage: --frames <count>")
+                return 2
+            rest = rest[:i] + rest[i + 2:]
         from emoeng.editor.app import main as editor_main
-        editor_main(args[1] if len(args) > 1 else None)
+        editor_main(rest[0] if rest else None, frames=frames)
         return 0
     if cmd == "build":
         from emoeng.engine.build import main as build_main
