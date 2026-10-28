@@ -39,7 +39,8 @@ class Main(fe.Scene3D):
 - **Self-updating** - the bundled installer finds the newest release
   for your PC on GitHub
 - **Windows and Linux releases** - native GitHub Actions runners build
-  the app and ship the offline `docs/` and starter `projects/` beside it
+  app archives with offline `docs/` and starter `projects/`, plus a
+  separate standalone installer binary for each platform
 
 ## The editor
 
@@ -123,9 +124,9 @@ python -m emoeng                 # project manager, demo included
 
 Building a standalone game needs `pip install pyinstaller` and the
 Build tab (or `python -m emoeng build <project>`). Motion Engine release
-archives for Windows and Linux are built by the repository's native CI jobs;
-each unpacked application includes its `docs/` and `projects/` folders beside
-the executable.
+archives for Windows and Linux are built by the repository's native CI jobs.
+Each app archive includes its `docs/` and `projects/` folders beside the
+executable; the matching installer binary is a separate release download.
 
 <sub>Python package and import name: `emoeng`. Spoken name: Motion
 Engine. See `emoeng/docs/` - or the Docs tab - for the full manual.</sub>

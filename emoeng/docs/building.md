@@ -26,7 +26,7 @@ python -m emoeng build projects/mygame --onefile --name mygame
 ## Motion Engine release builds
 
 The repository release workflow builds on native Windows and Linux runners
-(and macOS) because PyInstaller builds are platform-specific. On each runner,
+because PyInstaller builds are platform-specific. On each runner,
 `python tools/build_release.py --no-run` creates a one-directory
 `MotionEngine/` bundle. The archive keeps this layout:
 
@@ -38,11 +38,14 @@ MotionEngine/
 └── _internal/  frozen Python runtime and engine package
 ```
 
-The GitHub Actions workflow packages the complete folder as a Windows zip or
-a Linux tarball, preserving executable permissions on the Linux binary. Do
-not build a Windows executable on Linux or a Linux executable on Windows;
-use the matching native runner. The same workflow currently also produces
-macOS archives.
+The GitHub Actions workflow publishes the complete folder as
+`MotionEngine-windows.zip` or `MotionEngine-linux.tar.gz`, preserving
+executable permissions on Linux. Each release also includes a separate
+standalone installer binary: `MotionEngine-installer-windows.exe` on Windows
+and `MotionEngine-installer-linux` on Linux. The installer binary is not
+wrapped in another archive; the app archive remains the installer’s download
+target. Do not build a Windows executable on Linux or a Linux executable on
+Windows; use the matching native runner.
 
 `name` defaults to the project folder name with spaces replaced by `_`, and to
 `"game"` when there is no project. `icon` is picked up automatically from

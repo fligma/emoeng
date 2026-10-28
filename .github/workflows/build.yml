@@ -1,20 +1,18 @@
-# Build and release the engine app and its installer for every OS.
+# Build and release the engine app and its installer for Windows and Linux.
 #
 # The version comes from emoeng/const.py - nowhere else. Pushing a new
 # VERSION there (or running this workflow by hand) tags the commit
 # `engineV<version>` and publishes a GitHub release carrying one
-# installable archive per OS, plus the installer that fetches them:
+# app archive and a separate standalone installer binary for each OS:
 #
 #   MotionEngine-windows.zip         one-dir bundle, from build_release.py
-#   MotionEngine-linux.tar.gz        (carries docs/ and projects/ beside the exe)
-#   MotionEngine-macos.zip
-#   MotionEngine-installer-windows.zip   the standalone installer app
-#   MotionEngine-installer-linux.tar.gz
-#   MotionEngine-installer-macos.zip
+#   MotionEngine-linux.tar.gz        one-dir bundle with docs/ and projects/
+#   MotionEngine-installer-windows.exe   standalone installer binary
+#   MotionEngine-installer-linux         standalone installer binary
 #
-# The bundle names are what installer/installer.py searches for: it
+# The app archive names are what installer/installer.py searches for: it
 # looks for the newest `engineV*` release and picks the file whose name
-# matches this PC. The installer's own archives are always named with
+# matches this PC. The installer's own binaries are always named with
 # the word `installer` in them, which scores zero in its asset picker -
 # it can never grab a copy of itself instead of the engine. A re-run of
 # the same version replaces the files in place rather than failing on
@@ -73,8 +71,6 @@ jobs:
             label: windows
           - os: ubuntu-latest
             label: linux
-          - os: macos-latest
-            label: macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -100,11 +96,6 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path tools/dist/MotionEngine `
              -DestinationPath MotionEngine-windows.zip
-
-      - name: Pack (macos)
-        if: matrix.label == 'macos'
-        run: ditto -c -k --sequesterRsrc tools/dist/MotionEngine \
-             MotionEngine-macos.zip
 
       - name: Pack (linux)
         if: matrix.label == 'linux'
@@ -132,21 +123,15 @@ jobs:
             --add-data "../installer/assets${sep}assets" \
             installer/installer.py
 
-      - name: Pack installer (windows)
+      - name: Name installer binary (windows)
         if: matrix.label == 'windows'
         shell: pwsh
-        run: Compress-Archive -Path installer-dist/MotionEngine-installer.exe `
-             -DestinationPath MotionEngine-installer-windows.zip
+        run: Move-Item installer-dist/MotionEngine-installer.exe `
+             MotionEngine-installer-windows.exe
 
-      - name: Pack installer (macos)
-        if: matrix.label == 'macos'
-        run: ditto -c -k --sequesterRsrc installer-dist/MotionEngine-installer \
-             MotionEngine-installer-macos.zip
-
-      - name: Pack installer (linux)
+      - name: Name installer binary (linux)
         if: matrix.label == 'linux'
-        run: tar -C installer-dist -czf MotionEngine-installer-linux.tar.gz \
-             MotionEngine-installer
+        run: mv installer-dist/MotionEngine-installer MotionEngine-installer-linux
 
       - uses: actions/upload-artifact@v4
         with:
@@ -171,6 +156,12 @@ jobs:
         shell: bash
         run: |
           ls -l
+          test -f MotionEngine-windows.zip
+          test -f MotionEngine-linux.tar.gz
+          test -f MotionEngine-installer-windows.exe
+          test -f MotionEngine-installer-linux
+          # GitHub workflow artifacts do not preserve executable mode.
+          chmod +x MotionEngine-installer-linux
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --target "$COMMIT" \
               --title "$TAG" \
