@@ -103,25 +103,30 @@ def _colour_text(value):
     return str(value)
 
 
-class _FakeSurface:
-    """Preview window surface that forwards drawing to the rendered frame."""
+class _FakeSurface(pygame.Surface):
+    """The preview's window: a real Surface a scene can paint its HUD on.
 
-    def __init__(self):
-        self.size = (640, 360)
-        self.target = None
+    `Hud` reads `game.screen` and hands it to `pygame.draw.*`, which rejects
+    anything that is not a Surface. A stand-in object made every overlay
+    helper raise, so this is an actual surface: the scene paints its overlay
+    here, and the preview blits the result over the rendered frame.
+    """
 
-    def get_size(self):
-        return self.target.get_size() if self.target is not None else self.size
+    def __init__(self, size=(640, 360)):
+        super().__init__(size, pygame.SRCALPHA)
+        self.fill((0, 0, 0, 0))
+
+    def fit(self, size):
+        """Match the frame, and clear what the last frame painted."""
+        size = (max(1, int(size[0])), max(1, int(size[1])))
+        if size != self.get_size():
+            pygame.Surface.__init__(self, size, pygame.SRCALPHA)
+        self.fill((0, 0, 0, 0))
+        return self
 
     def set_target(self, surface):
-        self.target = surface
-        self.size = surface.get_size()
-
-    def __getattr__(self, name):
-        target = self.target
-        if target is None:
-            raise AttributeError(name)
-        return getattr(target, name)
+        """An overlay asked to aim at a frame: match its size, then clear."""
+        return self.fit(surface.get_size())
 
 
 class _PreviewGame(CameraHost):
@@ -1280,25 +1285,29 @@ class Preview:
         self.picks = self._open_picks(key)
         return True
 
+    def _sel_class(self):
+        """The engine class of the pick: it spells the words its knobs take."""
+        return type(self.sel) if self.sel is not None else None
+
     def _pick_slot(self, key):
         """The picker a property row shows, or None."""
         if key in ("model", "texture"):
             return key
-        if isinstance(key, tuple) and key[0] == "knob" and \
-                key[1] in api.PICKERS:
-            return key[1]
+        if isinstance(key, tuple) and key[0] == "knob":
+            name = key[1]
+            if name in api.PICKERS or api.enumerable(name, self._sel_class()):
+                return name
         return None
 
     def _open_picks(self, key):
-        """The names this row holds, in a panel below."""
+        """The names this row holds, in a panel below, and a way out."""
         slot = self._pick_slot(key)
         anchor = self.prop_fields.get(key) if slot else None
         if anchor is None or not self.shelf_rect.width:
             return None
-        words = api.choices(self.project, slot)
-        if not words:
-            return None
-        return widgets.Choices(words, anchor, self.shelf_rect).filter("")
+        words = api.choices(self.project, slot, self._sel_class())
+        return widgets.Choices(words, anchor, self.shelf_rect,
+                               add=True).filter("")
 
     def _picks_event(self, e):
         """The open list takes its own rows and arrows."""
@@ -1333,6 +1342,11 @@ class Preview:
         if self.grip is None or word is None:
             return False
         key, field = self.grip
+        if word == widgets.ADD_ROW:
+            # not a name: empty the field and leave the keyboard in it
+            field.set("")
+            self.app.status = f"type a {self._pick_label(key)} of your own"
+            return True
         field.set(word)
         self.set_property(key, field.text)
         self.grip = None
@@ -2234,7 +2248,8 @@ class Preview:
             self._draw_tip(surface)
             return
         game = self.game
-        game.screen.size = inner.size
+        # the HUD surface is the window the scene draws into this frame
+        screen = game.screen.fit(inner.size)
         passes = tuple(getattr(self.scene, "post", ())) or \
             tuple(self.project.post)
         # the scene's look chains its own shaders inside the render
@@ -2245,13 +2260,14 @@ class Preview:
         if frame.get_size() != inner.size:
             frame = pygame.transform.smoothscale(frame, inner.size)
         if self.hud:
-            game.screen.set_target(frame)
             try:
-                self.scene.overlay(frame)
+                self.scene.overlay(screen)
             except Exception as exc:
                 if not self._error_logged:
                     self.app.log(f"overlay failed: {exc}", "error")
                     self._error_logged = True
+            # whatever the overlay managed to paint still reaches the frame
+            frame.blit(screen, (0, 0))
         surface.blit(frame, inner.topleft)
         old = surface.get_clip()
         surface.set_clip(inner)
@@ -2687,10 +2703,20 @@ class Preview:
                     self.grip[1].draw(surface, field, small, True)
                 else:
                     xp.field(surface, field)
-                    img = widgets.cached_text(small, value, xp.TEXT)
+                    listed = self._pick_slot(key) is not None
+                    room = field.width - (16 if listed else 6)
+                    text = widgets.elide(small, value, max(10, room))
+                    img = widgets.cached_text(small, text, xp.TEXT)
                     if img is not None:
                         surface.blit(img, (field.x + 3, field.centery -
                                            img.get_height() // 2))
+                    if listed:
+                        # a row with a list says so, before it is opened
+                        ax = field.right - 8
+                        pygame.draw.polygon(surface, xp.TEXT_MUTED, (
+                            (ax - 4, field.centery - 2),
+                            (ax + 4, field.centery - 2),
+                            (ax, field.centery + 3)))
             y += PROP_ROW
         surface.set_clip(old)
 

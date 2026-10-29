@@ -297,9 +297,8 @@ class MediaPlayer:
             value = min(value, self.duration)
         return value
 
-    def _layout(self, rect):
+    def _layout(self, rect, head=22):
         self.rect = pygame.Rect(rect)
-        head = 22
         self.header = pygame.Rect(rect.x, rect.y, rect.width, head)
         body = pygame.Rect(rect.x, rect.y + head, rect.width,
                            rect.height - head)
@@ -324,14 +323,17 @@ class MediaPlayer:
             self.playlist.x, self.playlist_head.bottom, self.playlist.width,
             self.playlist.height - self.playlist_head.height)
 
-    def draw(self, surface, rect):
-        self._layout(rect)
+    def draw(self, surface, rect, head=22):
+        """Paint the player; `head` is 0 when the tab drew the header."""
+        self._layout(rect, head)
         pygame.draw.rect(surface, xp.FACE, self.rect)
         right = self.right
         self._poll_end()
-        widgets.header(surface, self.header, "Audio", self.fonts["normal"],
-                       right=f"{len(self.files)} files",
-                       icon="tab-audio-sym")
+        if head:
+            widgets.header(surface, self.header, "Audio",
+                           self.fonts["normal"],
+                           right=f"{len(self.files)} files",
+                           icon="tab-audio-sym")
         self._draw_playlist(surface)
         self._draw_info(surface, right)
         self._draw_wave(surface, self.wave_rect)

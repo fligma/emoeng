@@ -7,7 +7,7 @@ import time
 
 import pygame
 
-from ..engine import colors, scenedoc, xp
+from ..engine import colors, scenedoc, templates, xp
 from ..engine.loader import (OBJECT_PRESETS, SCENE_PRESETS, SHADER_PRESETS)
 
 _TEXT_CACHE = {}
@@ -290,6 +290,7 @@ FILE_ICONS = {
     ".ogg": "file-audio-sym",
     ".mp3": "file-audio-sym",
     ".flac": "file-audio-sym",
+    ".sfxproject": "file-audio-sym",
     ".flig": "file-flig-sym",
     ".json": "file-flig-sym",
     ".txt": "file-text-sym",
@@ -357,6 +358,8 @@ _ICON_COLORS = {
     ".ogg": ((150, 80, 160), "Sd"),
     ".mp3": ((150, 80, 160), "Sd"),
     ".flac": ((150, 80, 160), "Sd"),
+    # the pattern a wav is rendered from
+    ".sfxproject": ((110, 118, 190), "Sf"),
     ".flig": ((120, 96, 160), "Fl"),
     ".json": ((120, 96, 160), "Js"),
     ".txt": ((120, 120, 110), "Tx"),
@@ -605,6 +608,10 @@ class TextField:
         return rect
 
 
+# the row under a list that hands the field back to the keyboard
+ADD_ROW = "+ add custom..."
+
+
 class Choices:
     """The list under a field: words it can take."""
 
@@ -612,15 +619,21 @@ class Choices:
     MAX_ROWS = 9
     WIDE = 170
 
-    def __init__(self, words, anchor, bounds):
+    def __init__(self, words, anchor, bounds, add=False, add_label=None):
         self.all = [str(word) for word in words]
         self.anchor = pygame.Rect(anchor)
         self.bounds = pygame.Rect(bounds)
         self.words = list(self.all)
+        self.add = bool(add)
+        self.add_label = str(add_label or ADD_ROW)
         self.hidden = 0
-        self.sel = 0 if self.words else -1
+        self.sel = 0 if self.words or self.add else -1
         self.rows = []
         self.rect = pygame.Rect(0, 0, 0, 0)
+
+    def rows_of(self):
+        """How many clickable lines the panel has, the add row included."""
+        return len(self.words) + (1 if self.add else 0)
 
     def filter(self, text):
         """Keep the words matching what has been typed so far."""
@@ -633,19 +646,22 @@ class Choices:
             got = head + rest
         self.words = got[:self.MAX_ROWS]
         self.hidden = len(got) - len(self.words)
-        self.sel = 0 if self.words else -1
+        self.sel = 0 if self.rows_of() else -1
         return self
 
     def step(self, delta):
         """Move the highlight, wrapping round the list."""
-        if self.words:
-            self.sel = (self.sel + delta) % len(self.words)
+        total = self.rows_of()
+        if total:
+            self.sel = (self.sel + delta) % total
         return self.current()
 
     def current(self):
         """The highlighted word, or None while the list is empty."""
         if 0 <= self.sel < len(self.words):
             return self.words[self.sel]
+        if self.add and self.sel == len(self.words):
+            return ADD_ROW
         return None
 
     def click(self, pos):
@@ -661,11 +677,13 @@ class Choices:
 
     def _place(self, font):
         """The panel's box: under the field unless it overflows."""
-        rows = max(1, len(self.words) + (1 if self.hidden else 0))
+        rows = max(1, self.rows_of() + (1 if self.hidden else 0))
         wide = self.WIDE
         if font is not None and self.words:
             wide = max(wide, max(font.size(word)[0] for word in
                                  self.words) + 22)
+        if font is not None and self.add:
+            wide = max(wide, font.size(self.add_label)[0] + 22)
         wide = max(80, min(wide, max(80, self.bounds.width - 4)))
         tall = rows * self.ROW_H + 6
         x = max(self.bounds.x + 1,
@@ -682,7 +700,7 @@ class Choices:
         pygame.draw.rect(surface, xp.OUTLINE, self.rect, 1)
         mouse = pygame.mouse.get_pos()
         self.rows = []
-        if not self.words:
+        if not self.rows_of():
             img = cached_text(font, "nothing matches", xp.TEXT_MUTED)
             if img is not None:
                 surface.blit(img, (self.rect.x + 6,
@@ -704,6 +722,24 @@ class Choices:
                                    row.centery - img.get_height() // 2))
             self.rows.append((word, row))
             y += self.ROW_H
+        if self.add:
+            # the last line is not a name: it gives the field its keyboard
+            row = pygame.Rect(self.rect.x + 2, y, self.rect.width - 4,
+                              self.ROW_H)
+            pygame.draw.line(surface, xp.OUTLINE, (row.x, row.y - 1),
+                             (row.right, row.y - 1))
+            chosen = self.sel == len(self.words)
+            if chosen:
+                surface.fill(xp.SELECTION, row)
+            elif row.collidepoint(mouse):
+                surface.fill(xp.BTN_HOVER_BG, row)
+            img = cached_text(font, self.add_label,
+                              xp.SELECT_TEXT if chosen else xp.LINK)
+            if img is not None:
+                surface.blit(img, (row.x + 5,
+                                   row.centery - img.get_height() // 2))
+            self.rows.append((ADD_ROW, row))
+            y += self.ROW_H
         if self.hidden:
             img = cached_text(font, f"+{self.hidden} more", xp.TEXT_MUTED)
             if img is not None:
@@ -714,56 +750,19 @@ class Choices:
 class PromptDialog:
     """One-field XP dialog: New Scene, New Model, Rename..."""
 
-    PICK_W = 168
-
     def __init__(self, title, label, value="", on_ok=None, width=400,
-                 hint=None, choices=None, choice_label="Template",
-                 choice=None):
+                 hint=None):
         self.title = title
         self.label = label
         self.hint = hint
         self.field = TextField(value)
-        self.choices = [(str(v), str(t)) for v, t in (choices or ())]
-        self.choice_label = choice_label
-        values = [v for v, _t in self.choices]
-        self.choice = choice if choice in values else \
-            (values[0] if values else None)
         self.on_ok = on_ok
         self.width = width
         height = 150 if not hint else 172
-        if self.choices:
-            height += 32
         self.rect = pygame.Rect(0, 0, width, height)
         self.ok = pygame.Rect(0, 0, 86, 26)
         self.cancel = pygame.Rect(0, 0, 86, 26)
-        self.pick = pygame.Rect(0, 0, self.PICK_W, 24)
         self.focus = True
-
-    @property
-    def answer(self):
-        """The two answers as one payload, or None."""
-        if not self.choices:
-            return None
-        return {"name": self.field.text, "choice": self.choice}
-
-    def choice_text(self):
-        """The label of the option currently on show."""
-        for value, text in self.choices:
-            if value == self.choice:
-                return text
-        return ""
-
-    def cycle(self):
-        """Step the chooser on to the next option."""
-        if not self.choices:
-            return None
-        values = [v for v, _t in self.choices]
-        try:
-            i = values.index(self.choice)
-        except ValueError:
-            i = -1
-        self.choice = values[(i + 1) % len(values)]
-        return self.choice
 
     def _layout(self, size):
         self.rect.center = (size[0] // 2, size[1] // 2)
@@ -785,16 +784,6 @@ class PromptDialog:
         self.field.draw(surf, field, fonts["normal"], self.focus)
         y = field.bottom
         mouse = pygame.mouse.get_pos()
-        if self.choices:
-            # the second answer: label left, one stepping button right
-            self.pick = pygame.Rect(field.right - self.PICK_W,
-                                    field.bottom + 8, self.PICK_W, 24)
-            surf.blit(cached_text(fonts["normal"], self.choice_label,
-                                  xp.TEXT),
-                      (body.x + 16, self.pick.y + 4))
-            xp.button(surf, self.pick, self.choice_text(), fonts["normal"],
-                      hovered=self.pick.collidepoint(mouse))
-            y = self.pick.bottom
         if self.hint:
             img = cached_text(fonts["small"], self.hint, xp.TEXT_MUTED)
             surf.blit(img, (body.x + 16, y + 10))
@@ -817,9 +806,224 @@ class PromptDialog:
                 return "ok"
             if self.cancel.collidepoint(e.pos):
                 return "cancel"
-            if self.choices and self.pick.collidepoint(e.pos):
-                self.cycle()
         return None
+
+
+# how a document kind reads in the starter picker
+STARTER_KINDS = {"scene3d": "3D", "scene2d": "2D", "sceneui": "UI"}
+
+
+class NewProjectDialog:
+    """New Project: the starters on the left, the picked one on the right.
+
+    The list is the engine's own `templates.PROJECTS`, grouped by each
+    starter's `group` word; the panel spells out what the picked one
+    writes, so a choice is made by reading rather than by trial.
+    """
+
+    CAP_H = 28
+    ROW_H = 21
+    FIELD_H = 24
+    BTN_H = 26
+    LIST_W = 178
+    PANEL_H = 214
+
+    def __init__(self, title="New Project", value="my_game", width=620):
+        self.title = title
+        self.width = width
+        self.field = TextField(value)
+        self.selected = templates.DEFAULT_TEMPLATE
+        self.rows = []                 # [(kind, key)] with group headings
+        self.row_rects = []            # [(kind, key, rect)] drawn live
+        self.rect = pygame.Rect(0, 0, width, 380)
+        self.list_rect = pygame.Rect(0, 0, self.LIST_W, 100)
+        self.panel_rect = pygame.Rect(0, 0, 100, 100)
+        self.field_rect = pygame.Rect(0, 0, 100, self.FIELD_H)
+        self.ok = pygame.Rect(0, 0, 86, self.BTN_H)
+        self.cancel = pygame.Rect(0, 0, 86, self.BTN_H)
+        self.close_rect = pygame.Rect(0, 0, 0, 0)
+        self.answer = None
+        self._group_rows()
+
+    def _group_rows(self):
+        """[(kind, key)]: a heading before each group of starters."""
+        out, last = [], None
+        for key in templates.template_names():
+            group = str(templates.spec(key).get("group") or "")
+            if group != last:
+                out.append(("head", group))
+                last = group
+            out.append(("item", key))
+        self.rows = out
+        return out
+
+    def _keys(self):
+        """The starter keys in list order, headings left out."""
+        return [key for kind, key in self.rows if kind == "item"]
+
+    def step(self, delta):
+        """Move the pick by one starter."""
+        keys = self._keys()
+        if not keys:
+            return self.selected
+        index = keys.index(self.selected) \
+            if self.selected in keys else 0
+        self.selected = keys[max(0, min(len(keys) - 1, index + delta))]
+        return self.selected
+
+    @staticmethod
+    def _lines(key):
+        """What a starter writes, as (label, value) pairs."""
+        got = templates.spec(key)
+        scenes = ", ".join(
+            f"{name} ({STARTER_KINDS.get(kind, kind)})"
+            for name, kind, _src, _places in got["scenes"])
+        out = [("Window", f"{got['size'][0]} x {got['size'][1]}"),
+               ("Scenes", scenes)]
+        objects = ", ".join(name for name, _k, _s, _n in got["objects"])
+        if objects:
+            out.append(("Objects", objects))
+        for label, name in (("Models", "models"), ("Maps", "maps")):
+            stems = got.get(name) or ()
+            if stems:
+                out.append((label, ", ".join(stems)))
+        return out
+
+    def _layout(self, size):
+        list_h = len(self.rows) * self.ROW_H + 8
+        body_h = max(list_h, self.PANEL_H)
+        height = self.CAP_H + 12 + body_h + 12 + self.FIELD_H + 34 \
+            + self.BTN_H + 14
+        self.rect = pygame.Rect(0, 0, self.width, height)
+        self.rect.center = (size[0] // 2, size[1] // 2)
+        body = pygame.Rect(self.rect.x + 1, self.rect.y + self.CAP_H,
+                           self.rect.width - 2,
+                           self.rect.height - self.CAP_H - 1)
+        self.list_rect = pygame.Rect(body.x + 12, body.y + 10,
+                                     self.LIST_W, list_h)
+        px = self.list_rect.right + 12
+        self.panel_rect = pygame.Rect(px, body.y + 10,
+                                      body.right - 12 - px, body_h)
+        self.field_rect = pygame.Rect(px, self.panel_rect.bottom + 26,
+                                      self.panel_rect.width, self.FIELD_H)
+        bottom = self.rect.bottom - 14
+        self.ok.bottomright = (body.right - 12, bottom)
+        self.cancel.bottomright = (self.ok.x - 8, bottom)
+        return body
+
+    def draw(self, surf, fonts):
+        body = self._layout(surf.get_size())
+        dim = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 110))
+        surf.blit(dim, (0, 0))
+        _body, close = xp.message_frame(surf, self.rect, self.title,
+                                        fonts["normal"])
+        self.close_rect = close
+        mouse = pygame.mouse.get_pos()
+        xp.field(surf, self.list_rect)
+        self.row_rects = []
+        y = self.list_rect.y + 3
+        for kind, key in self.rows:
+            row = pygame.Rect(self.list_rect.x + 2, y,
+                              self.list_rect.width - 4, self.ROW_H)
+            self.row_rects.append((kind, key, row))
+            if kind == "head":
+                img = cached_text(fonts["small"], key.upper(), xp.TEXT_MUTED)
+                if img is not None:
+                    surf.blit(img, (row.x + 6, row.y + 6))
+            else:
+                lit = key == self.selected
+                if lit:
+                    surf.fill(xp.SELECTION, row)
+                elif row.collidepoint(mouse):
+                    surf.fill(xp.BTN_HOVER_BG, row)
+                ink = xp.SELECT_TEXT if lit else xp.TEXT
+                label = str(templates.spec(key)["title"])
+                img = cached_text(fonts["normal"],
+                                  elide(fonts["normal"], label,
+                                        row.width - 12), ink)
+                if img is not None:
+                    surf.blit(img, (row.x + 8,
+                                    row.centery - img.get_height() // 2))
+            y += self.ROW_H
+        got = templates.spec(self.selected)
+        heading = cached_text(fonts["bold"], got["title"], xp.LINK)
+        if heading is not None:
+            surf.blit(heading, (self.panel_rect.x, self.panel_rect.y))
+        y = self.panel_rect.y + heading.get_height() + 6 \
+            if heading is not None else self.panel_rect.y
+        for line in wrap(fonts["small"], got["hint"],
+                         self.panel_rect.width):
+            img = cached_text(fonts["small"], line, xp.TEXT_MUTED)
+            if img is not None:
+                surf.blit(img, (self.panel_rect.x, y))
+            y += img.get_height() + 2 if img is not None else 12
+        y += 8
+        for label, value in self._lines(self.selected):
+            tag = cached_text(fonts["small"], label, xp.TEXT_MUTED)
+            if tag is not None:
+                surf.blit(tag, (self.panel_rect.x, y + 1))
+            lines = wrap(fonts["small"], value,
+                         self.panel_rect.width - 74)
+            for i, line in enumerate(lines[:3]):
+                img = cached_text(fonts["small"], line, xp.TEXT)
+                if img is not None:
+                    surf.blit(img, (self.panel_rect.x + 74, y))
+                y += img.get_height() + 2 if img is not None else 12
+            y += 3
+        tag = cached_text(fonts["small"], "Project folder name",
+                          xp.TEXT_MUTED)
+        if tag is not None:
+            surf.blit(tag, (self.field_rect.x, self.field_rect.y - 13))
+        self.field.draw(surf, self.field_rect, fonts["normal"], True)
+        room = self.cancel.x - 12 - body.x - 12
+        if room > 60:
+            hint = "The starter writes its scenes, scripts and window " \
+                   "into the new folder"
+            img = cached_text(fonts["small"],
+                              elide(fonts["small"], hint, room),
+                              xp.TEXT_MUTED)
+            if img is not None:
+                surf.blit(img, (body.x + 12,
+                                self.ok.centery - img.get_height() // 2))
+        xp.button(surf, self.ok, "Create", fonts["normal"], default=True,
+                  hovered=self.ok.collidepoint(mouse))
+        xp.button(surf, self.cancel, "Cancel", fonts["normal"],
+                  hovered=self.cancel.collidepoint(mouse))
+        return body
+
+    def handle(self, e):
+        """Return "ok" once Create is pressed; `answer` holds the payload."""
+        if e.type == pygame.KEYDOWN:
+            if e.key == pygame.K_ESCAPE:
+                return "cancel"
+            if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                return self._commit()
+            if e.key in (pygame.K_UP, pygame.K_DOWN):
+                self.step(-1 if e.key == pygame.K_UP else 1)
+                return None
+            self.field.handle(e)
+            return None
+        if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+            for kind, key, rect in self.row_rects:
+                if kind == "item" and rect.collidepoint(e.pos):
+                    self.selected = key
+                    return None
+            if self.ok.collidepoint(e.pos):
+                return self._commit()
+            if self.cancel.collidepoint(e.pos) or \
+                    self.close_rect.collidepoint(e.pos):
+                return "cancel"
+            if not self.rect.collidepoint(e.pos):
+                return "cancel"
+        return None
+
+    def _commit(self):
+        name = (self.field.text or "").strip()
+        if not name:
+            return None
+        self.answer = {"name": name, "choice": self.selected}
+        return "ok"
 
 
 # bare asset kinds offered beside presets, with stems

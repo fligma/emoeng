@@ -6,7 +6,7 @@ from pathlib import Path
 import pygame
 
 from ..engine import scenedoc, xp
-from . import widgets
+from . import api, widgets
 
 STRIP_H = 22           # the open-document tab row inside the tab
 TOOL_H = 26            # the Add / Scene / Save toolbar
@@ -559,8 +559,13 @@ class DocTab:
                 for i, ax in enumerate("wh"):
                     rows.append((f"size {ax}", fmt(size[i]),
                                  ("entry", "size", i), "num", None))
-        # the look it can name
-        for field in ("model", "texture", "color", "showing"):
+        # the look it can name: a folder list, or a name of your own
+        for field in ("model", "texture"):
+            if field in entry:
+                rows.append((field, fmt(entry[field]),
+                             ("entry", field), "pick",
+                             list(api.choices(self.project, field))))
+        for field in ("color", "showing"):
             if field in entry:
                 rows.append((field, fmt(entry[field]),
                              ("entry", field), "text", None))
@@ -583,10 +588,10 @@ class DocTab:
                 default = getattr(cls, name, None)
                 defaults[name] = default
                 options = None
-                if name == "shape":
-                    options = (["point", "spot", "directional"]
-                               if tname in ("light3d", "light2d")
-                               else ["box", "sphere", "capsule"])
+                words = api.enum_for(name, cls)
+                if words:
+                    # what the class itself spells: shape, blend, hitbox_shape
+                    options = list(words)
                 kind = _kind_of(default) if default is not None else "text"
                 if options:
                     kind = "enum"
@@ -778,10 +783,12 @@ class DocTab:
             value = not self._bool_value(spec)
             self.set_field(spec, value)
             return True
-        if kind == "enum":
+        if kind in ("enum", "pick"):
+            items = [(opt, _opt_label(opt)) for opt in (row[4] or [])]
+            if kind == "pick":
+                items.append(("__custom__", widgets.ADD_ROW))
             self.popup = {"x": rect.x, "y": rect.bottom,
-                          "items": [(opt, _opt_label(opt))
-                                    for opt in (row[4] or [])],
+                          "items": items,
                           "target": spec, "tab": self.active}
             return True
         if kind == "maps":
@@ -888,6 +895,10 @@ class DocTab:
             target = self.popup.get("target")
             self.popup = None
             if hit is not None:
+                if hit == "__custom__" and target is not None:
+                    # not a name: give the row its keyboard back
+                    self.grip = (target, widgets.TextField("", 256))
+                    return True
                 if target is not None:
                     self.set_field(target, hit)
                 else:
@@ -1240,15 +1251,28 @@ class DocTab:
                                 field.centery - text.get_height() // 2))
 
     def _draw_popup(self, surface):
-        rows = self.popup["items"]
+        """The list under a field: it fits the window, and flips up."""
+        small = self.fonts["small"]
+        items = list(self.popup["items"])
+        step = small.get_height() + 8
+        room = max(2, (surface.get_height() - 16) // step - 1)
+        if len(items) > room:
+            # the window is the limit: the tail waits for a taller page
+            items = items[:room] + [(None, f"+{len(items) - room} more")]
+        tall = 4 + sum(6 if not label else step for _action, label in items)
         wide = 180
         # the panel is a guest: keep it in the window
         x = max(0, min(self.popup["x"], surface.get_width() - wide - 6))
-        y = max(0, min(self.popup["y"], surface.get_height() - 30))
+        y = self.popup["y"]
+        if y + tall > surface.get_height() - 4:
+            # a field low on the page opens its list upwards instead
+            field = self.prop_fields.get(self.popup.get("target"))
+            above = (field.top if field is not None else y) - tall - 2
+            y = max(2, above)
         panel, rects = xp.menu_items(surface, (x, y),
                                      [(label or "-", bool(label))
-                                      for _action, label in rows],
-                                     self.fonts["small"], width=wide)
+                                      for _action, label in items],
+                                     small, width=wide)
         self.popup_rows = [(action, rect)
-                           for (action, _label), rect in zip(rows, rects)
+                           for (action, _label), rect in zip(items, rects)
                            if rect is not None and action is not None]

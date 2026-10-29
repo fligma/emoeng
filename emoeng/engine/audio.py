@@ -41,12 +41,29 @@ class Audio:
         return snd
 
     def load_folder(self, folder, gain=1.0):
-        """Load a folder's audio files, keyed by stem."""
+        """Load a folder's audio files, keyed by stem.
+
+        A `.sfxproject` is rendered here instead of read: the document is
+        the source the editor keeps, and a build turns it into a wav.
+        """
         out = []
         folder = Path(folder)
         if not folder.is_dir():
             return out
+        from . import sfx
         for p in sorted(folder.iterdir()):
+            if p.suffix.lower() == sfx.SFX_EXT:
+                if not self.ok:
+                    continue
+                try:
+                    snd = sfx.sound(p, audio_dir=folder, settings=self.settings)
+                except (OSError, ValueError, pygame.error):
+                    snd = None
+                if snd is not None:
+                    self.add_sound(p.stem, snd)
+                    self.set_gain(p.stem, gain)
+                    out.append(p.stem)
+                continue
             if p.suffix.lower() in AUDIO_EXT:
                 if self.load(p.stem, p, gain=gain) is not None:
                     out.append(p.stem)

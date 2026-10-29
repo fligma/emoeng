@@ -14,12 +14,13 @@ LABEL_W = 184
 READ_W = 68
 RAIL_W = 104
 
-# the rail, in order; `input` is the keybind table, not a form
+# the rail, in order; `input` is the one keybind table, not a form
 SECTIONS = ("game", "window", "render", "audio", "save", "debug",
-            "input", "inputmapper", "pausetrigger", "defaults")
+            "input", "pausetrigger", "defaults")
 TITLES = {"game": "Game", "window": "Window", "render": "Render",
           "audio": "Audio", "save": "Save", "debug": "Debug",
-          "input": "Keybinds", "inputmapper": "Input Mapper", "pausetrigger": "Pause Trigger", "defaults": "Scene defaults"}
+          "input": "Input Map", "pausetrigger": "Pause Trigger",
+          "defaults": "Scene defaults"}
 BLURBS = {
     "game": "Who the project is and where it starts. These keys stay at the "
             "top of project.flig.",
@@ -33,10 +34,10 @@ BLURBS = {
             "whether booting loads it back.",
     "debug": "What the running game shows: the frame counter, the controls "
              "panel, and whether scenes may draw an overlay at all.",
-    "input": "Named inputs in one table. Actions are polled every frame; "
-             "a trigger's press broadcasts its name to the scene.",
-    "inputmapper": "Map named inputs to events and code. Connect triggers "
-                   "to actions, then assign scripts to run on those events.",
+    "input": "One table for every key in the game. Actions are polled every "
+             "frame; a trigger's press broadcasts its name to the scene. It "
+             "says where each binding comes from, and what the player's own "
+             "config does to it.",
     "pausetrigger": "How the game pauses: mode 1 shows the engine pause menu, "
                     "mode 2 switches to a pause scene, mode 3 runs a pause script.",
     "defaults": "The starting values every scene is built with, put on the "
@@ -55,10 +56,6 @@ PAUSETRIGGER = (
     ("mode", "Pause mode", "choice", "1=engine pause menu, 2=pause scene, 3=pause script"),
     ("scene", "Pause scene", "scene", "Scene to switch to when mode=2"),
     ("script", "Pause script", "text", "Script to run when mode=3 (in scripts/)"),
-)
-INPUTMAPPER = (
-    ("enabled", "Enable input mapper", "bool", "Turn on custom input-to-event mapping"),
-    ("map_file", "Mapping file", "text", "JSON file in project root for input mappings (input.map.json)"),
 )
 WINDOW = (
     ("size", "Window size", "pair", "Width and height, in pixels"),
@@ -189,7 +186,7 @@ def _default_rows():
 
 SECTION_ROWS = {
     "game": GAME, "window": WINDOW, "render": RENDER, "audio": AUDIO,
-    "save": SAVE, "debug": DEBUG, "inputmapper": INPUTMAPPER,
+    "save": SAVE, "debug": DEBUG,
     "pausetrigger": PAUSETRIGGER, "defaults": _default_rows(),
 }
 
@@ -225,6 +222,7 @@ class ProjectTab:
         self.rail_rects = []
         self.minus_rects = []      # (name, rect) trigger removes
         self.keys_rects = []       # (band, name, rect) binding cells
+        self.deadzone_rect = pygame.Rect(0, 0, 0, 0)   # the tuning row
         self.buttons = {}
         self.area = pygame.Rect(0, 0, 0, 0)
         self.list_rect = pygame.Rect(0, 0, 0, 0)
@@ -365,12 +363,15 @@ class ProjectTab:
         """Two bands of (name, keys, what, note) for the keybind table.
 
         The engine's own actions head the first band, so the table always
-        shows what a player can rebind, project-declared or not.
+        shows what a player can rebind, project-declared or not. Each row
+        also names where its keys came from, and whether the scene running
+        in the preview has rebound it since.
         """
         mapping = self.stage()
         clashes = {}
         for token, names in mapping.conflicts():
             clashes[token] = list(names)
+        seen = self.scene_binds()
         out = []
         for band, trigger in (("actions", False), ("triggers", True)):
             rows = []
@@ -387,9 +388,68 @@ class ProjectTab:
                 rows.append({"name": name, "keys": keys, "what": what,
                              "note": (f"{settingstab.binding_label(shared)} "
                                       f"is shared" if shared else ""),
-                             "here": info["here"], "band": band})
+                             "here": info["here"], "band": band,
+                             "source": mapping.source(name),
+                             "scene": seen.get(name, "")})
             out.append((band, rows))
         return out
+
+    def scene_binds(self):
+        """What the scene in the preview rebound at load: name -> its name."""
+        scene = getattr(getattr(self.app, "preview", None), "scene", None)
+        if scene is None:
+            return {}
+        label = str(getattr(scene, "name", "") or "script")
+        return {name: label for name, keys in
+                (getattr(scene, "binds", None) or {}).items() if keys}
+
+    def take_player_keys(self):
+        """Copy the player's own rebinds into the staged table.
+
+        The Settings tab edits the config one machine at a time; this keeps
+        one table as the project's, and takes what a player changed only
+        when asked.
+        """
+        mapping = self.stage()
+        player = inputmap.config_table()
+        engine = inputmap.engine_table()
+        taken = 0
+        for name, keys in player.items():
+            if not keys or keys == engine.get(name):
+                continue
+            mapping.set_keys(name, keys, trigger=mapping.is_trigger(name))
+            taken += 1
+        if not taken:
+            self.app.status = "the player config matches the engine"
+            self.app.log("nothing in the player config to take", "muted")
+            return False
+        self.map_dirty = True
+        self.app.status = f"{taken} player binding(s) staged"
+        self.app.log(f"took {taken} binding(s) from the player config; "
+                     "press Save to write them", "ok")
+        return True
+
+    def edit_deadzone(self):
+        """One number for the whole table: how far a stick must travel."""
+        mapping = self.stage()
+        self.app.dialog_kind = "project:deadzone"
+        self.app.dialog = widgets.PromptDialog(
+            "Stick deadzone", "Value 0-1", f"{mapping.deadzone:.2f}",
+            width=400, hint="How far a stick travels before an axis counts "
+                            "as pressed. The engine uses 0.35.")
+
+    def set_deadzone(self, text):
+        """Write the typed deadzone into the staged map."""
+        try:
+            value = float(str(text).strip())
+        except (TypeError, ValueError):
+            self.app.log("the deadzone has to be a number", "warn")
+            return False
+        value = max(0.0, min(0.95, value))
+        self.stage().set_tuning("deadzone", value)
+        self.map_dirty = True
+        self.app.status = f"deadzone {value:.2f}"
+        return True
 
     # -- writing ---------------------------------------------------------
     def save(self):
@@ -556,6 +616,9 @@ class ProjectTab:
 
     def _press_bind(self, pos):
         """A binding cell arms a capture; a minus sign drops a trigger."""
+        if self.deadzone_rect.collidepoint(pos):
+            self.edit_deadzone()
+            return True
         for name, rect in self.minus_rects:
             if rect.collidepoint(pos):
                 self.drop_binding("triggers", name)
@@ -664,6 +727,9 @@ class ProjectTab:
         if kind == "trigger":
             self.add_trigger(text)
             return True
+        if kind == "deadzone":
+            self.set_deadzone(text)
+            return True
         return False
 
     def parse(self, row, text):
@@ -765,6 +831,10 @@ class ProjectTab:
                 "New trigger", "Name", "toggle_spot", width=400,
                 hint="A trigger is a named input: press its key and every "
                      "scene and object with on_trigger hears that name.")
+        elif name == "player":
+            self.take_player_keys()
+        elif name == "deadzone":
+            self.edit_deadzone()
         elif name == "reset":
             self.reset_keys()
 
@@ -822,7 +892,8 @@ class ProjectTab:
         fonts = self.app.fonts
         specs = [("save", "Save", True), ("revert", "Revert", False)]
         if self.section == "input":
-            specs += [("add", "+ Trigger", False), ("reset", "Reset", False)]
+            specs += [("add", "+ Trigger", False), ("player", "Player", False),
+                      ("reset", "Reset", False)]
         x = bar.x
         mouse = pygame.mouse.get_pos()
         self.buttons = {}
@@ -844,7 +915,7 @@ class ProjectTab:
         if self.dirty:
             parts.append("manifest values changed")
         if self.map_dirty:
-            parts.append("keybinds changed")
+            parts.append("input map changed")
         return "; ".join(parts)
 
     def _draw_rail(self, surface, rect):
@@ -945,7 +1016,7 @@ class ProjectTab:
         """One table, two bands: actions then triggers."""
         fonts = self.app.fonts
         head = pygame.Rect(rect.x, rect.y, rect.width, self.head_h - 4)
-        widgets.header(surface, head, "Keybinds", fonts["small"],
+        widgets.header(surface, head, TITLES[self.section], fonts["small"],
                        right="press a cell, then a control")
         panel = pygame.Rect(rect.x, head.bottom + 2, rect.width,
                             rect.height - head.height - 4)
@@ -953,7 +1024,8 @@ class ProjectTab:
         xp.sunken(surface, panel)
         inner = panel.inflate(-6, -6)
         bands = self.bind_rows()
-        content = sum(len(rows) + 1 for _b, rows in bands) * self.row_h
+        content = sum(len(rows) + 1 for _b, rows in bands) * self.row_h \
+            + self.row_h
         self.scroll = min(self.scroll, max(0, content - inner.height))
         mouse = pygame.mouse.get_pos()
         name_w = max(90, int(inner.width * 0.26))
@@ -972,6 +1044,11 @@ class ProjectTab:
                     self._bind_row(surface, cell, info, name_w, keys_w,
                                    mouse)
                 y += self.row_h
+        footer = pygame.Rect(inner.x, y, inner.width, self.row_h)
+        if footer.bottom > inner.y and footer.y < inner.bottom:
+            self._deadzone_row(surface, footer, fonts, mouse)
+        else:
+            self.deadzone_rect = pygame.Rect(0, 0, 0, 0)
         surface.set_clip(old)
         if content > inner.height:
             xp.scrollbar(surface, pygame.Rect(panel.right - 13, panel.y + 2,
@@ -1030,8 +1107,15 @@ class ProjectTab:
                                   xp.LINK if grabbing else xp.TEXT),
                 (keys.x + 4, cy - img.get_height() // 2))
         self.keys_rects.append((info["band"], name, keys))
-        what = info["what"] if not info["note"] else \
-            f"{info['what']} - {info['note']}"
+        bits = [info["what"], info["source"]]
+        if info["scene"]:
+            bits.append(f"{info['scene']} rebinds it")
+        if info["note"]:
+            bits.append(info["note"])
+        what = " - ".join(bits)
+        room = max(20, cell.right - keys.right - 12)
+        if fonts["small"].size(what)[0] > room:
+            what = widgets.elide(fonts["small"], what, room)
         img = widgets.cached_text(fonts["small"], what,
                                   xp.LOG_WARN if info["note"]
                                   else xp.TEXT_MUTED)
@@ -1039,6 +1123,30 @@ class ProjectTab:
             surface.blit(img, (keys.right + 8, cy - img.get_height() // 2))
         if hovered:
             pygame.draw.rect(surface, xp.SELECT_BORDER, cell, 1)
+
+    def _deadzone_row(self, surface, cell, fonts, mouse):
+        """The one number the table shares, under both bands."""
+        hovered = cell.collidepoint(mouse)
+        if hovered:
+            pygame.draw.rect(surface, xp.CARD_BG, cell)
+        cy = cell.centery
+        img = widgets.cached_text(fonts["small"], "Stick deadzone",
+                                  xp.TEXT_MUTED)
+        surface.blit(img, (cell.x + 6, cy - img.get_height() // 2))
+        box = pygame.Rect(cell.x + max(96, int(cell.width * 0.26)),
+                          cell.y + 3, 66, cell.height - 6)
+        if hovered:
+            xp.field(surface, box)
+        img = widgets.cached_text(fonts["small"],
+                                  f"{self.stage().deadzone:.2f}", xp.TEXT)
+        surface.blit(img, (box.x + 6, cy - img.get_height() // 2))
+        note = "how far a stick travels before an axis counts pressed"
+        room = cell.right - box.right - 12
+        if fonts["small"].size(note)[0] > room:
+            note = widgets.elide(fonts["small"], note, max(20, room))
+        img = widgets.cached_text(fonts["small"], note, xp.TEXT_MUTED)
+        surface.blit(img, (box.right + 8, cy - img.get_height() // 2))
+        self.deadzone_rect = cell
 
     def _draw_side(self, surface):
         fonts = self.app.fonts
@@ -1079,7 +1187,9 @@ class ProjectTab:
                 "notch or pad control. Shift and a second control adds "
                 "another. Right-click a cell to clear it, and the minus "
                 "takes a trigger out. A shared control is noted, not "
-                "refused." if self.section == "input" else
+                "refused. The tail of a row says where its keys came from: "
+                "the project, the player's own config, or the engine."
+                if self.section == "input" else
                 "Click a switch to toggle it, a colour to pick it, a name "
                 "to choose it, a value to type it. Right-click puts a "
                 "value back the way the engine has it.")

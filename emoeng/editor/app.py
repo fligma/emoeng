@@ -1,5 +1,6 @@
 """The Motion Engine editor:"""
 
+import gc
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import pygame
 
 from .. import CODENAME, __version__, const
 from ..engine import (config, input as inputmod, model as modelmod,
-                      paths, player as playermod, scenedoc, shaders,
+                      paths, player as playermod, scenedoc, sfx, shaders,
                       templates, theme, ui, xp)
 from ..engine.audio import Audio
 from ..engine.game import boot_pygame, startup_help
@@ -25,13 +26,14 @@ from ..engine.loader import (META_NAME, INPUT_NAME, ASSET_NAME,
 from ..engine.winchrome import WindowChrome, caption_buttons
 from . import importer, mediaplayer, widgets
 from .assets import AssetBrowser
+from .audiotab import AudioTab
 from .blocktab import BlockTab
 from .buildtab import BuildTab
 from .codeeditor import CodeEditor
 from .doctab import DocTab
 from .docstab import DocsTab
-from .mediaplayer import MediaPlayer
 from .modeleditor import ModelEditor
+from .pixeleditor import PixelEditor
 from .preview import Preview
 from .projectmanager import ProjectManager
 from .projecttab import ProjectTab
@@ -49,18 +51,20 @@ MIN_INSPECT_W = 170
 MIN_WORK_W = 320        # room a tab's own toolbar has to keep
 OUT_H = 132
 MENU_LABELS = ("File", "Edit", "View", "Project", "Help")
-TAB_SCENE, TAB_DOC, TAB_CODE, TAB_BLOCKS, TAB_MODEL, TAB_ASSETS, \
-    TAB_AUDIO, TAB_BUILD, TAB_DOCS, TAB_SETTINGS, TAB_PROJECT = range(11)
-TAB_LABELS = ("Scene", "Document", "Code", "Blocks", "Model", "Assets",
-              "Audio", "Build", "Docs", "Settings", "Project")
+TAB_SCENE, TAB_DOC, TAB_CODE, TAB_BLOCKS, TAB_MODEL, TAB_PIXEL, \
+    TAB_ASSETS, TAB_AUDIO, TAB_BUILD, TAB_DOCS, TAB_SETTINGS, \
+    TAB_PROJECT = range(12)
+TAB_LABELS = ("Scene", "Document", "Code", "Blocks", "Model", "Pixel",
+              "Assets", "Audio", "Build", "Docs", "Settings", "Project")
 TAB_TIPS = (
     "Preview and edit the active scene.",
     "Edit the selected scene or object document.",
     "Edit Python source files.",
     "Build gameplay logic with visual blocks.",
     "Edit and inspect 3D and 2D models.",
+    "Paint a picture on layers; saving flattens them into a PNG.",
     "Browse and preview project assets.",
-    "Preview, trim, and organize audio.",
+    "Play a wav, or write a pattern in the maker.",
     "Configure and run a distributable build.",
     "Browse the engine guides and API reference.",
     "Edit engine and project settings.",
@@ -68,11 +72,13 @@ TAB_TIPS = (
 )
 # one picture per tab, in TAB_* order
 TAB_ICONS = ("tab-scene-sym", "file-object-3d", "tab-code-sym", "block-sym",
-             "tab-model-sym", "tab-assets-sym", "tab-audio-sym",
-             "tab-build-sym", "tab-docs-sym", "settings-sym", "settings-sym")
+             "tab-model-sym", "file-image-sym", "tab-assets-sym",
+             "tab-audio-sym", "tab-build-sym", "tab-docs-sym",
+             "settings-sym", "settings-sym")
 # which tab holds an editable document and its state
 _DIRTY_TABS = ((TAB_DOC, "doctab"), (TAB_CODE, "code"),
-               (TAB_BLOCKS, "blocks"), (TAB_MODEL, "model"))
+               (TAB_BLOCKS, "blocks"), (TAB_MODEL, "model"),
+               (TAB_PIXEL, "pixel"), (TAB_AUDIO, "media"))
 # Run lives in the tab strip, not a menu
 RUN_ICON = "play-sym"
 FOLDERS = ("scenes", "objects", "entities", "shaders", "scripts", "models",
@@ -131,6 +137,7 @@ MENUS = {
              ("Code Tab          F7", "tab_code"),
              ("Blocks Tab  Shift+F7", "tab_blocks"),
              ("Model Tab         F8", "tab_model"),
+             ("Pixel Tab     Ctrl+P", "tab_pixel"),
              ("Assets Tab        F9", "tab_assets"),
              ("Audio Tab         F10", "tab_audio"),
              ("Build Tab     Ctrl+B", "tab_build"),
@@ -170,7 +177,11 @@ MENUS = {
                 ("-", None),
                 ("New Model...", "new_model"),
                 ("New 2D Model...", "new_model_2d"),
+                ("New Image...", "new_image"),
                 ("New Script...", "new_script"),
+                ("-", None),
+                ("New Sound...", "new_sfx"),
+                ("New Music...", "new_music"),
                 ("-", None),
                 ("Import Asset...", "import_asset"),
                 ("-", None),
@@ -197,8 +208,11 @@ ACTION_ICONS = {
     "new_screen_2d": "new-file-sym",
     "new_model": "new-file-sym",
     "new_model_2d": "new-file-sym",
+    "new_image": "new-file-sym",
     "new_shader": "new-file-sym",
     "new_script": "new-file-sym",
+    "new_sfx": "tab-audio-sym",
+    "new_music": "tab-audio-sym",
     "open_project": "open-folder-sym",
     "open_folder": "open-folder-sym",
     "manager": "open-folder-sym",
@@ -213,6 +227,7 @@ ACTION_ICONS = {
     "tab_code": "tab-code-sym",
     "tab_blocks": "block-sym",
     "tab_model": "tab-model-sym",
+    "tab_pixel": "file-image-sym",
     "tab_assets": "tab-assets-sym",
     "tab_audio": "tab-audio-sym",
     "tab_build": "tab-build-sym",
@@ -372,7 +387,8 @@ class Editor:
         self.preview = Preview(self)
         self.doctab = DocTab(self)
         self.assets = AssetBrowser(self)
-        self.media = MediaPlayer(self)
+        self.pixel = PixelEditor(self)
+        self.media = AudioTab(self)
         self.build = BuildTab(self)
         self.docs = DocsTab(self)
         self.settings = SettingsTab(self)
@@ -487,9 +503,9 @@ class Editor:
             "mono": ui.load_font("consolas", max(8, size - 1)),
         })
         widgets._TEXT_CACHE.clear()
-        for name in ("code", "blocks", "model", "assets", "media", "build",
-                     "docs", "manager", "settings", "preview", "doctab",
-                     "projecttab"):
+        for name in ("code", "blocks", "model", "pixel", "assets",
+                     "media", "build", "docs", "manager", "settings",
+                     "preview", "doctab", "projecttab"):
             part = getattr(self, name, None)
             use_fonts = getattr(part, "use_fonts", None)
             if use_fonts is not None:
@@ -580,6 +596,8 @@ class Editor:
         if not self.confirm_close or not (self.code.dirty or self.model.dirty
                                           or self.blocks.dirty
                                           or self.doctab.dirty
+                                          or self.pixel.dirty
+                                          or self.media.dirty
                                           or self.projecttab.dirty
                                           or self.projecttab.map_dirty):
             self.running = False
@@ -632,6 +650,7 @@ class Editor:
         self.preview.set_project(project)
         self.doctab.set_project(project)
         self.assets.set_project(project)
+        self.pixel.set_project(project)
         self.media.set_project(project)
         self.build.set_project(project)
         self.settings.set_project(project)
@@ -666,7 +685,8 @@ class Editor:
                  f"object(s), {len(project.entity_names())} entity(s), "
                  f"{len(project.model_names())} model(s), "
                  f"{len(project.texture_files())} texture(s), "
-                 f"{len(project.audio_files())} audio, "
+                 f"{len(project.audio_files()) + len(project.sfx_files())} "
+                 f"audio, "
                  f"{len(project.shader_names())} shader(s)", "muted")
         if project.legacy:
             # nothing is written on open; warn about saving
@@ -682,6 +702,12 @@ class Editor:
                 self.model.autosave()
             if self.doctab.dirty:
                 self.doctab.save_all()
+        if self.pixel.dirty:
+            self.log("pixel: the unsaved layers are dropped with the project",
+                     "warn")
+        if self.media.maker.dirty:
+            # a pattern is worth keeping: the project file, never a wav
+            self.media.maker.store()
         self.media.pause()
         self.preview.blur()
         try:
@@ -926,6 +952,16 @@ class Editor:
                 self.status = f"model {path.name}"
                 return True
             return False
+        if suffix == sfx.SFX_EXT:
+            # a sound project opens in the maker; the wav it makes does not
+            self.select_asset(path)
+            if not self.media.maker.open(path):
+                return False
+            self.media.set_mode("maker")
+            if switch:
+                self.set_tab(TAB_AUDIO)
+            self.status = f"sound {path.name}"
+            return True
         if suffix in AUDIO_EXT:
             self.media.load(path)
             self.select_asset(path)
@@ -934,10 +970,12 @@ class Editor:
             self.status = f"audio {path.name}"
             return True
         if suffix in IMAGE_EXT:
+            # a picture opens in the pixel editor, on layers
             self.select_asset(path)
-            if switch:
-                self.set_tab(TAB_ASSETS)
-            self.status = f"texture {path.name}"
+            if self.pixel.open(path):
+                if switch:
+                    self.set_tab(TAB_PIXEL)
+                self.status = f"image {path.name}"
             return True
         if suffix == ".flig" or path.name == INPUT_NAME:
             # the manifest and its input map are one form, on the Project tab
@@ -982,6 +1020,9 @@ class Editor:
             self.preview.blur()
         if self.tab == TAB_AUDIO:
             self.media.pause()
+        if self.tab == TAB_PIXEL and self.pixel.dirty:
+            self.log("pixel: the layers stay in this tab until you save",
+                     "muted")
         if self.tab == TAB_BUILD:
             self.build.config.store()
         self.tab = index
@@ -1026,6 +1067,10 @@ class Editor:
             self.projecttab.save()
         elif self.tab == TAB_MODEL:
             self.model.save()
+        elif self.tab == TAB_PIXEL:
+            self.pixel.save()
+        elif self.tab == TAB_AUDIO:
+            self.media.save()
         elif self.tab == TAB_BUILD and self.project is not None:
             self.build.config.store()
             self.log("build options saved", "ok")
@@ -1081,6 +1126,12 @@ class Editor:
         return True
 
     def _prompt(self, kind):
+        if kind == "new_project":
+            # the starters on the left, what the picked one writes on the
+            # right
+            self.dialog_kind = kind
+            self.dialog = widgets.NewProjectDialog()
+            return
         if kind in _CREATE_KINDS and self.project is not None:
             # the unified New dialog asks name, kind, model and texture
             self.dialog_kind = "create"
@@ -1096,8 +1147,6 @@ class Editor:
                 width=470)
             return
         spec = {
-            "new_project": ("New Project", "Project folder name",
-                            "my_game", "Created in emoeng/projects"),
             "open_folder": ("Open Project", "Project folder or path", "",
                             "A folder containing project.flig; relative "
                             "paths resolve in emoeng/projects"),
@@ -1108,6 +1157,11 @@ class Editor:
                              "sprite",
                              f"Adds models/<name>{scenedoc.MODEL2D_EXT} - a "
                              "flat cutout rig - and opens the model tab"),
+            "new_image": ("New Image", "Image name (file stem)",
+                          "sprite",
+                          "Adds textures/<name>.png at 64 x 64 and opens the "
+                          "Pixel tab; saving flattens its layers into the "
+                          "PNG"),
             "new_script": ("New Script", "Script name (file stem)", "helpers",
                            "Adds scripts/<name>.py"),
             "new_shader": ("New Shader", "Shader name (file stem)", "ripple",
@@ -1117,18 +1171,8 @@ class Editor:
         }
         title, label, value, hint = spec[kind]
         self.dialog_kind = kind
-        extra = {}
-        if kind == "new_project":
-            # a new folder starts from a starter template
-            extra = {
-                "choices": [(key, templates.spec(key)["title"])
-                            for key in templates.template_names()],
-                "choice_label": "Starter",
-                "hint": "Its scene, object, models and window are "
-                        "written into the new folder",
-            }
         self.dialog = widgets.PromptDialog(title, label, value, hint=hint,
-                                           width=430, **extra)
+                                           width=430)
 
     def prompt_project_rename(self, path, name):
         """The manager's Rename button: give the selected project a new"""
@@ -1146,6 +1190,76 @@ class Editor:
             hint="A PNG or JPG copied beside project.flig as icon.png - "
                  "it becomes the row badge, the window icon and the "
                  "compiled exe icon; empty clears it", width=430)
+
+    def prompt_project_duplicate(self, path, name):
+        """The manager's Duplicate button: copy the folder under a new"""
+        self.dialog_kind = f"project_copy:{path}"
+        self.dialog = widgets.PromptDialog(
+            "Duplicate Project", "New folder name", f"{name}_copy",
+            hint="Copies the whole folder - scenes, scripts, textures and "
+                 "the manifest - and names the copy after this", width=430)
+
+    def prompt_project_delete(self, path):
+        """The manager's Delete button: remove a closed project's folder."""
+        self.dialog_kind = f"project_delete:{path}"
+        self.dialog = widgets.ChoiceDialog(
+            "Delete Project",
+            f"Delete {Path(path).name} and everything in it?",
+            ("Delete", "Cancel"),
+            hint="The folder leaves the disk: scenes, scripts, textures and "
+                 "all. This cannot be undone.", default=1)
+
+    def _delete_project(self, path):
+        """Drop a closed project's folder, then rescan the list."""
+        path = Path(path)
+        if self.project is not None and self.project.path == path:
+            self.log("close the project before deleting it", "warn")
+            return
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            self.log(f"delete failed: {exc}", "error")
+            return
+        self.manager.recent = [p for p in self.manager.recent
+                               if p != str(path)]
+        self.manager.refresh()
+        self.log(f"project deleted: {path.name}", "ok")
+
+    def _copy_project(self, old, text):
+        """Duplicate a closed project under a new folder name."""
+        old = Path(old)
+        stem = clean_stem(str(text or "").strip(), "")
+        if not stem:
+            return
+        if self.project is not None and self.project.path == old:
+            self.log("close the project before duplicating it", "warn")
+            return
+        new = old.with_name(stem)
+        if new.exists():
+            self.log(f"{stem} already exists", "warn")
+            return
+        try:
+            shutil.copytree(old, new)
+        except OSError as exc:
+            self.log(f"duplicate failed: {exc}", "error")
+            return
+        manifest = new / META_NAME
+        try:
+            raw = json.loads(manifest.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                if "name" in raw:
+                    raw["name"] = stem
+                title = str(raw.get("title") or stem)
+                # a suffix, so the two rows never read the same
+                if not title.lower().endswith("copy"):
+                    raw["title"] = f"{title} copy"
+                manifest.write_text(json.dumps(raw, indent=1),
+                                    encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            self.log(f"copied, but the manifest needs a look: {exc}",
+                     "warn")
+        self.manager.refresh()
+        self.log(f"project duplicated: {old.name} -> {stem}", "ok")
 
     def _rename_project(self, old, text):
         """Rename a closed project's folder and restate its manifest."""
@@ -1219,6 +1333,25 @@ class Editor:
         self.log(f"project icon set: {dest}", "ok")
         self.manager.refresh()
 
+    def new_image(self, name="sprite"):
+        """Make a blank PNG in textures/ and open it in the Pixel tab."""
+        if self.project is None:
+            self.log("open a project first", "warn")
+            return False
+        stem = clean_stem(str(name or ""), "sprite")
+        path = self.project.textures_dir / f"{stem}.png"
+        if path.exists():
+            self.log(f"{stem}.png already exists", "warn")
+            return False
+        if not self.pixel.create(path):
+            return False
+        self.refresh_tree()
+        self.set_tab(TAB_PIXEL)
+        self.status = f"image {path.name}"
+        self.log(f"made textures/{path.name}; Save flattens its layers",
+                 "ok")
+        return True
+
     def open_node_picker(self, rows, target):
         """Godot's Create New Node dialog, aimed at whichever tab asked."""
         self.dialog_kind = "addnode"
@@ -1261,10 +1394,15 @@ class Editor:
             if text == "Save and quit":
                 self.code.save()
                 self.model.save()
+                self.pixel.save(force=True)
+                # a pattern quits as a project: collapsing is Save's job
+                self.media.maker.store()
             elif text == "Quit anyway":
                 # drop the dirty flags so shutdown leaves the files
                 self.code.dirty = False
                 self.model.dirty = False
+                self.pixel.dirty = False
+                self.media.maker.dirty = False
             else:
                 return
             self.running = False
@@ -1302,6 +1440,26 @@ class Editor:
             if raw:
                 self._do_import([Path(raw)])
             return
+        if kind == "new_image":
+            self.new_image(text)
+            return
+        if kind == "pixel_save":
+            # the pixel tab asked before flattening its layers away
+            if text == "Save PNG":
+                self.pixel.save(force=True)
+            return
+        if kind == "sfx_new":
+            self.media.maker.new(text)
+            self.media.set_mode("maker")
+            return
+        if kind == "sfx_save":
+            # the maker asked before turning itself into a wav
+            if text == "Collapse":
+                self.media.maker.save(force=True)
+            return
+        if kind == "sfx_sample":
+            self.media.maker.add_sample(text)
+            return
         if kind == "new_project":
             # the dialog answers a name and a starter template together
             payload = text if isinstance(text, dict) else {}
@@ -1325,6 +1483,13 @@ class Editor:
             return
         if kind and kind.startswith("project_icon:"):
             self._set_project_icon(Path(kind.split(":", 1)[1]), text)
+            return
+        if kind and kind.startswith("project_delete:"):
+            if text == "Delete":
+                self._delete_project(Path(kind.split(":", 1)[1]))
+            return
+        if kind and kind.startswith("project_copy:"):
+            self._copy_project(Path(kind.split(":", 1)[1]), text)
             return
         if kind and kind.startswith("project:"):
             # the Project tab's own dialogs: a row, a scene, a trigger name
@@ -1534,7 +1699,8 @@ class Editor:
             suffix in (scenedoc.MODEL3D_EXT, scenedoc.MODEL_EXT,
                        scenedoc.MODEL2D_EXT,
                        scenedoc.MAP3D_EXT) or suffix in IMAGE_EXT or \
-            suffix in AUDIO_EXT or suffix == ".flig" or \
+            suffix in AUDIO_EXT or suffix == sfx.SFX_EXT or \
+            suffix == ".flig" or \
             path.name in (META_NAME, INPUT_NAME, ASSET_NAME)
 
     def _file_actions(self, path):
@@ -2079,6 +2245,12 @@ class Editor:
             self.open_manager()
         elif action == "new_project":
             self._prompt("new_project")
+        elif action in ("new_sfx", "new_music"):
+            # the maker's own New: a name, then a blank pattern
+            self.set_tab(TAB_AUDIO)
+            self.media.set_mode("maker")
+            self.media.maker.prompt_new(
+                "music" if action == "new_music" else "sfx")
         elif action == "import_asset":
             self.import_dialog()
         elif action in _CREATE_KINDS:
@@ -2096,6 +2268,8 @@ class Editor:
             self.set_tab(TAB_BLOCKS)
         elif action == "tab_model":
             self.set_tab(TAB_MODEL)
+        elif action == "tab_pixel":
+            self.set_tab(TAB_PIXEL)
         elif action == "tab_assets":
             self.set_tab(TAB_ASSETS)
         elif action == "tab_audio":
@@ -2145,6 +2319,7 @@ class Editor:
                 "View menu      Project tab (this project's manifest and "
                 "keybinds)",
                 "Ctrl+B        Build tab (PyInstaller)",
+                "Ctrl+P        Pixel tab (paint a PNG on layers)",
                 "Ctrl+S        save the active file",
                 "Ctrl+O        project manager",
                 "Ctrl+Z / Y    undo / redo edits",
@@ -2157,6 +2332,9 @@ class Editor:
                 "            F make face, G snap, W wireframe, Home frame",
                 "Audio tab:  Space play/pause, S stop, Home restart, "
                 "arrows seek, L loop",
+                "Sound maker: click a cell to write a note, wheel to pitch it,",
+                "            Ctrl+wheel stretches it, Ctrl+S collapses to "
+                "wav",
                 "Build tab:  click a switch to toggle, a value to type it",
                 "Blocks tab: drag from the drawer, click a slot to type it,",
                 "            Del takes a block out, Ctrl+wheel zooms",
@@ -2337,6 +2515,8 @@ class Editor:
             consumed = self.blocks.handle_event(e)
         elif self.tab == TAB_MODEL:
             consumed = self.model.handle_event(e)
+        elif self.tab == TAB_PIXEL:
+            consumed = self.pixel.handle_event(e)
         elif self.tab == TAB_ASSETS:
             consumed = self.assets.handle_event(e)
         elif self.tab == TAB_AUDIO:
@@ -2472,6 +2652,8 @@ class Editor:
             self.set_tab(TAB_ASSETS)
         elif e.key == pygame.K_F10:
             self.set_tab(TAB_AUDIO)
+        elif ctrl and e.key == pygame.K_p:
+            self.set_tab(TAB_PIXEL)
         elif e.key == pygame.K_F12:
             self.set_tab(TAB_DOCS)
         elif e.key == pygame.K_F11:
@@ -2666,6 +2848,9 @@ class Editor:
         elif self.mode == "editor" and self.tab == TAB_MODEL and \
                 self.model.path:
             current = self.relative(self.model.path)
+        elif self.mode == "editor" and self.tab == TAB_PIXEL and \
+                self.pixel.path:
+            current = self.relative(self.pixel.path)
         elif self.mode == "editor" and self.tab == TAB_SCENE and \
                 self.preview.scene_name:
             current = "scene " + self.preview.scene_name
@@ -2692,6 +2877,10 @@ class Editor:
         if self.tab == TAB_BLOCKS and self.blocks.dirty:
             title += "*"
         if self.tab == TAB_MODEL and self.model.dirty:
+            title += "*"
+        if self.tab == TAB_PIXEL and self.pixel.dirty:
+            title += "*"
+        if self.tab == TAB_AUDIO and self.media.dirty:
             title += "*"
         xp.titlebar(surface, cap, title, self.fonts["normal"],
                     icon=widgets.icon("icon", 16),
@@ -2834,6 +3023,8 @@ class Editor:
             self.blocks.draw(surface, inner, self.dt)
         elif self.tab == TAB_MODEL:
             self.model.draw(surface, inner)
+        elif self.tab == TAB_PIXEL:
+            self.pixel.draw(surface, inner)
         elif self.tab == TAB_ASSETS:
             self.assets.draw(surface, inner)
         elif self.tab == TAB_AUDIO:
@@ -2859,6 +3050,8 @@ class Editor:
             rows = list(self.blocks.info())
         elif self.tab == TAB_MODEL:
             rows = list(self.model.info())
+        elif self.tab == TAB_PIXEL:
+            rows = list(self.pixel.info())
         elif self.tab == TAB_ASSETS:
             rows = list(self.assets.info())
         elif self.tab == TAB_BUILD:
@@ -2885,7 +3078,7 @@ class Editor:
                 ("Models", str(len(p.model_names())
                                 + len(p.model2d_names()))),
                 ("Textures", str(len(p.texture_files()))),
-                ("Audio", str(len(p.audio_files()))),
+                ("Audio", str(len(p.audio_files()) + len(p.sfx_files()))),
             ]
         return rows
 
@@ -3097,11 +3290,27 @@ class Editor:
                 self.audio.stop_all()
             except Exception:
                 pass
+            # the viewer's GL rigs die with the loop, while the context
+            # they were made on still exists; left alive, their objects
+            # would be freed by Python's final garbage pass, after
+            # pygame.quit() has taken the context away
+            for part in (self.preview, self.model):
+                rend = getattr(part, "renderer", None)
+                try:
+                    if rend is not None:
+                        rend.close()
+                        part.renderer = None
+                except Exception:
+                    pass
+            gc.collect()          # sweep what a rebuild left unreachable
             pygame.quit()
 
 
 def main(project_path=None, frames=None):
-    Editor(project_path).run(limit=frames)
+    app = Editor(project_path)
+    app.run(limit=frames)
+    from ..engine.game import finish_process
+    finish_process()
 
 
 if __name__ == "__main__":

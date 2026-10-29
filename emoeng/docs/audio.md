@@ -28,7 +28,7 @@ start.
 | State | `settings` | `(rate, format, channels)` in use |
 | State | `sounds` / `volumes` / `gains` | The bank, the last requested volumes, the import gains |
 | Loading | `load` | `load(key, path, gain=1.0)` - cache a file under a short name |
-| Loading | `load_folder` | `load_folder(folder, gain=1.0)` - every `.wav/.ogg/.mp3/.flac`, keyed by file stem; returns the stems loaded |
+| Loading | `load_folder` | `load_folder(folder, gain=1.0)` - every `.wav/.ogg/.mp3/.flac`, plus every `.sfxproject` rendered on the spot, keyed by file stem; returns the stems loaded |
 | Loading | `set_gain` / `gain` | `set_gain(key, gain)` clamped `0..4`; a bad value keeps the old one |
 | Loading | `add_sound` / `sound` | `add_sound(key, snd)` file a hand-built `Sound`; `sound(key)` fetch it |
 | Playback | `play` | `play(key, volume=1.0, loops=0)` - `loops=-1` repeats; returns the channel or `None` |
@@ -87,7 +87,8 @@ overwritten, so your own `step.wav` wins.
 
 Anything in the project's `audio/` folder is loaded under its **file stem**:
 `audio/gate.ogg` is `play("gate")`. `AUDIO_EXT` is `.wav`, `.ogg`, `.mp3`,
-`.flac`.
+`.flac`. A `.sfxproject` in the same folder is loaded the same way, from a
+render rather than a file - see the next section.
 
 | `assets.json` key | Effect |
 | --- | --- |
@@ -102,6 +103,67 @@ Anything in the project's `audio/` folder is loaded under its **file stem**:
 ```
 
 The Audio tab writes this file; see [The Editor](editor.md).
+
+## Sound projects
+
+A `.sfxproject` in `audio/` is a pattern the engine renders rather than a file
+it reads. The editor's sound maker writes them, and a game can ship one
+instead of a wav: `render()` is pure numpy, so the preview, the runtime and a
+build produce the same samples.
+
+```json
+{
+ "format": "emoeng-sfx", "version": 1,
+ "title": "theme", "kind": "music", "rate": 44100,
+ "bpm": 120, "steps": 16, "bits": 16, "loop": true,
+ "tracks": [
+  {"name": "bass", "wave": "tri", "gain": 0.5, "octave": -2,
+   "notes": [[0, 2, 72, 1.0], [4, 2, 72, 1.0]]},
+  {"name": "lead", "wave": "square", "gain": 0.4, "octave": 0,
+   "duck": 0.35, "duck_by": 0, "duck_release": 0.15,
+   "notes": [[0, 1, 0, 0.9], [2, 1, 3, 0.8]]}
+ ],
+ "samples": [{"file": "clap.wav", "at": 1.0, "gain": 0.9, "pitch": 1.0}]
+}
+```
+
+| Field | Detail |
+| --- | --- |
+| `kind` | `sfx` or `music`; only the maker's template differs |
+| `bpm`, `steps` | `step_seconds()` is `60 / (bpm * 4)`; `steps` is the pattern length, sixteen by default |
+| `bits` | `8` or `16` - each wave is quantised before it is mixed, so 8-bit is audibly crunchier |
+| track `wave` | `sfx.WAVES`: `square`, `pulse`, `tri`, `saw`, `sine`, `noise` |
+| track `octave` | added to every note's MIDI number, so a bass part is one number |
+| a note | `[start_step, length_steps, midi, velocity]`; `72` is C5 |
+| track `duck` | `0..1` sidechain depth: the track dips while `duck_by`'s notes sound and recovers over `duck_release` seconds |
+| `samples` | `.wav` files mixed in under the tracks, with `at` in seconds, `gain` and `pitch` |
+
+`render(doc)` sums every unmuted track, multiplies in the ducking envelopes,
+adds the samples and scales down only when the peak passes `0.99`, so a
+pattern does not clip. The result is mono `float32` at the document's `rate`;
+`write_wav()` puts it in a mono 16-bit wav, which is the only format written.
+
+| Function | Does |
+| --- | --- |
+| `load(path)` / `save(path, doc)` | read and write the JSON, through `normalise()` |
+| `blank(title, kind)` | a starting pattern; a `music` one ships a bass line and a ducked lead |
+| `length(doc)` / `describe(doc)` | seconds, and the one-line summary the maker puts in its status line |
+| `render(doc, rate=None, audio_dir=None)` | the whole pattern as samples |
+| `write_wav(path, doc)` / `flatten(path)` | a wav; `flatten` writes beside the project |
+| `flatten_folder(folder)` | every project in one `audio/` folder, each replaced by its wav |
+| `sound(path_or_doc)` | a mixer `Sound`, which is what the preview plays |
+| `read_wav(path)` | `(samples, rate)` from a 16-bit wav; stereo is mixed down to mono |
+
+Three places consume one pattern:
+
+| Where | What happens |
+| --- | --- |
+| `project.load_audio()` | `load_folder()` renders each project and files it under its stem, so `play("theme")` works with no wav on disk |
+| The editor's Save | asks once, writes `audio/<name>.wav` and deletes the project - the wav is the sound from then on |
+| `BuildConfig.prepare()` | collapses only the staged copy: the wav appears in `<workpath>/bundle/projects/<name>/audio`, the project file does not, and your own folder keeps the pattern |
+
+Only WAV is written for now. A render is mono 16-bit, there is no `.ogg` or
+`.mp3` export, and the maker's Import takes wav files only.
 
 ## Distance and 3D
 
@@ -130,6 +192,7 @@ retune the `Sound` instead: `self.audio.sound("drone").set_volume(v)`.
 | Looping | `loop=True` plays `-1` forever |
 | Fades | `fade_ms` on start, `stop_music(fade_ms)` on stop |
 | Start-up | Nothing plays until a scene asks - `music()` is called from game code |
+| Boot track | `audio.music` names a stem, and `boot_music()` looks only at real files - a pattern has to be collapsed before it can be that track |
 | Hot reload | The game remembers `music_key`, re-reads the bank and restarts the same track at `fade_ms=0` |
 
 ```python

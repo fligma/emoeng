@@ -1131,6 +1131,10 @@ paints, the prop is `objects/prop.obj3d` - which this scene's document
 places, so the Project View shows it under the scene - and the player
 walks and looks with the bound actions, which a player can rebind.
 
+The player starts at +Z facing back down the floor (`yaw=math.pi`), so
+the prop and the fire are in front of the camera on the first frame;
+`spawn_point()` is what play mode and the editor's Edit view both obey.
+
 F5 plays it. Drag the prop in Edit mode and the collision box its own
 document files under it moves along, because it was placed as its child.
 
@@ -1138,6 +1142,8 @@ Add a game from here: `self.spawn(...)` more objects, `self.add_light`
 a lamp, `self.add(meshes...)` walls, `self.place_model(...)` a mesh from
 `models/`, or a look of your own in `shaders/` named in `post`.
 """
+
+import math
 
 import emoeng as fe
 from emoeng.engine import meshes
@@ -1161,10 +1167,11 @@ class Main(fe.Scene3D):
         self.add(meshes.plane(size=(40, 40), seg=8), texture="grid")
         self.add_light((0.0, 2.6, -4.0), "fire", radius=9.0)
         self.player = self.spawn(fe.Player3D, pos=(0.0, 0.0, 6.0),
-                                 move_speed=(5.0, 9.0), world_radius=19.0)
+                                 yaw=math.pi, move_speed=(5.0, 9.0),
+                                 world_radius=19.0)
 
     def spawn_point(self):
-        return (0.0, 0.0, 6.0), 0.0
+        return (0.0, 0.0, 6.0), math.pi
 
     def status(self):
         return [self.name, "emoeng project"]
@@ -1313,10 +1320,216 @@ class Menu(fe.SceneUI):
 '''
 
 
-# three starting points, in the order the dialog lists
+FLY3D_SCENE = '''"""Sky: a free-flying player among crates that float.
+
+`movement="fly"` is the whole difference from the walking starter: WASD
+goes where you look, `up` climbs and `down` sinks, and no ground glues you
+down - only the floor at y = 0 catches you. The crates are `prop`
+placements, and each one carries the collision box its document files, so
+flying into one stops you instead of passing through.
+
+The crates are at -Z and the player starts at +Z turned toward them
+(`yaw=math.pi`), so flying forward weaves between all three.
+
+Add a game from here: rings to fly through, a wider sky (`world_radius`),
+a look of your own in `shaders/` named in `post`.
+"""
+
+import math
+
+import emoeng as fe
+from emoeng.engine import meshes
+
+
+class Main(fe.Scene3D):
+    name = "main"
+    uses = ("prop",)
+
+    clear_color = (0.09, 0.12, 0.20)
+    fog_color = (0.10, 0.13, 0.22)
+    fog_near = 30.0
+    fog_far = 140.0
+    ambient = (0.42, 0.46, 0.58)
+    sun_dir = (0.5, 0.8, -0.3)
+    sun_col = (0.55, 0.55, 0.60)
+
+    def setup(self):
+        # a floor far below, so "up" has something to mean
+        self.renderer.texture("grid", fe.proctex.grid(128, 8))
+        self.add(meshes.plane(size=(90, 90), seg=8), texture="grid")
+        self.add_light((0.0, 7.0, -9.0), (0.55, 0.70, 1.0), radius=20.0)
+        self.player = self.spawn(fe.Player3D, pos=(0.0, 4.0, 10.0),
+                                 yaw=math.pi, movement="fly",
+                                 move_speed=(8.0, 18.0), world_radius=34.0)
+
+    def spawn_point(self):
+        return (0.0, 4.0, 10.0), math.pi
+
+    def status(self):
+        return [self.name, "fly: WASD, space up, q down"]
+
+    def overlay(self, screen):
+        fe.ui.text(screen, self.game.fonts["small"],
+                   self.game.control_hint(), (14, 12))
+'''
+
+PLATFORMER2D_SCENE = '''"""Main: ledges, gravity and a jump, written out so you can change them.
+
+The engine does not integrate gravity - a scene says how falling works.
+`LEDGES` is the solid world as plain rects, the player is a `Player2D`
+with its own steering switched off, and `step()` is the whole physics: one
+sideways sweep, one downward sweep, and `collision.move_slide2d` stopping
+each of them at a ledge.
+
+Space jumps, but only from the ground. `GRAVITY` pulls harder when it is
+bigger and `JUMP` lifts higher; a jump clears about 113 px here, and each
+step of the staircase is only 64 px above the one before.
+
+The camera is held still on the whole level (`follows_view=False`), so
+the layout reads as one screen; drop that knob from the spawn and the
+view follows the player instead.
+"""
+
+import emoeng as fe
+from emoeng.engine import collision, meshes
+
+
+# the solid world: left, top, width, height, in world pixels
+LEDGES = (
+    (0.0, 500.0, 960.0, 40.0),     # the ground: everything stands on it
+    (120.0, 436.0, 180.0, 16.0),   # the staircase, 64 px a step
+    (340.0, 372.0, 180.0, 16.0),
+    (560.0, 308.0, 180.0, 16.0),
+    (780.0, 244.0, 170.0, 16.0),   # the top step
+)
+
+# a gold square over the top step: scenery, and nothing to collide with
+GOAL = (865.0, 200.0, 26.0, 26.0)
+
+
+class Main(fe.Scene2D):
+    name = "main"
+
+    world_size = (960.0, 540.0)
+    clear_color = (0.05, 0.06, 0.10)
+
+    speed = 250.0            # pixels per second, walking
+    GRAVITY = 1800.0         # downward pull, pixels per second squared
+    JUMP = 640.0             # upward kick when the jump starts
+    RADIUS = 13.0            # how round the player is to a ledge
+
+    def setup(self):
+        tones = ((0.24, 0.30, 0.44), (0.30, 0.37, 0.52))
+        for i, (x, y, w, h) in enumerate(LEDGES):
+            self.add(meshes.rect2d((x + w / 2.0, y + h / 2.0), (w, h),
+                                   col=tones[i % 2]),
+                     texture="white", blend="alpha")
+        x, y, w, h = GOAL
+        self.add(meshes.rect2d((x, y), (w, h), col=(0.95, 0.78, 0.35)),
+                 texture="white", blend="alpha")
+        # standing on the ground row, which its radius puts at y 487
+        self.player = self.spawn(fe.Player2D, (60.0, 487.0),
+                                 size=(26.0, 26.0), col=(0.95, 0.85, 0.55),
+                                 follows_view=False)
+        # the scene steers, so the player does not steer itself
+        self.player.lock_input = True
+        self.vy = 0.0
+        self.grounded = True
+
+    def update(self, dt):
+        super().update(dt)
+        self.step(dt)
+
+    def step(self, dt):
+        """One frame of walking and falling, each axis swept separately."""
+        body = self.player
+        right = self.input.axis("right", "left")
+        run = self.input.down("run")
+        speed = self.speed * (1.8 if run else 1.0)
+        if right:
+            body.pos, _hits = collision.move_slide2d(
+                body.pos, [right * speed * dt, 0.0], LEDGES, self.RADIUS)
+        self.vy += self.GRAVITY * dt
+        body.pos, hits = collision.move_slide2d(
+            body.pos, [0.0, self.vy * dt], LEDGES, self.RADIUS)
+        landed = bool(hits[1]) and self.vy > 0.0
+        if hits[1]:
+            self.vy = 0.0      # a ledge, above or below: stop there
+        self.grounded = landed
+        if landed and self.input.pressed("up"):
+            self.vy = -self.JUMP
+            self.grounded = False
+
+    def status(self):
+        return [self.name, "arrows or WASD move, space jumps"]
+
+    def overlay(self, screen):
+        where = "on a ledge" if self.grounded else "in the air"
+        fe.ui.text(screen, self.game.fonts["small"], where, (14, 12))
+'''
+
+EMPTY3D_SCENE = '''"""Main: an empty 3D scene, a player, and nothing to look at.
+
+A blank page with the camera already in it. The player walks on the
+ground plane at y = 0 whether or not anything is drawn there, so the
+first thing worth adding is a floor:
+
+    self.renderer.texture("grid", fe.proctex.grid(128, 8))
+    self.add(meshes.plane(size=(40, 40), seg=8), texture="grid")
+
+Props come from the Project View (a document brings its collision box
+with it) or from `self.spawn(...)` here; `self.add_light(...)` for a lamp.
+"""
+
+import emoeng as fe
+
+
+class Main(fe.Scene3D):
+    name = "main"
+    uses = ()
+
+    clear_color = (0.04, 0.05, 0.08)
+
+    def setup(self):
+        self.player = self.spawn(fe.Player3D, pos=(0.0, 0.0, 0.0),
+                                 move_speed=(5.0, 10.0), world_radius=0.0)
+
+    def status(self):
+        return [self.name, "empty scene: add geometry in setup()"]
+'''
+
+EMPTY2D_SCENE = '''"""Main: an empty 2D scene with a steered player.
+
+`world_size` is the design resolution: the camera fits it to the window
+and the player drags the view along as it walks. Arrows or WASD move,
+wheel zooms. Pictures come from `self.add(meshes.rect2d(...),
+blend="alpha")` or from sprite documents this scene places - a
+`Collision2D` under one is what turns it into a wall.
+"""
+
+import emoeng as fe
+
+
+class Main(fe.Scene2D):
+    name = "main"
+
+    world_size = (960.0, 540.0)
+    clear_color = (0.05, 0.06, 0.10)
+
+    def setup(self):
+        self.player = self.spawn(fe.Player2D, (480.0, 270.0))
+
+    def status(self):
+        return [self.name, "arrows or WASD move, wheel zooms"]
+'''
+
+
+# every starting point, in the order the dialog lists: `group` is the
+# caption the picker puts above a run of starters
 PROJECTS = {
     "game3d": {
         "title": "Game 3D",
+        "group": "3D",
         "hint": "a first-person world: a floor, one prop, a player",
         "size": [1152, 700],
         "scale": 0.75,
@@ -1327,8 +1540,24 @@ PROJECTS = {
         "models": ("box", "crate", "pillar"),
         "maps": ("room",),
     },
+    "fly3d": {
+        "title": "Fly 3D",
+        "group": "3D",
+        "hint": "a free-flying camera among floating crates",
+        "size": [1152, 700],
+        "scale": 0.75,
+        "start": "main",
+        "scenes": (("main", "scene3d", FLY3D_SCENE,
+                    (("prop", [0.0, 2.0, 2.0]),
+                     ("prop", [4.5, 6.0, -4.0]),
+                     ("prop", [-5.0, 10.0, -9.0]))),),
+        "objects": (("prop", "object3d", START3D_PROP, _PROP3D_NODES),),
+        "models": ("box", "crate"),
+        "maps": (),
+    },
     "game2d": {
         "title": "Game 2D",
+        "group": "2D",
         "hint": "a flat arena: a backdrop, one sprite, a steered player",
         "size": [960, 540],
         "scale": 1.0,
@@ -1340,8 +1569,21 @@ PROJECTS = {
         "models": ("sprite",),
         "maps": (),
     },
+    "platformer": {
+        "title": "Platformer 2D",
+        "group": "2D",
+        "hint": "ledges, gravity and a jump, all in the scene script",
+        "size": [960, 540],
+        "scale": 1.0,
+        "start": "main",
+        "scenes": (("main", "scene2d", PLATFORMER2D_SCENE, ()),),
+        "objects": (),
+        "models": ("sprite",),
+        "maps": (),
+    },
     "menu": {
         "title": "Menu",
+        "group": "UI",
         "hint": "widgets on the window: a title and a button that quits",
         "size": [900, 560],
         "scale": 1.0,
@@ -1351,9 +1593,34 @@ PROJECTS = {
         "models": (),
         "maps": (),
     },
+    "empty3d": {
+        "title": "Empty 3D",
+        "group": "Empty",
+        "hint": "a clear colour and a player: build the world yourself",
+        "size": [1152, 700],
+        "scale": 0.75,
+        "start": "main",
+        "scenes": (("main", "scene3d", EMPTY3D_SCENE, ()),),
+        "objects": (),
+        "models": (),
+        "maps": (),
+    },
+    "empty2d": {
+        "title": "Empty 2D",
+        "group": "Empty",
+        "hint": "a flat world with a steered player and no pictures",
+        "size": [960, 540],
+        "scale": 1.0,
+        "start": "main",
+        "scenes": (("main", "scene2d", EMPTY2D_SCENE, ()),),
+        "objects": (),
+        "models": ("sprite",),
+        "maps": (),
+    },
 }
 
-TEMPLATE_ORDER = ("game3d", "game2d", "menu")
+TEMPLATE_ORDER = ("game3d", "fly3d", "game2d", "platformer", "menu",
+                  "empty3d", "empty2d")
 DEFAULT_TEMPLATE = "game3d"
 
 
@@ -1386,11 +1653,15 @@ def template_names():
 
 def manifest(key, name, title=None, start=None):
     """The manifest dict `Project.create` writes for one template."""
-    got = spec(key)
+    named = str(key or DEFAULT_TEMPLATE)
+    got = spec(named)
+    # the row the manager files it under, without reading its scenes back
+    named = named if named in PROJECTS else DEFAULT_TEMPLATE
     three_d = any(kind == "scene3d" for _n, kind, _s, _p in got["scenes"])
     return {
         "format": const.PROJECT_FORMAT,
         "name": str(name),
+        "template": named,
         "title": str(title or got["title"]),
         "start": str(start or got["start"]),
         "version": "0.1.0",

@@ -85,12 +85,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pygame moderngl numpy pillow pyinstaller
 
-      # Linux: SDL2 and OpenGL dev libraries for pygame
+      # Linux: SDL2 and OpenGL dev libraries for pygame, plus xvfb and
+      # glxinfo to run and diagnose a headless window
       - name: Install SDL2 and OpenGL (Linux)
         if: matrix.label == 'linux'
         shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev
+          sudo apt-get update && sudo apt-get install -y \
+            libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev xvfb x11-utils
 
       # The repo's own build tool: freezes emoeng into
       # tools/dist/MotionEngine.exe (Windows) or MotionEngine (Linux)
@@ -100,12 +102,21 @@ jobs:
         shell: bash
         run: python tools/build_release.py --no-run
 
-      # Smoke test on Linux with xvfb
+      # The frozen app must open a real GL window with no GPU behind it.
+      # xvfb-run's own default screen is 8-bit, which is not a depth a GL
+      # context is built on, so the geometry is stated here.
+      - name: Report the GL driver (Linux)
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" glxinfo | grep -E \
+            "OpenGL (renderer|major|version|shading language)" || true
+
       - name: Smoke test (Linux)
         if: matrix.label == 'linux'
         shell: bash
         run: |
-          SDL_AUDIODRIVER=dummy xvfb-run -a \
+          SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
             tools/dist/MotionEngine run tools/dist/projects/demo --frames 1
 
       - name: Upload artifact

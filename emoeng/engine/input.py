@@ -188,6 +188,7 @@ class Input:
         self.joysticks = {}             # token index -> pygame Joystick
         self._joy_index = {}            # instance id -> token index
         self.grabbed = False
+        self.deadzone = DEADZONE      # a stick's travel before it counts
         self._notches = set()           # actions a wheel notch fired
         self._axes = {}                 # (pad, axis) -> current sign
         self.rescan()
@@ -381,9 +382,9 @@ class Input:
     def _axis_motion(self, joy, axis, value):
         """A stick returning to centre releases like a key."""
         sign = 0.0
-        if value > DEADZONE:
+        if value > self.deadzone:
             sign = 1.0
-        elif value < -DEADZONE:
+        elif value < -self.deadzone:
             sign = -1.0
         was = self._axes.get((joy, axis), 0.0)
         if sign == was:

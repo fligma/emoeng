@@ -24,7 +24,7 @@ Version documented here: `const.VERSION` (see [Constants](#constants)).
 | [Animation and Timing](animation-and-timing.md) | `anim` easing, `Smoothed`, `Shake`, `Tween`, `FrameAnim`, `Timer`/`Timers` |
 | [Collision](collision.md) | AABB helpers, swept movement, sphere depenetration, ground clamping |
 | [UI and HUD](ui-and-hud.md) | `engine.ui` HUD drawing, the `self.hud` facade, `UIObject` widgets, `xp` widget primitives, `theme` |
-| [Audio](audio.md) | `Audio` bank, positional sound, music, the built-in synth, per-file gains |
+| [Audio](audio.md) | `Audio` bank, positional sound, music, the built-in synth, per-file gains, `.sfxproject` sound projects |
 | [Save, Config and Paths](save-config-and-paths.md) | `SaveStore` slots, the layered config schema, `paths` locations |
 | [Building](building.md) | PyInstaller front end, every build option, bundle pruning, command-line build |
 | [Editor](editor.md) | The IDE: tabs, menus, shortcuts, project manager, hot reload, preview |
@@ -63,6 +63,7 @@ engine` gives you the modules themselves.
 | `fe.scenedoc` | `.scene` / `.obj3d` / `.obj2d` / `.shader` documents: format, node types, look fields, project paths |
 | `fe.screen` | `Screen3D`, `Screen2D` - one scene shown inside another |
 | `fe.shaders` | `Shader`, the `g` `Builder`, GLSL compile, `ShaderPass`, the project's shader registry |
+| `fe.sfx` | `.sfxproject` patterns: `render`, `write_wav`, `flatten`, sidechained tone tracks and wav samples |
 | `fe.templates` | Starter projects, stock shaders and colour-only assets a new project is built from |
 | `fe.theme` | Dark/light palettes for editor and runtime chrome |
 | `fe.timers` | `Timer`, `Timers`: delayed and repeating calls |

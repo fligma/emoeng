@@ -3,7 +3,7 @@
 from . import (anim, audio, camera, collision, colors, components, config,
                input, inputmap, lights, loader, meshes, model, objects,
                paths, player, proctex, renderer, save, scene, scenedoc,
-               shaders, templates, theme, timers, ui, winchrome, xp)
+               sfx, shaders, templates, theme, timers, ui, winchrome, xp)
 from .camera import Camera, Camera2D, OrbitCamera
 from .components import (AudioEmitter2D, AudioEmitter3D, Collision2D,
                          Collision3D, ConeLight2D, DirectionalLight3D,
@@ -35,7 +35,7 @@ __all__ = [
     "input", "inputmap", "lights", "loader", "meshes", "model", "objects",
     "paths",
     "player",
-    "prune", "proctex", "renderer", "save", "scene", "scenedoc",
+    "prune", "proctex", "renderer", "save", "scene", "scenedoc", "sfx",
     "shaders", "templates", "theme", "timers",
     "ui", "winchrome", "xp", "BuildConfig", "Camera", "Camera2D",
     "OrbitCamera", "Input", "InputMap",

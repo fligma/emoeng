@@ -196,6 +196,8 @@ class Scene:
         self.colliders = []
         # trigger bus: name -> [(owner, method)] waiting for a broadcast
         self.listeners = {}
+        # what this scene's code rebinds at load: name -> the keys it set
+        self.binds = {}
         # objects `queue_free()` marked, taken out when the frame ends
         self._freeing = []
 
@@ -1011,6 +1013,8 @@ class Scene:
     def bind(self, action, *bindings):
         """Bind an action to tokens, exactly like `input.map.json` does."""
         self.input.bind(action, *bindings)
+        # the editor shows this: a scene may override what the project set
+        self.binds[str(action)] = self.input.bindings_of(action)
         return action
 
 

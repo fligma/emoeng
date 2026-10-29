@@ -47,6 +47,7 @@ class Collider3D(Object3D):
 
     # a unit cube at the node: visible when unsized
     shape = "box"               # box | sphere | capsule
+    shapes = ("box", "sphere", "capsule")
     half = (0.5, 0.5, 0.5)      # metres from the centre to each face
     solid = True                # False: reports, never stops
     group = ""                  # who this stops; "" = everybody
@@ -580,6 +581,7 @@ class LightNode3D(Object3D):
     doc_knobs = clone_attrs
 
     shape = "point"
+    shapes = ("point", "spot", "sun")
     color = "torch"
     radius = 8.0
     energy = 1.0
@@ -631,6 +633,7 @@ class LightNode2D(Sprite2D):
     doc_knobs = clone_attrs
 
     shape = "radial"
+    shapes = ("radial", "cone", "rect")
     color = "torch"
     radius = 180.0
     energy = 1.0

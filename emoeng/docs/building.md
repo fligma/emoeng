@@ -19,6 +19,7 @@ python -m emoeng build projects/mygame --onefile --name mygame
 | Output | `<distpath>/<name>` - a folder, or one file with `onefile` |
 | Intermediates | `workpath` and `specpath`, both defaulting to `<app_dir>/build` |
 | Project data | Staged into `<workpath>/bundle/projects/<name>`, added with one `--add-data` pair |
+| Sound projects | `audio/*.sfxproject` in the staged copy are rendered to `audio/<name>.wav` and the documents dropped; the project folder keeps the patterns |
 | Engine release data | `tools/build_release.py` stages `projects/` and `docs/` beside the executable, so the demo and offline manual ship in the unpacked release folder |
 | After a good build | `prune.dedupe()` drops duplicated DLLs, `icon.png` goes beside the exe, the output is zipped to `<distpath>/<name>.zip`, and the bundle's size and file count are printed |
 | Requirement | `pip install pyinstaller`; `BuildConfig.available()` reports whether it is present |

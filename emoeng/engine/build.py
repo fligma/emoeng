@@ -12,7 +12,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import config, paths, prune
+from . import config, paths, prune, sfx
 from .. import const
 
 META_KEY = const.BUILD_META_KEY
@@ -418,14 +418,31 @@ class BuildConfig:
     def prepare(self):
         """Stage trimmed project data; report what the bundle carries."""
         plan = self.plan if self.plan is not None else self.apply_plan()
+        report = []
         if plan.mode == prune.GAME and self.project is not None:
             work = Path(self.values.get("workpath") or
                         (paths.app_dir() / "build"))
             plan.stage(work)
             self.values["add_data"] = [p for p in (plan.data_pair(SEP),) if p]
+            report = self._collapse_audio(plan)
         elif not self.values.get("add_data"):
             self.values["add_data"] = [p for p in (plan.data_pair(SEP),) if p]
-        return plan.lines()
+        return plan.lines() + report
+
+    def _collapse_audio(self, plan):
+        """Render staged sound projects to wav and drop the documents.
+
+        Only the staged mirror is touched: `audio/<name>.sfxproject` is the
+        editable source and stays in the project folder, so the bundle gets
+        the finished sound and the editor keeps the pattern.
+        """
+        staged = getattr(plan, "staged", None)
+        if staged is None:
+            return []
+        try:
+            return sfx.flatten_folder(Path(staged) / "audio")
+        except (OSError, ValueError) as exc:
+            return [f"sfx collapse skipped: {exc}"]
 
     def executable(self):
         """The built game, if this machine can run it."""

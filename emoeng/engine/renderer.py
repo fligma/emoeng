@@ -1127,6 +1127,8 @@ class Renderer:
             for tex in self.textures.values():
                 tex.release()
             self.textures.clear()
+        # the gradients themselves are cached in `textures`, under their
+        # `light:` keys, so whoever owns that cache already freed them
         self._light_tex.clear()
         self.tile.clear()      # a rig's own sheet sizes, however shared
         self.holes.clear()
@@ -1138,14 +1140,15 @@ class Renderer:
             obj.release()
         self._shader_progs.clear()
         for obj in (self.quad, self.quad_panel, self.prog,
-                    self.prog_blit, self.prog_panel, self.quad_vbo,
-                    self.quad_ibo):
+                    self.prog_blit, self.prog_panel, self.prog_bake,
+                    self.quad_vbo, self.quad_ibo):
             if obj is not None:
                 obj.release()
         for att in list(self.fbo.color_attachments) + \
                 [self.fbo.depth_attachment]:
             if att is not None:
                 att.release()
+        self.fbo.release()      # this rig's own target goes with the rig
         for _tex, fbo in self._panel.values():
             fbo.release()
         self._panel.clear()
@@ -1155,6 +1158,37 @@ class Renderer:
             self.ctx.release()
         if _ACTIVE is self:
             _ACTIVE = None
+
+    def close(self):
+        """Dispose this rig, then let nothing outlive the context.
+
+        `dispose()` deliberately spares a window's context, because the
+        window owns it - but a framebuffer wrapper stays alive inside the
+        context object and inside this rig, and the interpreter's final
+        garbage pass frees those once `pygame.quit()` has destroyed the GL
+        context they point at. A desktop driver shrugs that off, a
+        software one segfaults with no Python frame to blame. So the
+        framebuffers go too, and the context is released last, while a
+        driver is still listening to hear "nothing of mine is live".
+        """
+        self.dispose()
+        if self.shared is not None:
+            return              # the parent's context is not ours to close
+        ctx = self.ctx
+        for own in (getattr(ctx, "fbo", None),
+                    getattr(ctx, "_screen", None)):
+            # the last two are moderngl's own handles on the window's
+            # framebuffer; a driver may refuse to delete the default one,
+            # which is not our problem while the context is still there
+            try:
+                if own is not None:
+                    own.release()
+            except Exception:
+                continue
+        try:
+            ctx.release()
+        except Exception:
+            pass
 
     def _make_vao(self, acc, tex):
         ctx = self.ctx

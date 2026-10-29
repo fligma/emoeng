@@ -129,7 +129,7 @@ consume the key, so a tab owns its own bindings first.
 | Blocks | `editor.blocktab` | `BlockTab` | the same `.py` as blocks |
 | Model | `editor.modeleditor` | `ModelEditor` | one `.model3d` or `.map3d` file (a legacy `.model` opens here too) |
 | Assets | `editor.assets` | `AssetBrowser` | the project folder as cards |
-| Audio | `editor.mediaplayer` | `MediaPlayer` | the `audio/` folder |
+| Audio | `editor.audiotab` | `AudioTab` - a `MediaPlayer` and an `SfxEditor` | the `audio/` folder: play its files, or edit a sound project |
 | Build | `editor.buildtab` | `BuildTab` | `engine.build.BuildConfig` |
 | Docs | `editor.docstab` | `DocsTab` | `engine.docs` - guides and API |
 | Settings | `editor.settingstab` | `SettingsTab` | `engine.config` schema |
@@ -220,6 +220,7 @@ displacing first.
 | `.model3d`, `.model`, `.map3d` | Model tab, Edit / Texture modes - a map is the same schema in `maps/`, so it opens identically |
 | `.model2d` | Model tab, 2D rig mode - parts, transforms, uv, parents and tracks edited in a flat viewport |
 | `.scene`, `.obj3d`, `.obj2d`, `.object` | Document tab, one small tab per open file; with no project loaded it falls back to the Code tab, and right-clicking the row there offers `View raw` |
+| `.sfxproject` | Audio tab, in the maker - the pattern opens for editing, not the wav it renders |
 | `.wav` `.ogg` `.mp3` `.flac` | Audio tab, loaded into the player |
 | `.png` `.jpg` `.jpeg` | Assets tab, selected |
 | `project.flig`, `input.map.json`, `assets.json` | Assets tab, selected |
@@ -230,7 +231,7 @@ Every create action goes through one prompt dialog
 
 | Action | Title | Default | Writes |
 | --- | --- | --- | --- |
-| `new_project` | New Project | `my_game` | `Project.create(projects/<stem>, template=...)` - name plus a template choice (Game 3D / Game 2D / Menu) - then opens it |
+| `new_project` | New Project | `my_game` | `Project.create(projects/<stem>, template=...)` - name plus the two-pane starter picker (see below) - then opens it |
 | `open_folder` | Open Project | *(empty)* | opens a folder holding `project.flig`; relative names resolve in `projects/` |
 | `new_scene` | New 3D Scene | `scene1` | `scripts/scenes/<stem>.py` from the preset template, plus an empty `scenes/<stem>.scene` pointing at it |
 | `new_scene_2d` | New 2D Scene | `scene2d` | the same pair, from the 2D preset |
@@ -248,6 +249,14 @@ Every create action goes through one prompt dialog
 | `new_model_2d` | New 2D Model | `sprite` | `models/<stem>.model2d` |
 | `new_script` | New Script | `helpers` | `scripts/<stem>.py` with a `clamp()` helper |
 | `new_shader` | New Shader | `shader1` | a `shaders/<stem>.shader` document plus `scripts/shaders/<stem>.py`, chosen from the stock templates |
+| `sfx_new` | New Sound Project / New Music Project | `sound` / `theme` | `audio/<stem>.sfxproject` from `sfx.blank()`, opened in the Audio tab's maker |
+
+The New Project dialog is the exception: `widgets.NewProjectDialog` is the
+same panel with a list instead of a text field. The starters on the left come
+from `templates.PROJECTS`, grouped under each entry's `group` word - 3D
+(Game 3D, Fly 3D), 2D (Game 2D, Platformer 2D), UI (Menu) and Empty (Empty
+3D, Empty 2D) - and the right panel spells out what the picked one writes, so
+the choice is made by reading rather than by trial.
 
 Names are cleaned by `clean_stem()`: anything that is not a letter, digit,
 `_` or `-` becomes `_`. An existing file is refused with a warning rather than
@@ -270,11 +279,11 @@ as `.obj3d` / `.obj2d`, and keeps the list of touched paths as
 ## Saving and hot reload
 
 `Ctrl+S` / `File > Save` saves only the active tab: Code, Blocks, Settings
-(`commit()`), Model, Build (option store), Document (`doctab.save()`) - any
-other tab saves the manifest. A document's first save is deliberate - edits
-live in memory until `Save` or the button - but under `editor.autosave`,
-leaving the tab writes every dirty document (`save_all()`), and quitting
-asks about unsaved documents.
+(`commit()`), Model, Build (option store), Document (`doctab.save()`), Audio
+(`media.save()` - the maker's collapse) - any other tab saves the manifest. A
+document's first save is deliberate - edits live in memory until `Save` or the
+button - but under `editor.autosave`, leaving the tab writes every dirty
+document (`save_all()`), and quitting asks about unsaved documents.
 
 | Mechanism | Trigger | Effect |
 | --- | --- | --- |
@@ -1095,6 +1104,15 @@ Folder / Files / Selected rows to the Inspector.
 
 ## Audio tab
 
+One header carries a `Player` / `Maker` switch and the tab hands its body to
+whichever side is in front; a narrow window drops the switch and keeps the
+header's name. `app.py` talks to `AudioTab` alone, and it answers `current`,
+`dirty`, `load`, `save`, `pause`, `stop`, `info` and `set_project` for both
+views. Whichever is in front owns the tab: `dirty` is the maker's, `save()`
+is the maker's collapse, and the caption names the pattern when one is open.
+
+### Player
+
 Playlist on the left (`PLAYLIST_W` 186, 34 px rows with a duration at the
 right), then title, waveform, seek track and transport.
 
@@ -1115,6 +1133,60 @@ scrubbing costs no I/O. Other formats still play through
 `pygame.mixer.music` and show a flat line. Durations fall back to the
 project's sound bank, then to `pygame.mixer.Sound`. The player is independent
 of the scene bank, so preview and playlist never fight.
+
+### Maker
+
+`SfxEditor` edits one `audio/<name>.sfxproject`: a step grid of tone tracks,
+plus any wav samples mixed underneath. The list on the left is every project
+in `audio/` with its rendered length; clicking a row opens it.
+
+| Control | Behaviour |
+| --- | --- |
+| `Play` / `Stop` | renders the document with `sfx.sound()` and plays it on the mixer; a `music` project loops, an `sfx` one stops |
+| `New SFX` / `New Music` | asks for a stem, writes a blank project into `audio/` and opens it - the `music` template ships a bass line and a ducked lead |
+| `Save` | asks, then writes `audio/<name>.wav`, deletes the project and loads that wav into the player |
+| `Import` | copies a `.wav` into `audio/` and lists it as a sample |
+| `BPM -` / `BPM +` | 5 bpm a press, clamped `30..300` |
+| `8-bit` / `16-bit` | quantisation depth for every wave in the pattern |
+| wave button | cycles the selected track's shape through `sfx.WAVES` |
+| `Steps` | next pattern length in `STEP_CHOICES` - 16, 32, 64; notes past the new end are cut to the grid |
+| `+ Track` / `- Track` | add a tone track, or drop the selected one (a project keeps at least one) |
+| `Duck N%` | sidechain depth on the selected track: `0`, or `50%` following the other track |
+| `Mute` | silence the selected track |
+
+The buttons wrap onto a second row when the panel is narrow - `_toolbar_rows()`
+measures them first, `_layout` sizes `self.bar` from that count, and the grid
+is laid out below however many rows they need, so no button is ever dropped.
+
+| Input | Effect |
+| --- | --- |
+| Click a cell | place a note, or take the one already there away |
+| Right-click a cell | remove the note under the pointer (also removes a sample row) |
+| Wheel over a cell | move its note a semitone; `Shift` moves a whole octave |
+| `Ctrl` + wheel | lengthen or shorten the note by a step |
+| Click the ruler | choose the step a sample lands on |
+| Click a track name | select the track |
+| Left / Right | move the chosen step, wrapping |
+| Up / Down | change the selected track |
+| `Enter` | place or remove a note at the chosen step |
+| `Delete` / `Backspace` | remove the note there |
+| `Space` | play / stop the preview |
+| `Ctrl+Z`, `Ctrl+Y`, `Ctrl+Shift+Z` | undo, redo - one entry per edit, forty deep |
+| `Ctrl+M` | mute the selected track |
+| `Ctrl+S` | Save, which is the collapse |
+
+The playhead is a readout, not a sequencer: `playhead()` maps the elapsed
+time onto steps, so the preview draws a moving column. `info()` reports the
+project, kind, tempo, steps, tones, tracks, notes, samples and loop, then the
+selected track's number, shape, gain, ducking depth and mute state.
+
+`Save` is the only thing that writes audio, and it asks first because it
+replaces the source: `sfx.write_wav()` renders `audio/<name>.wav`,
+`audio/<name>.sfxproject` is deleted, and the player takes over with the new
+wav loaded. Quitting or switching projects calls `store()` instead, which
+writes the document back and never collapses - a pattern survives a quit, and
+the build is where it becomes a wav. That one rule keeps `open_manager()` and
+`request_quit()` from turning a pattern into a file the user did not ask for.
 
 ## Build tab
 
@@ -1142,6 +1214,13 @@ file that carries objects - patches the staged document's `lightmap`
 every bake node from the staged scene docs. Only `plan.staged` is
 touched, so the source project keeps its bake lights and can be
 baked again later. See [Lighting](lighting.md) for the pipeline.
+
+The same staged copy is where sound projects are collapsed:
+`sfx.flatten_folder()` renders every `audio/*.sfxproject` in it to a wav,
+drops the documents and reports one line per project. Only `plan.staged` is
+touched here either, so the bundle holds finished sounds while your project
+folder keeps the patterns - and a build that stages nothing collapses
+nothing. See [Audio](audio.md).
 
 ## Docs tab
 

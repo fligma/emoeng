@@ -56,11 +56,16 @@ class LayerStack:
             self.active = max(0, self.active - 1)
 
     def composite(self, base=(255, 255, 255, 255)):
-        """Flatten visible layers over an opaque base, as RGBA uint8."""
+        """Flatten visible layers over an opaque base, as RGBA uint8.
+
+        `base=None` keeps the layers' own alpha instead of covering it,
+        which is what a sprite saved as a PNG wants.
+        """
         w, h = self.size
-        out = np.empty((h, w, 4), np.float32)
-        out[..., 0], out[..., 1], out[..., 2] = base[0], base[1], base[2]
-        out[..., 3] = 255.0
+        out = np.zeros((h, w, 4), np.float32)
+        if base is not None:
+            out[..., 0], out[..., 1], out[..., 2] = base[0], base[1], base[2]
+            out[..., 3] = 255.0
         for layer in self.layers:
             if not layer.visible:
                 continue
@@ -99,6 +104,10 @@ def _over(dst, src):
 
 class UVPaint:
     """The paint session the Model tab hosts in 'uv' mode."""
+
+    # smoothed canvas scaling, which suits a texture; a pixel canvas turns
+    # it off so every pixel keeps its square corners
+    SMOOTH = True
 
     def __init__(self, owner, model):
         self.owner = owner
@@ -926,7 +935,9 @@ class UVPaint:
         ox = rect.centerx - w // 2 - int(self.view["x"] * z)
         oy = rect.centery - h // 2 - int(self.view["y"] * z)
         box = pygame.Rect(ox, oy, max(1, w), max(1, h))
-        view = pygame.transform.smoothscale(self._canvas_surface(), (w, h))
+        scale = pygame.transform.smoothscale if self.SMOOTH \
+            else pygame.transform.scale
+        view = scale(self._canvas_surface(), (w, h))
         surface.blit(view, box.topleft)
         pygame.draw.rect(surface, (70, 76, 90), box, 1)
         self._box = box

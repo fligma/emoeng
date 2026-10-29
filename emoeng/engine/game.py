@@ -1,5 +1,6 @@
 """The emoeng game runtime: one XP window, one scene loop."""
 
+import gc
 import math
 import os
 import sys
@@ -272,6 +273,8 @@ class Game(CameraHost):
         # `debug.overlay`: off, and the scene's `overlay()` never draws
         self.overlay_on = bool(self._pick("", "debug", "overlay", True))
         self.running = True
+        # GL teardown is a one-way door; `shutdown()` only walks it once
+        self._down = False
         self.time = 0.0
         self.last_dt = 1 / 60.0
         self.debug = False
@@ -1265,6 +1268,52 @@ class Game(CameraHost):
                     color=xp.TEXT)
             y += line_h
 
+    def shutdown(self):
+        """Hand the GPU its objects back while the window still has them.
+
+        `pygame.quit()` destroys the GL context. Anything moderngl still
+        holds is then freed by the interpreter's final garbage pass, which
+        calls into a context that no longer exists - a segfault with no
+        Python frame to blame on a software driver, silence on a desktop
+        one. So every object goes here, outward from the scene, and the
+        context goes last. It is safe to call twice, and safe to call on
+        a game whose window never came up.
+        """
+        if getattr(self, "_down", True):
+            return
+        self._down = True
+        scene = getattr(self, "scene", None)
+        if scene is not None:
+            # no `on_exit` here: that hook belongs to a scene switch, and
+            # this path only ever runs while the process is going away
+            for obj in list(getattr(scene, "objects", ()) or ()):
+                try:
+                    obj.dispose()
+                except Exception:
+                    pass
+            try:
+                scene.clear_lights()
+            except Exception:
+                pass
+        winctx = getattr(self, "winctx", None)
+        if winctx is not None:
+            try:
+                winctx.dispose()
+            except Exception:
+                pass
+            self.winctx = None
+        renderer = getattr(self, "renderer", None)
+        if renderer is not None:
+            try:
+                renderer.close()
+            except Exception as exc:
+                print(f"gl teardown: {exc!r}")
+        # a scene switch or a rebuild can leave a GL wrapper unreachable
+        # rather than released, and moderngl frees those in whichever
+        # collection finds them first - so sweep them here, while the
+        # context they point at is still there to be pointed at
+        gc.collect()
+
     def run(self, limit=None):
         """Main loop. `limit` stops after that many frames (smoke tests)."""
         frames = 0
@@ -1317,7 +1366,32 @@ class Game(CameraHost):
                     break
         finally:
             self.audio.stop_all()
+            self.shutdown()
             pygame.quit()
+
+
+def finish_process(code=0):
+    """End the process without a final garbage pass over GL objects.
+
+    `shutdown()` frees what the engine made, but neither SDL nor moderngl
+    promises to free what they made for themselves before Python's last
+    collection runs. Once the loop is done there is nothing left to lose:
+    saves and config write as they change, not on the way out. Set
+    EMOENG_NO_HARD_EXIT to keep the interpreter's own exit path.
+    """
+    if os.environ.get("EMOENG_NO_HARD_EXIT"):
+        raise SystemExit(code)
+    try:
+        import faulthandler
+        faulthandler.cancel_dump_traceback_later()
+    except (ImportError, RuntimeError, ValueError):
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code)
 
 
 def main(project_path=None, frames=None):
@@ -1325,6 +1399,7 @@ def main(project_path=None, frames=None):
     if project_path is None:
         project_path = Project.default_path()
     Game(Project(project_path)).run(limit=frames)
+    finish_process()
 
 
 if __name__ == "__main__":

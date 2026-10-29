@@ -12,6 +12,7 @@ from emoeng.engine import input as inputmod
 from emoeng.engine import model as modelmod
 from emoeng.engine import objects as objmod
 from emoeng.engine import proctex as proctexmod
+from emoeng.engine import renderer as rendermod
 from emoeng.engine import save as savemod
 from emoeng.engine import scene as scenemod
 from emoeng.engine import shaders as shadermod
@@ -360,6 +361,11 @@ PICKERS = {
     "map": ("maps", ()),
 }
 
+# words a row may only take from a fixed set, not from a folder
+ENUMS = {
+    "blend": tuple(rendermod.BLENDS),
+}
+
 # loader methods ask each folder, skipping unloadable `.py`
 NAMERS = {
     "scenes": ("scene_names",),
@@ -400,9 +406,32 @@ def options(row, project):
     return tuple(out)
 
 
-def choices(project, slot):
+def enum_for(slot, cls=None):
+    """The fixed words a knob takes: its class's own set, or the engine's.
+
+    A class spells the words it accepts by pluralising the knob, the way
+    `hitbox_shape` is joined by `hitbox_shapes`: one list beside the
+    default, instead of a table the editor has to keep in step.
+    """
+    if cls is not None:
+        got = getattr(cls, f"{slot}s", None)
+        if isinstance(got, (list, tuple)) and got:
+            return tuple(str(word) for word in got)
+    got = ENUMS.get(str(slot))
+    return tuple(got) if got else None
+
+
+def choices(project, slot, cls=None):
     """What a row named `slot` can be filled with."""
+    words = enum_for(slot, cls)
+    if words is not None:
+        return words
     return options(PICKERS.get(slot), project)
+
+
+def enumerable(slot, cls=None):
+    """True when a row's words are a fixed set rather than files."""
+    return enum_for(slot, cls) is not None
 
 
 def known(project, slot, word):

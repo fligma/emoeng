@@ -14,7 +14,7 @@ from .. import const
 from . import components
 from . import model as models
 from . import objects as objmod
-from . import paths, scenedoc, templates
+from . import paths, scenedoc, sfx, templates
 from . import shaders as shadermod
 from .objects import GameObject, Object3D, first_object_class
 from .scene import Scene, Scene2D, Scene3D, SceneUI, first_scene_class
@@ -321,10 +321,21 @@ class Project:
                         if not str(k).startswith("_")}
         return {}
 
-    def save_input_maps(self, actions, triggers):
+    def input_tuning(self):
+        """Numbers a project tunes about its bindings, e.g. the deadzone."""
+        for source in (self._read_sidecar(INPUT_NAME).get("tuning"),
+                       self.get("input", "tuning")):
+            if isinstance(source, dict) and source:
+                return {str(k): v for k, v in source.items()
+                        if not str(k).startswith("_")}
+        return {}
+
+    def save_input_maps(self, actions, triggers, tuning=None):
         """Write both tables into the manifest and store it."""
         self.set("input", "actions", input_table(actions))
         self.set("input", "triggers", input_table(triggers))
+        if tuning is not None:
+            self.set("input", "tuning", dict(tuning))
         self.save_meta()
         return self.path / META_NAME
 
@@ -574,6 +585,11 @@ class Project:
     def audio_files(self):
         return [p for p in self.files("audio")
                 if p.suffix.lower() in (".wav", ".ogg", ".mp3", ".flac")]
+
+    def sfx_files(self):
+        """Sound projects: the editable source of some of those files."""
+        return [p for p in self.files("audio")
+                if p.suffix.lower() == sfx.SFX_EXT]
 
     def relative(self, path):
         try:

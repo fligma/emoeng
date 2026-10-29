@@ -45,6 +45,12 @@ def config_table():
     return out
 
 
+def engine_table():
+    """The engine's own keymap, before a player's config is laid over it."""
+    return {key.split(".", 1)[1]: clean_keys(config.DEFAULTS.get(key))
+            for key in config.keys("input")}
+
+
 def config_label(name):
     """What an action does, in the words the settings tab uses."""
     entry_ = config.BY_KEY.get(f"{SECTION}.{name}")
@@ -52,12 +58,32 @@ def config_label(name):
         str(name).replace("_", " ").title()
 
 
+# per-name numbers a project may tune, with the type each one takes
+TUNING = {"deadzone": float}
+
+
+def clean_tuning(value):
+    """A tuning block with unknown keys and unreadable numbers dropped."""
+    out = {}
+    for key, raw in (value or {}).items():
+        name = str(key).strip()
+        cast = TUNING.get(name)
+        if cast is None:
+            continue
+        try:
+            out[name] = cast(raw)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 class InputMap:
     """Actions and triggers in one table, as Godot's InputMap is."""
 
-    def __init__(self, actions=None, triggers=None):
+    def __init__(self, actions=None, triggers=None, tuning=None):
         self.actions = _table(actions)
         self.triggers = _table(triggers)
+        self.tuning = clean_tuning(tuning)   # stick deadzone, and the like
         self._project = None          # the project this map was read from
 
     @classmethod
@@ -71,7 +97,8 @@ class InputMap:
         if project is None:
             return cls()
         return cls(getattr(project, "input_map", dict)(),
-                   getattr(project, "trigger_map", dict)())
+                   getattr(project, "trigger_map", dict)(),
+                   getattr(project, "input_tuning", dict)())
 
     def own(self, name):
         """Which table holds `name`, or None."""
@@ -87,6 +114,34 @@ class InputMap:
 
     def is_trigger(self, name):
         return self.own(name) == TRIGGER
+
+    @property
+    def deadzone(self):
+        """How far a stick travels before an axis counts as pressed."""
+        return self.tuning.get("deadzone", inputmod.DEADZONE)
+
+    def set_tuning(self, key, value):
+        """Store one tuning number, or drop it back to the engine's own."""
+        if value is None:
+            self.tuning.pop(str(key), None)
+            return None
+        cast = TUNING.get(str(key))
+        if cast is None:
+            return None
+        try:
+            self.tuning[str(key)] = cast(value)
+        except (TypeError, ValueError):
+            return None
+        return self.tuning[str(key)]
+
+    def source(self, name):
+        """Where a name's keys come from: project, player config, engine."""
+        if self.has(name):
+            return "project"
+        name = str(name)
+        mine = clean_keys(config_table().get(name))
+        theirs = clean_keys(engine_table().get(name))
+        return "player" if mine and mine != theirs else "engine"
 
     def names(self, trigger=None):
         """Every name, or just one table's, in alphabetical order."""
@@ -172,7 +227,8 @@ class InputMap:
     def as_sections(self):
         """The manifest shape: `{"actions": ..., "triggers": ...}`."""
         return {"actions": {k: list(v) for k, v in self.actions.items()},
-                "triggers": {k: list(v) for k, v in self.triggers.items()}}
+                "triggers": {k: list(v) for k, v in self.triggers.items()},
+                "tuning": dict(self.tuning)}
 
     def apply(self, input_obj):
         """Bind the whole chain onto an `Input`, lowest layer first."""
@@ -180,6 +236,7 @@ class InputMap:
         config.bind_defaults(input_obj)
         input_obj.bind_map(self.actions)
         input_obj.bind_triggers(self.triggers)
+        input_obj.deadzone = self.deadzone
         return input_obj
 
     def __repr__(self):
@@ -212,10 +269,16 @@ def save(project, mapping):
     sections = mapping.as_sections() if isinstance(mapping, InputMap) \
         else sections_of(mapping)
     if hasattr(project, "save_input_maps"):
-        project.save_input_maps(sections["actions"], sections["triggers"])
+        try:
+            project.save_input_maps(sections["actions"], sections["triggers"],
+                                    sections["tuning"])
+        except TypeError:
+            # an older project object takes the two tables only
+            project.save_input_maps(sections["actions"], sections["triggers"])
     else:
         project.set(SECTION, "actions", sections["actions"])
         project.set(SECTION, "triggers", sections["triggers"])
+        project.set(SECTION, "tuning", sections["tuning"])
         project.save_meta()
     load(project, force=True)
     return True
@@ -225,7 +288,8 @@ def sections_of(raw):
     """A plain `{...}` manifest section, both tables filled."""
     raw = raw or {}
     return {"actions": _table(raw.get("actions")),
-            "triggers": _table(raw.get("triggers"))}
+            "triggers": _table(raw.get("triggers")),
+            "tuning": clean_tuning(raw.get("tuning"))}
 
 
 def binding_labels(keys):

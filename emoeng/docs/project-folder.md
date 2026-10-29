@@ -34,7 +34,8 @@ hello/
 ├── maps/                 .map3d - the same schema, in a walked folder
 │   └── keep.map3d        placed by a scene's `maps` field; builds its collider
 ├── textures/             .png / .jpg, uploaded by file stem
-├── audio/                .wav .ogg .mp3 .flac, loaded by file stem
+├── audio/                .wav .ogg .mp3 .flac, loaded by file stem;
+│                         a .sfxproject is rendered instead
 └── saves/                written by the game; never part of the project
 ```
 
@@ -62,7 +63,7 @@ says which family a document is in (`.ent3d` / `.ent2d` against `.obj3d` /
 | `models` | `KINDS` | `Model.load` / `Model2D.load` by stem |
 | `maps` | `KINDS` | `maps/<stem>.map3d` - model documents that build a mesh collider when placed; `map_names()` lists the stems |
 | `textures` | `KINDS` | `Renderer.texture` by stem |
-| `audio` | `KINDS` | `Audio.load` by stem |
+| `audio` | `KINDS` | `Audio.load` by stem; a `.sfxproject` is rendered by `engine.sfx` under the same stem |
 | `shaders` | - (watched) | `scanlines.shader` documents + `scripts/shaders/*.py`; `shader_names()` lists the stems. A folder the manifest's `post` and objects read from; see [Shaders](shaders.md) |
 
 The project root goes on `sys.path` (`Project._add_import_path()`), so the
@@ -280,7 +281,7 @@ read, so the `_help` note can stay.
 | `files(kind)` | every file in that folder |
 | `scene_names()`, `object_names()`, `entity_names()`, `spawnable_names()`, `script_names()`, `shader_names()` | stems; `spawnable_names()` is both document folders at once |
 | `model_names()`, `model2d_names()`, `map_names()` | `.model3d` (old `.model` too) / `.model2d` / `.map3d` stems |
-| `texture_files()`, `audio_files()` | paths |
+| `texture_files()`, `audio_files()`, `sfx_files()` | paths; `sfx_files()` is the `.sfxproject` documents in `audio/` |
 | `relative(path)` | project-relative display path |
 | `model_path(name)`, `model2d_path(name)`, `object_path(name)` | path for a stem |
 

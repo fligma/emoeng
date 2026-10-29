@@ -69,6 +69,7 @@ scene.
 | `set_player` | `set_player(pos, yaw=None, pitch=None)` | Teleport the camera (legacy, no Player) |
 | `follow` | `follow(target, offset=None, damping=None)` | Chase an object or point |
 | `pause` / `resume` / `quit` | | Freeze updates, leave the loop |
+| `shutdown` | | Release the scene's GPU objects, then the context; safe to call twice |
 | `screenshot` | | PNG named `motionengine_<n>.png` |
 | `play_area` | | `Rect` the scene's HUD is seen through, minus the chrome bars |
 | `reload_code` | | Re-read scripts, objects, models, textures and the scene |
@@ -97,8 +98,16 @@ scene.
 | 12. `draw()` | See below |
 | 13. `display.flip()` | Then the caption is re-set to `title - scene name` |
 
-A `finally` block stops every sound and calls `pygame.quit()`, so a crash still
-leaves a clean process.
+A `finally` block stops every sound, calls `shutdown()` and then
+`pygame.quit()`, so a crash still leaves a clean process. That order is not
+a style choice. `pygame.quit()` destroys the GL context, and any moderngl
+object still alive then is freed by whichever garbage collection finds it
+first - on a software driver (a headless Linux runner, for instance) a
+`__del__` that calls into a dead context is a segfault at exit with no
+Python frame to blame. `shutdown()` therefore releases everything the engine
+made, in order outward from the scene, collects what a scene switch or a
+rebuild left unreachable, and closes the context last, all while the driver
+is still there to hear it.
 
 Only the step the simulation sees is clamped: `dt = min(0.05, raw)`. A 200 ms
 hitch - a window drag, an alt-tab, a GC pause - must not move a body 200 ms in
@@ -174,3 +183,10 @@ main("emoeng/projects/hello", frames=120)   # frames=None runs until closed
 `main()` falls back to `Project.default_path()` when no path is given, which is
 why `python -m emoeng run` with no argument opens the demo project if one is
 present.
+
+When the loop ends, `main()` calls `finish_process()`: it flushes the two
+streams and ends the process there, because neither SDL nor moderngl promises
+to free what they made for themselves before Python's last collection runs.
+There is nothing left to lose at that point - saves and config write as they
+change, not on the way out. Set `EMOENG_NO_HARD_EXIT` to keep the interpreter's
+own exit path instead, which is what an embedded run should do.
