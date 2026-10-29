@@ -77,25 +77,33 @@ jobs:
         with:
           python-version: "3.13"
 
+      # shell: bash everywhere these steps use unix syntax - a Windows
+      # runner's default shell is PowerShell, which cannot read `if [...]`
       - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install pygame moderngl numpy pillow pyinstaller
-          # Linux: install SDL2 and OpenGL dev libraries for pygame
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev
-          fi
+
+      # Linux: SDL2 and OpenGL dev libraries for pygame
+      - name: Install SDL2 and OpenGL (Linux)
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev
 
       # The repo's own build tool: freezes emoeng into
       # tools/dist/MotionEngine.exe (Windows) or MotionEngine (Linux)
       # with the engine CLI baked in, the projects folder already copied beside the exe.
       # --no-run because a headless runner must not try to open a window.
       - name: Freeze the app
+        shell: bash
         run: python tools/build_release.py --no-run
 
       # Smoke test on Linux with xvfb
       - name: Smoke test (Linux)
         if: matrix.label == 'linux'
+        shell: bash
         run: |
           SDL_AUDIODRIVER=dummy xvfb-run -a \
             tools/dist/MotionEngine run tools/dist/projects/demo --frames 1
