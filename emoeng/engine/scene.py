@@ -12,7 +12,8 @@ from . import ui as uimod
 from .camera import Camera, Camera2D
 from .meshes import MeshData, frame_pin, mesh_anchor, slide_pin
 from .objects import (GameObject, Object2D, Object3D, UIObject,
-                      ModelObject)      # noqa: F401 (re-exported)
+                      ModelObject,             # noqa: F401 (re-exported)
+                      answers_to, node_from)
 from .timers import Timers
 
 
@@ -195,6 +196,8 @@ class Scene:
         self.colliders = []
         # trigger bus: name -> [(owner, method)] waiting for a broadcast
         self.listeners = {}
+        # objects `queue_free()` marked, taken out when the frame ends
+        self._freeing = []
 
     @property
     def hud(self):
@@ -269,14 +272,19 @@ class Scene:
         return pas.set(knob, value) if pas is not None else None
 
     def object_class(self, obj):
-        """Resolve a class or an objects/<name> file to its class."""
+        """Resolve a class or a project name to its class.
+
+        A name is looked for in `entities/` first, then `objects/`, so a
+        script may say `spawn("enemy")` without caring which folder the
+        behaviour lives in.
+        """
         if isinstance(obj, str):
-            cls = self.project.object(obj, self.object_base)
+            cls = self.project.spawnable(obj, self.object_base)
         else:
             cls = obj
         if not (isinstance(cls, type) and issubclass(cls, self.object_base)):
             raise TypeError(f"{obj!r} is not a {self.object_base.__name__} "
-                            "class or objects/<name> file")
+                            "class or an objects/entities name")
         return cls
 
     def spawn(self, obj, pos=None, parent=None, clone_of=None, tag=None,
@@ -430,10 +438,49 @@ class Scene:
         return True
 
     def objects_of(self, obj):
-        """Every live object of one class (or objects/<name> file)."""
+        """Every live object of one class (or an objects/entities name)."""
         cls = self.object_class(obj)
         return [o for o in self.objects
                 if isinstance(o, cls) and o.alive]
+
+    def queue_free(self, obj):
+        """Mark an object to leave when this frame's update ends.
+
+        Removal in the middle of a loop over `get_children()` would skip a
+        node, so the request waits its turn; `despawn()` still means now.
+        """
+        if obj is not None and getattr(obj, "alive", False) and \
+                not any(o is obj for o in self._freeing):
+            self._freeing.append(obj)
+        return obj
+
+    def _drain_free(self):
+        """Remove everything `queue_free()` marked; runs after the objects."""
+        while self._freeing:
+            self.despawn(self._freeing.pop(0))
+        return self
+
+    def get_node(self, path):
+        """A live object by branch: `get_node("Torch#0/Flame#0")`.
+
+        A word is a node's document name, its tag or its class. Top-level
+        names are looked for among the scene's roots first, so a script need
+        not spell the whole branch to reach a node it knows the name of.
+        `"."` is the scene itself.
+        """
+        text = str(path or "").strip().replace("\\", "/")
+        parts = [p for p in text.split("/") if p and p != "."]
+        if not parts or parts[0] == "..":
+            return self
+        roots = [o for o in self.objects if o.alive and o.parent is None]
+        return node_from(roots, parts) or node_from(self.objects, parts)
+
+    def find_by_name(self, name):
+        """The first live object that goes by that name, or None."""
+        for obj in self.objects:
+            if obj.alive and answers_to(obj, name):
+                return obj
+        return None
 
     def by_tag(self, tag):
         """The first live object with that tag, or None."""
@@ -806,6 +853,9 @@ class Scene:
         for obj in list(self.objects):
             if obj.alive:
                 obj.update(dt)
+        # a node `queue_free()`d mid-frame leaves only now, once the loop
+        # that asked for it has finished
+        self._drain_free()
         # nodes are re-derived from their parents after moves
         self.sync_tree()
         for light in list(self._lit()):
@@ -839,6 +889,7 @@ class Scene:
 
     def on_exit(self):
         self.timers.clear()
+        self._freeing = []
 
     def on_save(self, save):
         """Called with the project's SaveStore before it is written."""
@@ -858,7 +909,8 @@ class Scene:
         name = str(name)
         self.on_trigger(name, value)
         for owner, method in list(self.listeners.get(name, ())):
-            hook = getattr(owner, method, None)
+            # a `connect()` listener is the callable; a `listen()` one owns it
+            hook = owner if method is None else getattr(owner, method, None)
             if hook is not None:
                 _deliver(hook, name, value)
         for obj in list(self.objects):
@@ -867,10 +919,14 @@ class Scene:
         return name
 
     def listen(self, name, owner, method="on_trigger"):
-        """Have `owner` hear a trigger broadcast; the pair back."""
+        """Have `owner` hear a trigger broadcast; the pair back.
+
+        `method` is the name of the hook to call on `owner`, or None when
+        `owner` is the callable itself -- what `connect()` asks for.
+        """
         name = str(name)
         row = self.listeners.setdefault(name, [])
-        pair = (owner, str(method))
+        pair = (owner, None if method is None else str(method))
         if pair not in row:
             row.append(pair)
         return pair
@@ -880,12 +936,33 @@ class Scene:
         name = str(name)
         if owner is None:
             return self.listeners.pop(name, [])
+        # `!=` as well as identity, so a bound method lets itself go
         row = [pair for pair in self.listeners.get(name, ())
-               if pair[0] is not owner]
+               if pair[0] is not owner and pair[0] != owner]
         if self.listeners.get(name) is None:
             return []
         self.listeners[name] = row
         return row
+
+    # -- signals, as Godot spells them ------------------------------------
+    def connect(self, name, fn, method=None):
+        """Hear a signal: `connect("door", self.on_door)`.
+
+        An object and the name of its hook work too, and mean the same as
+        the older `listen("door", obj, "on_door")`.
+        """
+        if method is None and not callable(fn):
+            raise TypeError("a signal listener is a callable, or an object "
+                            "and the name of its hook")
+        return self.listen(name, fn, method)
+
+    def disconnect(self, name, fn=None):
+        """Forget one listener of a signal, or every listener of it."""
+        return self.unlisten(name, fn)
+
+    def emit(self, name, value=None):
+        """Fire a signal: the Godot name for `broadcast()`."""
+        return self.broadcast(name, value)
 
     def status(self):
         return [self.name]

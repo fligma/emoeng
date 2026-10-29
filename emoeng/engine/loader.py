@@ -354,7 +354,7 @@ class Project:
         return self._write_sidecar(ASSET_NAME, payload)
 
     # scripts live a level down, so scan one folder deeper
-    WATCH_NESTED = ("scripts/scenes", "scripts/objects",
+    WATCH_NESTED = ("scripts/scenes", "scripts/objects", "scripts/entities",
                     "scripts/shaders")
 
     def watch_files(self, kind):
@@ -490,8 +490,14 @@ class Project:
         return self._stems("objects", scenedoc.OBJECT_EXTS)
 
     def entity_names(self):
-        """The project's entities: one `entities/*.obj3d` or `.obj2d` each."""
-        return self._stems("entities", scenedoc.OBJECT_EXTS)
+        """The project's entities: one `entities/*.ent3d` or `.ent2d` each."""
+        # the old object spelling still counts, until it is upgraded
+        return self._stems("entities",
+                           scenedoc.ENTITY_EXTS + scenedoc.OBJECT_EXTS)
+
+    def spawnable_names(self):
+        """Everything `spawn(<name>)` can name: objects and entities."""
+        return sorted(set(self.object_names()) | set(self.entity_names()))
 
     def shader_names(self):
         """The project's shaders: one `shaders/*.shader` each."""
@@ -505,6 +511,19 @@ class Project:
                 continue
             doc = scenedoc.load(p, "object")
             want = p.with_suffix(scenedoc.object_ext(doc.get("type")))
+            if want.exists():
+                continue
+            try:
+                p.rename(want)
+            except OSError:
+                continue
+            moved.append(want)
+        for p in self.files("entities"):
+            # an entity kept an object's extension before the family split
+            if p.suffix.lower() not in scenedoc.OBJECT_EXTS:
+                continue
+            doc = scenedoc.load(p, "entity")
+            want = p.with_suffix(scenedoc.entity_ext(doc.get("type")))
             if want.exists():
                 continue
             try:
@@ -592,6 +611,27 @@ class Project:
                 pass
         return made
 
+    def entity_doc(self, name):
+        """An entity's document, or None when script-only."""
+        path = scenedoc.find_doc(self.entities_dir, name, "entity")
+        return scenedoc.load(path, "entity") if path else None
+
+    def save_entity_doc(self, name, doc):
+        """Write an entity document under the extension its type means."""
+        path = scenedoc.doc_path(self.entities_dir, name, "entity",
+                                 type=(doc or {}).get("type"))
+        made = scenedoc.save(path, doc)
+        # an entity re-spelled from `.obj3d` leaves the old file behind
+        for ext in scenedoc.OBJECT_EXTS:
+            stale = path.with_suffix(ext)
+            if stale == path or not stale.is_file():
+                continue
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        return made
+
     def shader_doc(self, name):
         """A shader's document, or None when missing."""
         path = scenedoc.find_doc(self.shaders_dir, name, "shader")
@@ -674,6 +714,7 @@ class Project:
         for guess in (self.path / p, self.scripts_dir / p,
                       self.scene_scripts_dir / p.name,
                       self.object_scripts_dir / p.name,
+                      self.entity_scripts_dir / p.name,
                       self.shader_scripts_dir / p.name):
             if guess.is_file():
                 return guess
@@ -956,35 +997,95 @@ class Project:
             return None
         return cls
 
-    def object(self, name, base=GameObject):
-        """Import an object's script and return its GameObject subclass."""
-        key = Path(name).stem
-        cached = self._objects.get(key)
+    def module_name(self, path, package):
+        """The dotted import name of a project script's path.
+
+        A document may name its script anywhere in the project, so the
+        import follows the file rather than the folder it was guessed from.
+        """
+        name = Path(path).stem
+        try:
+            rel = Path(path).resolve().relative_to(self.path)
+        except ValueError:
+            return f"{package}.{name}"
+        parts = list(rel.parts)
+        if not parts:
+            return f"{package}.{name}"
+        parts[-1] = name
+        return ".".join(parts)
+
+    def _spawn_class(self, key, base, doc, path, package, where, folder):
+        """Resolve one spawnable: its script's class, or its node type."""
+        cache = f"{package}:{key}"
+        cached = self._objects.get(cache)
         if cached is not None and cached[1] is base:
             return cached[0]
-        doc, path = self.object_file(key)
         if path is None:
             cls = self.node_class((doc or {}).get("type"), base)
-            if cls is not None:
-                if doc is not None:
-                    # the placement rides a subclass of its own
-                    cls = type(cls.__name__, (cls,),
-                               {"look_defaults": scenedoc.look(doc)})
-                self._objects[key] = (cls, base)
-                return cls
-            raise FileNotFoundError(
-                f"object '{key}' not found in {self.object_scripts_dir}")
+            if cls is None:
+                raise FileNotFoundError(
+                    f"{where} '{key}' not found in {folder}")
+            if doc is not None:
+                # the placement rides a subclass of its own
+                cls = type(cls.__name__, (cls,),
+                           {"look_defaults": scenedoc.look(doc)})
+            self._objects[cache] = (cls, base)
+            return cls
         self._add_import_path()
-        module = importlib.import_module(f"scripts.objects.{path.stem}")
+        module = importlib.import_module(self.module_name(path, package))
         cls = first_object_class(module, base)
         if cls is None:
             raise ValueError(
-                f"scripts/objects/{path.stem}.py defines no "
-                f"{base.__name__} subclass")
+                f"{self.relative(path)} defines no {base.__name__} subclass")
         if doc is not None:
             cls.look_defaults = scenedoc.look(doc)
-        self._objects[key] = (cls, base)
+        self._objects[cache] = (cls, base)
         return cls
+
+    def object(self, name, base=GameObject):
+        """Import an object's script and return its GameObject subclass."""
+        key = Path(name).stem
+        doc, path = self.object_file(key)
+        return self._spawn_class(key, base, doc, path, "scripts.objects",
+                                 "object", self.object_scripts_dir)
+
+    def entity(self, name, base=GameObject):
+        """Import an entity's script and return its GameObject subclass."""
+        key = Path(name).stem
+        doc, path = self.entity_file(key)
+        return self._spawn_class(key, base, doc, path, "scripts.entities",
+                                 "entity", self.entity_scripts_dir)
+
+    def entity_file(self, name):
+        """(document, script path) for an entity name."""
+        key = Path(name).stem
+        doc = self.entity_doc(key)
+        path = self.script_path(doc.get("script") if doc else None)
+        if path is not None:
+            return doc, path
+        guess = self.entity_scripts_dir / f"{key}.py"
+        return doc, (guess if guess.is_file() else None)
+
+    def spawnable_file(self, name):
+        """(document, script path) for a name in either folder."""
+        key = Path(name).stem
+        doc, path = self.entity_file(key)
+        if doc is not None or path is not None:
+            return doc, path
+        return self.object_file(key)
+
+    def spawnable(self, name, base=GameObject):
+        """The class a `spawn(<name>)` or a `uses` entry means.
+
+        An entity document wins: a scripted thing lives in `entities/`
+        whatever its node type is called, and only the entity route reads
+        `scripts/entities/`.
+        """
+        key = Path(name).stem
+        doc, path = self.entity_file(key)
+        if doc is not None or path is not None:
+            return self.entity(key, base)
+        return self.object(key, base)
 
     def object_file(self, name):
         """(document, script path) for an object name."""
@@ -1001,11 +1102,12 @@ class Project:
         self._objects.clear()
         for name in list(sys.modules):
             if name.split(".")[0] == "objects" or \
-                    name.startswith("scripts.objects"):
+                    name.startswith("scripts.objects") or \
+                    name.startswith("scripts.entities"):
                 sys.modules.pop(name, None)
 
     def check_uses(self, cls, seen=None, base=GameObject):
-        """Object scripts a scene needs but the project lacks."""
+        """Scripts a scene needs but the project lacks, in either folder."""
         seen = set() if seen is None else seen
         missing = []
         for name in getattr(cls, "uses", ()):
@@ -1013,7 +1115,7 @@ class Project:
             if key in seen:
                 continue
             seen.add(key)
-            _doc, path = self.object_file(key)
+            _doc, path = self.spawnable_file(key)
             if path is None:
                 if self.node_class((_doc or {}).get("type"), base):
                     # a document naming an engine node needs no script
@@ -1021,7 +1123,7 @@ class Project:
                 missing.append(key)
                 continue
             try:
-                missing.extend(self.check_uses(self.object(key, base),
+                missing.extend(self.check_uses(self.spawnable(key, base),
                                                seen, base))
             except (ImportError, ValueError):
                 missing.append(key)
@@ -1365,9 +1467,10 @@ class Project:
                template=templates.DEFAULT_TEMPLATE):
         """Scaffold a new project from a starter template."""
         path = Path(path).expanduser().resolve()
-        for folder in ("scenes", "objects", "entities", "shaders", "models", "maps",
-                       "textures", "audio", "scripts/scenes",
-                       "scripts/objects", "scripts/shaders"):
+        for folder in ("scenes", "objects", "entities", "shaders", "models",
+                       "maps", "textures", "audio", "scripts/scenes",
+                       "scripts/objects", "scripts/entities",
+                       "scripts/shaders"):
             (path / folder).mkdir(parents=True, exist_ok=True)
         name = path.name
         stem = str(start_scene or templates.spec(template)["start"])

@@ -1,5 +1,6 @@
 """Motion Engine entry points."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -7,8 +8,67 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+FAULT_LOG = "faults.log"
+
+
+def _scratch_dir():
+    """The per-user folder, found without importing the engine."""
+    # the point of this is to work when the engine import is exactly the
+    # thing that has gone wrong, so it cannot lean on engine.paths
+    got = os.environ.get("EMOTION_ENGINE_HOME")
+    if got:
+        return Path(got).expanduser()
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "MotionEngine"
+    return Path.home() / ".motionengine"
+
+
+def arm_faults():
+    """Make a crash or a hang leave a trace behind.
+
+    A windowed build has no console, so a freeze is silent. The Python stack
+    of every thread is written to a log instead: on a real crash, on SIGUSR1
+    (`kill -USR1 <pid>`), and after EMOTION_ENGINE_WATCHDOG seconds of a
+    hang, repeated while it stays hung.
+    """
+    try:
+        import faulthandler
+    except ImportError:
+        return None
+    sink = sys.stderr
+    if sink is None:
+        try:
+            folder = _scratch_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            sink = open(folder / FAULT_LOG, "a", buffering=1)
+        except OSError:
+            sink = None
+    for arm in (lambda: faulthandler.enable(file=sink, all_threads=True),
+                lambda: faulthandler.enable(all_threads=True)):
+        try:
+            arm()
+            break
+        except (ValueError, OSError):
+            continue
+    try:
+        import signal
+        usr1 = getattr(signal, "SIGUSR1", None)
+        if usr1 is not None:
+            faulthandler.register(usr1, file=sink, all_threads=True)
+    except (ValueError, OSError):
+        pass
+    try:
+        secs = int(os.environ.get("EMOTION_ENGINE_WATCHDOG", "0"))
+        if secs > 0:
+            faulthandler.dump_traceback_later(secs, repeat=True,
+                                              file=sink, exit=False)
+    except (ValueError, OSError):
+        pass
+    return sink
+
 
 def main(argv=None):
+    arm_faults()
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "--run":
         args = ["run"] + args[1:]

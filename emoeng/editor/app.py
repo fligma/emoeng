@@ -15,9 +15,10 @@ import pygame
 
 from .. import CODENAME, __version__, const
 from ..engine import (config, input as inputmod, model as modelmod,
-                      paths, player as playermod,
-                      scenedoc, shaders, templates, theme, xp)
+                      paths, player as playermod, scenedoc, shaders,
+                      templates, theme, ui, xp)
 from ..engine.audio import Audio
+from ..engine.game import boot_pygame, startup_help
 from ..engine.loader import (META_NAME, INPUT_NAME, ASSET_NAME,
                              OBJECT_PRESETS, SCENE_PRESETS,
                              SHADER_PRESETS, Project, read_meta)
@@ -74,18 +75,27 @@ _DIRTY_TABS = ((TAB_DOC, "doctab"), (TAB_CODE, "code"),
                (TAB_BLOCKS, "blocks"), (TAB_MODEL, "model"))
 # Run lives in the tab strip, not a menu
 RUN_ICON = "play-sym"
-FOLDERS = ("scenes", "objects", "shaders", "scripts", "models", "maps",
-           "textures", "audio")
+FOLDERS = ("scenes", "objects", "entities", "shaders", "scripts", "models",
+           "maps", "textures", "audio")
 # the Project View files run-time folders and media separately
-TREE_BANDS = (("code", ("scenes", "objects", "shaders", "scripts")),
+TREE_BANDS = (("code", ("scenes", "objects", "entities", "shaders",
+                        "scripts")),
               ("assets", ("models", "maps", "textures", "audio")))
 # (create group, default kind) per folder's plus button
 FOLDER_CREATE = {"scenes": ("scene", "new_scene"),
                  "objects": ("object", "new_object"),
+                 "entities": ("entity", "new_entity_3d"),
                  "shaders": ("shader", "new_shader"),
                  "scripts/scenes": ("scene", "new_scene"),
                  "scripts/objects": ("object", "new_object"),
+                 "scripts/entities": ("entity", "new_entity_3d"),
                  "scripts/shaders": ("shader", "new_shader")}
+# a `.py` in a document folder belongs to no document
+_STRAY_KINDS = ("scenes", "objects", "entities")
+# the extensions whose files own a branch, so the tree can fold them; an
+# entity still wearing an object's extension folds too, until it is upgraded
+_FOLD_EXTS = {"objects": scenedoc.OBJECT_EXTS,
+              "entities": scenedoc.ENTITY_EXTS + scenedoc.OBJECT_EXTS}
 AUDIO_EXT = (".wav", ".ogg", ".mp3", ".flac")
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
 # a document row's picture, by the kind it states
@@ -143,11 +153,14 @@ MENUS = {
                 ("New 2D Scene...", "new_scene_2d"),
                 ("New UI Scene...", "new_scene_ui"),
                 ("-", None),
+                ("New 3D Entity...", "new_entity_3d"),
+                ("New 2D Entity...", "new_entity_2d"),
+                ("New Player 3D...", "new_player_3d"),
+                ("New Player 2D...", "new_player_2d"),
+                ("-", None),
                 ("New 3D Object...", "new_object"),
                 ("New 2D Object...", "new_object_2d"),
                 ("New UI Object...", "new_ui_object"),
-                ("New Player 3D...", "new_player_3d"),
-                ("New Player 2D...", "new_player_2d"),
                 ("New Camera 3D...", "new_camera_3d"),
                 ("New Camera 2D...", "new_camera_2d"),
                 ("New Screen 3D...", "new_screen_3d"),
@@ -174,6 +187,8 @@ ACTION_ICONS = {
     "new_object": "new-file-sym",
     "new_object_2d": "new-file-sym",
     "new_ui_object": "new-file-sym",
+    "new_entity_3d": "new-file-sym",
+    "new_entity_2d": "new-file-sym",
     "new_player_3d": "new-file-sym",
     "new_player_2d": "new-file-sym",
     "new_camera_3d": "new-file-sym",
@@ -251,7 +266,11 @@ CLASS_ICONS = {
     "Object3D": "file-object-3d",
     "Object2D": "file-object-2d",
     "UIObject": "file-object-ui",
-    # players are spawnable objects; their subclasses read the same way
+    # entities borrow the object art until they are drawn their own; what
+    # tells them apart in the tree is the document tile, not this picture
+    "Entity3D": "file-object-3d",
+    "Entity2D": "file-object-2d",
+    # players are spawnable entities; their subclasses read the same way
     "Player3D": "file-object-player3d",
     "Player2D": "file-object-player2d",
     "Player": "file-object-player3d",
@@ -331,8 +350,7 @@ class Editor:
     """Owns the window, the project manager and the editor docks."""
 
     def __init__(self, project_path=None):
-        pygame.mixer.pre_init(44100, -16, 2, 512)
-        pygame.init()
+        boot_pygame()
         cfg = config.load()
         theme.apply(cfg.get("editor.theme"))
         self.fps_cap = int(cfg.get("runtime.fps_cap"))
@@ -438,12 +456,16 @@ class Editor:
     def _make_window(self, w, h):
         """Resizable window with framed swaps when the driver allows them."""
         try:
-            surf = pygame.display.set_mode((int(w), int(h)),
-                                           pygame.RESIZABLE,
-                                           vsync=1 if self.vsync else 0)
-        except pygame.error:
-            surf = pygame.display.set_mode((int(w), int(h)),
-                                           pygame.RESIZABLE)
+            try:
+                surf = pygame.display.set_mode((int(w), int(h)),
+                                               pygame.RESIZABLE,
+                                               vsync=1 if self.vsync else 0)
+            except pygame.error:
+                surf = pygame.display.set_mode((int(w), int(h)),
+                                               pygame.RESIZABLE)
+        except pygame.error as exc:
+            startup_help(exc)
+            raise SystemExit(1)
         try:
             art = widgets.icon("icon", 32)
             if art is not None:
@@ -456,13 +478,13 @@ class Editor:
         """(Re)fill the font set at the configured size, in place."""
         size = max(8, min(32, int(self.font_size)))
         self.fonts.update({
-            "small": pygame.font.SysFont("tahoma", max(8, size - 2)),
-            "normal": pygame.font.SysFont("tahoma", size),
+            "small": ui.load_font("tahoma", max(8, size - 2)),
+            "normal": ui.load_font("tahoma", size),
             # the block view's keyword text, built once here
-            "bold": pygame.font.SysFont("tahoma", size, bold=True),
-            "big": pygame.font.SysFont("tahoma", size + 5, bold=True),
-            "title": pygame.font.SysFont("tahoma", size + 11, bold=True),
-            "mono": pygame.font.SysFont("consolas", max(8, size - 1)),
+            "bold": ui.load_font("tahoma", size, bold=True),
+            "big": ui.load_font("tahoma", size + 5, bold=True),
+            "title": ui.load_font("tahoma", size + 11, bold=True),
+            "mono": ui.load_font("consolas", max(8, size - 1)),
         })
         widgets._TEXT_CACHE.clear()
         for name in ("code", "blocks", "model", "assets", "media", "build",
@@ -641,7 +663,8 @@ class Editor:
         self.log(f"opened {project.path}", "ok")
         self.log(f"{project.title}: start {project.start or '-'}; "
                  f"{len(scenes)} scene(s), {len(project.object_names())} "
-                 f"object(s), {len(project.model_names())} model(s), "
+                 f"object(s), {len(project.entity_names())} entity(s), "
+                 f"{len(project.model_names())} model(s), "
                  f"{len(project.texture_files())} texture(s), "
                  f"{len(project.audio_files())} audio, "
                  f"{len(project.shader_names())} shader(s)", "muted")
@@ -728,7 +751,10 @@ class Editor:
                 continue
             eid = str(entry.get("id"))
             inst = scenedoc.is_instance(entry)
-            kids = [] if inst else scenedoc.children(entry)
+            # a child the scene declares under an instance is grafted by the
+            # loader exactly as one under a plain node is, so the tree owes
+            # it a row and the preview owes it a selectable placed_id
+            kids = scenedoc.children(entry)
             sdoc = None
             label = eid
             if inst:
@@ -736,8 +762,10 @@ class Editor:
                 label = f"{Path(str(value)).stem} (instance)"
                 spath = scenedoc.resolve_instance(p, value)
                 if spath is not None:
+                    # the file's own extension says which family it is in
                     sdoc = scenedoc.load(
-                        spath, "scene" if is_scene else "object")
+                        spath, "scene" if is_scene
+                        else (scenedoc.kind_of(spath) or "object"))
             grafted = scenedoc.roots(sdoc) if sdoc is not None else []
             opened = self.node_open.get(f"{scope}:{eid}", True)
             rows.append({"kind": "node", "label": label, "depth": depth,
@@ -751,16 +779,25 @@ class Editor:
             self._node_rows(p, kids, scope, depth + 1, rows)
             if sdoc is None:
                 continue
-            for centry, _cp, cdepth in scenedoc.walk(sdoc):
-                cid = centry.get("id")
-                if cid is None:
-                    continue
-                full = f"{eid}/{cid}"
-                rows.append({"kind": "node", "label": str(cid),
-                             "depth": depth + 1 + cdepth,
-                             "key": f"node:{scope}:{full}",
-                             "scene": scope, "node": full,
-                             "icon": widgets.node_icon(centry.get("type"))})
+            self._graft_rows(grafted, scope, eid, depth + 1, rows)
+
+    def _graft_rows(self, entries, scope, eid, depth, rows):
+        """One level of a source document's nodes, named by their full path.
+
+        The loader builds a grafted node's placed_id out of every parent
+        above it, so a row has to read `Crate/Block/Bolt`; a short name
+        would point the preview at an id no live object carries.
+        """
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("id") is None:
+                continue
+            full = f"{eid}/{entry.get('id')}"
+            rows.append({"kind": "node", "label": str(entry.get("id")),
+                         "depth": depth, "key": f"node:{scope}:{full}",
+                         "scene": scope, "node": full,
+                         "icon": widgets.node_icon(entry.get("type"))})
+            self._graft_rows(scenedoc.children(entry), scope, full,
+                             depth + 1, rows)
 
     def _file_rows(self, p):
         """The Project View: two folder bands and their files."""
@@ -786,7 +823,7 @@ class Editor:
                 if not opened:
                     continue
                 for f in files:
-                    stray = kind in ("scenes", "objects") and \
+                    stray = kind in _STRAY_KINDS and \
                         f.suffix.lower() == ".py"
                     label = f.name + (STRAY_LABEL if stray else "")
                     row = {"kind": "file", "label": label,
@@ -794,12 +831,15 @@ class Editor:
                            "icon": "warning-sym" if stray
                            else file_row_icon(f)}
                     rows.append(row)
-                    if stray or kind != "objects" or \
-                            f.suffix.lower() not in scenedoc.OBJECT_EXTS:
+                    exts = _FOLD_EXTS.get(kind)
+                    if stray or exts is None or \
+                            f.suffix.lower() not in exts:
                         continue
-                    # an object document owns a branch, folding like a scene
-                    scope = f"object:{f.stem}"
-                    doc = p.object_doc(f.stem)
+                    # a document owns a branch, so it folds like a scene
+                    entity = kind == "entities"
+                    scope = f"{'entity' if entity else 'object'}:{f.stem}"
+                    doc = (p.entity_doc(f.stem) if entity
+                           else p.object_doc(f.stem))
                     roots = scenedoc.roots(doc) if doc else []
                     opened = self.node_open.get(scope, True)
                     row["open"] = opened
@@ -812,9 +852,9 @@ class Editor:
         return rows
 
     def _code_rows(self, p, depth):
-        """`scripts/scenes`, `scripts/objects` and `scripts/shaders`: the"""
+        """The script folders whose documents are listed beside them."""
         rows = []
-        for sub in ("scenes", "objects", "shaders"):
+        for sub in ("scenes", "objects", "entities", "shaders"):
             key = f"scripts/{sub}"
             d = p.dir(key)
             files = sorted(x for x in d.iterdir() if x.is_file())
@@ -847,7 +887,8 @@ class Editor:
                 self.show_python()
             self.status = f"editing {path.name}"
             return True
-        if suffix == scenedoc.SCENE_EXT or suffix in scenedoc.OBJECT_EXTS:
+        if suffix == scenedoc.SCENE_EXT or \
+                suffix in scenedoc.OBJECT_EXTS + scenedoc.ENTITY_EXTS:
             # a document gets its own tab; raw JSON on right-click
             if self.model.dirty:
                 self.model.autosave()
@@ -1369,17 +1410,24 @@ class Editor:
                  "ok")
 
     def _new_object(self, kind, stem, model=None, texture=None):
-        """Write an object's script and the document that places it."""
+        """Write a scripted document family's script and its document.
+
+        The preset's node type decides the family: an entity is coded in
+        `scripts/entities` and stored in `entities/`, everything else stays
+        with the objects.
+        """
         doc_kind, template, _stem, _title, _hint = OBJECT_PRESETS[kind]
-        script = self.project.object_scripts_dir / f"{stem}.py"
+        entity = scenedoc.doc_family(doc_kind) == "entity"
+        folder = "scripts/entities" if entity else "scripts/objects"
+        script = (self.project.entity_scripts_dir if entity
+                  else self.project.object_scripts_dir) / f"{stem}.py"
         if script.exists():
-            self.log(f"scripts/objects/{script.name} already exists",
-                     "warn")
+            self.log(f"{folder}/{script.name} already exists", "warn")
             return
         script.write_text(template, encoding="utf-8")
-        doc = scenedoc.blank_object(
-            stem, doc_kind,
-            scenedoc.script_field("scripts/objects", script.name))
+        blank = scenedoc.blank_entity if entity else scenedoc.blank_object
+        doc = blank(stem, doc_kind,
+                    scenedoc.script_field(folder, script.name))
         if doc_kind in ("screen3d", "screen2d") and self.project.start:
             # a new screen shows nothing until it is told what
             doc["showing"] = self.project.start
@@ -1387,12 +1435,16 @@ class Editor:
             doc["model"] = Path(str(model)).stem
         if texture:
             doc["texture"] = Path(str(texture)).stem
-        self.project.save_object_doc(stem, doc)
+        if entity:
+            self.project.save_entity_doc(stem, doc)
+        else:
+            self.project.save_object_doc(stem, doc)
         self.project.reload_objects()
         self.refresh_tree()
         self.open_file(script)
-        self.log(f"created scripts/objects/{script.name} + "
-                 f"{stem}{scenedoc.object_ext(doc_kind)}", "ok")
+        self.log(f"created {folder}/{script.name} + "
+                 f"{scenedoc.doc_folder(doc_kind)}/{stem}"
+                 f"{scenedoc.doc_ext(doc_kind)}", "ok")
 
     def _new_shader(self, stem, template=None):
         """Write a shader's script and the `.shader` document beside it."""
@@ -1691,27 +1743,19 @@ class Editor:
     def copy_path(self, path):
         """Copy a file's full path, or show it."""
         text = str(Path(path))
-        try:
-            import tkinter
-            root = tkinter.Tk()
-            root.withdraw()
-            root.clipboard_clear()
-            root.clipboard_append(text)
-            root.update()
-            root.destroy()
+        if widgets.copy_to_clipboard(text):
             self.log(f"copied path: {text}", "ok")
             return True
-        except Exception:
-            self.notice = ("Path", [text])
-            self.log(f"path: {text}", "muted")
-            return False
+        self.notice = ("Path", [text])
+        self.log(f"path: {text}", "muted")
+        return False
 
     def _all_references(self):
         """[(doc_path, node_id, key, value)] for every field naming a file."""
         if self.project is None:
             return []
         out = []
-        for kind in ("scenes", "objects"):
+        for kind in ("scenes", "objects", "entities"):
             for p in self.project.files(kind):
                 dk = scenedoc.kind_of(p)
                 if dk is None:
@@ -1827,12 +1871,20 @@ class Editor:
             self.code.save()
         if self.model.dirty:
             self.model.autosave()
-        base = ROOT.parent
-        cmd = [sys.executable, "-m", "emoeng", "run",
-               str(self.project.path)]
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(base) + os.pathsep + \
-            env.get("PYTHONPATH", "")
+        if paths.frozen():
+            # the built app is the dispatcher itself, so it is asked for
+            # its `run` verb rather than handed through the python module
+            exe = Path(sys.executable).resolve()
+            base = exe.parent
+            cmd = [str(exe), "run", str(self.project.path)]
+            env = os.environ.copy()
+        else:
+            base = ROOT.parent
+            cmd = [sys.executable, "-m", "emoeng", "run",
+                   str(self.project.path)]
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(base) + os.pathsep + \
+                env.get("PYTHONPATH", "")
         try:
             self.process = subprocess.Popen(cmd, cwd=str(base), env=env)
         except Exception as exc:
@@ -2143,7 +2195,7 @@ class Editor:
     def _sync_surface(self):
         if not self.chrome.supported():
             return
-        want = tuple(self.chrome.win.size)
+        want = self.chrome.frame_size()
         if not want or want == self.screen.get_size():
             return
         self.screen = self._make_window(want[0], want[1])
@@ -2353,11 +2405,17 @@ class Editor:
         return True
 
     def _open_object_doc(self, scope):
-        """Open the `objects/<stem>` document a node row belongs to."""
-        if self.project is None or not str(scope or "").startswith("object:"):
+        """Open the document that places a node row's branch."""
+        if self.project is None or ":" not in str(scope or ""):
             return False
-        stem = str(scope).split(":", 1)[1]
-        path = scenedoc.find_doc(self.project.objects_dir, stem, "object")
+        folder, _, stem = str(scope).partition(":")
+        if folder == "object":
+            path = scenedoc.find_doc(self.project.objects_dir, stem, "object")
+        elif folder == "entity":
+            path = scenedoc.find_doc(self.project.entities_dir, stem,
+                                     "entity")
+        else:
+            return False
         return bool(path) and self.open_file(path)
 
     def create_in_folder(self, row):
@@ -2823,6 +2881,7 @@ class Editor:
                 ("Scale", f"{p.render_scale:g}"),
                 ("Scenes", str(len(p.scene_names()))),
                 ("Objects", str(len(p.object_names()))),
+                ("Entities", str(len(p.entity_names()))),
                 ("Models", str(len(p.model_names())
                                 + len(p.model2d_names()))),
                 ("Textures", str(len(p.texture_files()))),

@@ -645,10 +645,12 @@ class UVPaint:
         """Add the clipboard's image (if any) as a new layer."""
         try:
             from PIL import ImageGrab
+            # Pillow's clipboard read is not built for every desktop, so a
+            # missing one is an answer rather than a crash
+            img = ImageGrab.grabclipboard()
         except Exception:
             self.message = "clipboard images need Pillow"
             return False
-        img = ImageGrab.grabclipboard()
         if img is None:
             self.message = "clipboard has no image"
             return False

@@ -119,18 +119,24 @@ in Edit mode drags its shape along too. That is the node tree: a scene row
 opens onto the nodes it places, and a node opens onto the children its
 source document owns.
 
-The demo project (`emoeng/projects/demo`) is a playable runtime tour. It
-starts in a document-built 3D gallery: walk between exhibits to explore
-models, live and baked lighting, shaders, nested scenes, positional audio,
-trigger volumes, saves, and an aggro entity. The exhibit screens are
-clickable `SceneUI` instances hosted by `Screen3D` objects; their buttons
-broadcast the same named triggers as the keyboard.
+The demo project (`emoeng/projects/demo`) is a pair of rooms that wear the
+same clothes. **Prism Hall** is a walkable 3D stone room that starts plain -
+no shader on any surface, no wash on the picture - with a lectern standing in
+the middle holding a `Screen3D` of nine switches. Click one through the glass
+and a single part of the room changes its material: the floor, the walls, the
+arches, the portals, the plinths, the lectern. Two more dress a whole picture
+rather than a surface - the hall's own frame, and the panel's - and the last
+puts everything back. Keys **1** to **9** do the same thing as the nine
+switches, because a click on a panel and a press of a key both just broadcast
+a named trigger and let the room answer it. Solid collision shapes stop you at
+the walls, the plinths and the stand.
 
-Press **Tab** to enter the 2D field lab. It demonstrates `Scene2D`,
-`Player2D`, solid collision shapes, lit sprites, tweened and fading motion,
-timers, the HUD facade, generated audio, and persistent progress. Use
-**WASD / arrow keys** to move, the mouse wheel to zoom, and the left mouse
-button to pulse the light. The project's [demo README](../projects/demo/README.md)
+Press **Tab** for **Echo Room**, the same room drawn flat. Here there is no
+pointer inside a picture, so the switches are `Hitbox2D` plates on the floor:
+walk the `Player2D` up to one with **WASD** and a dialog opens over it naming
+what it activates, how to pull it and what the room answered last. Stand on it
+and press **E**, or click the plate. Its lectern holds a readout instead of a
+board. The project's [demo README](../projects/demo/README.md)
 has the complete controls and feature map.
 
 Four ideas do all the work:

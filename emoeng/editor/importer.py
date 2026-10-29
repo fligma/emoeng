@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 from ..engine import scenedoc
@@ -69,19 +70,18 @@ FILETYPES = (
 )
 
 
-def browse(title="Import asset", filetypes=None, multiple=True):
-    """Open the native file chooser; hand back the chosen paths."""
+def _browse_tk(title, kinds, multiple):
+    """The tkinter chooser; None when tkinter cannot run at all."""
     try:
         import tkinter
         from tkinter import filedialog
     except Exception:
-        return []
+        return None
     root = None
     try:
         root = tkinter.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        kinds = filetypes or FILETYPES
         if multiple:
             picked = filedialog.askopenfilenames(parent=root, title=title,
                                                  filetypes=kinds)
@@ -90,11 +90,45 @@ def browse(title="Import asset", filetypes=None, multiple=True):
                                              filetypes=kinds)
             picked = (one,) if one else ()
     except Exception:
-        return []
+        return None
     finally:
         if root is not None:
             try:
                 root.destroy()
             except Exception:
                 pass
+    return [p for p in picked if p]
+
+
+# desktop choosers, for a Python built without tkinter
+_DESKTOP = (
+    ("zenity", lambda t, m: ["--file-selection", "--title", t] +
+     (["--multiple", "--separator=\n"] if m else [])),
+    ("kdialog", lambda t, m: ["--title", t, "--getopenfilename", "."]),
+)
+
+
+def _browse_desktop(title, multiple):
+    """Ask the desktop environment's own file chooser."""
+    for name, make in _DESKTOP:
+        tool = shutil.which(name)
+        if tool is None:
+            continue
+        try:
+            out = subprocess.run([tool, *make(title, multiple)],
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if out.returncode != 0:
+            return []           # the tool ran: a cancel is a real answer
+        return [line for line in out.stdout.splitlines() if line]
+    return []
+
+
+def browse(title="Import asset", filetypes=None, multiple=True):
+    """Open the native file chooser; hand back the chosen paths."""
+    picked = _browse_tk(title, filetypes or FILETYPES, multiple)
+    if picked is None:
+        picked = _browse_desktop(title, multiple)
     return [Path(p) for p in picked if p]

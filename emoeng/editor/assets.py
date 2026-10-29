@@ -17,6 +17,7 @@ FOLDERS = (
     ("all", "All"),
     ("scenes", "Scenes"),
     ("objects", "Objects"),
+    ("entities", "Entities"),
     ("scripts", "Scripts"),
     ("models", "Models"),
     ("maps", "Maps"),
@@ -28,6 +29,8 @@ FOLDER_ICONS = {
     "all": "menu-sym",
     "scenes": "file-scene-3d",
     "objects": "file-object-3d",
+    # an entity is a scripted actor, so it borrows the player's picture
+    "entities": "file-object-player3d",
     "scripts": "file-code-sym",
     "models": "file-model-sym",
     "maps": "file-model3d-sym",
@@ -93,16 +96,16 @@ class AssetBrowser:
                 side = self.project.path / name
                 if side.is_file():
                     paths.append(side)
-            for kind in ("scenes", "objects", "scripts", "models",
-                         "maps", "textures", "audio"):
+            for kind in ("scenes", "objects", "entities", "scripts",
+                         "models", "maps", "textures", "audio"):
                 paths.extend(self.project.files(kind))
         else:
             paths = list(self.project.files(self.folder))
         return [p for p in paths if p.is_file()]
 
     def _sorted_files(self):
-        order = {"scenes": 1, "objects": 2, "scripts": 3, "models": 4,
-                 "maps": 5, "textures": 6, "audio": 7}
+        order = {"scenes": 1, "objects": 2, "entities": 3, "scripts": 4,
+                 "models": 5, "maps": 6, "textures": 7, "audio": 8}
 
         def key(path):
             if path.parent == self.project.path:
@@ -480,7 +483,8 @@ class AssetBrowser:
                          ("Texture", str(data.get("texture") or "-"))]
             except Exception:
                 pass
-        elif suffix == scenedoc.SCENE_EXT or suffix in scenedoc.OBJECT_EXTS:
+        elif suffix == scenedoc.SCENE_EXT or \
+                suffix in scenedoc.OBJECT_EXTS + scenedoc.ENTITY_EXTS:
             # a document reads as the node it builds
             doc = scenedoc.load(path, scenedoc.kind_of(path) or "scene")
             row = [("Script", str(doc.get("script") or "-"))]

@@ -56,8 +56,8 @@ DEFAULT_PROJECT = "demo"
 SAVE_SLOT = "autosave"
 
 # asset folder kinds; drives the Project View tree
-KINDS = ("scenes", "objects", "scripts", "models", "maps", "textures",
-         "audio")
+KINDS = ("scenes", "objects", "entities", "scripts", "models", "maps",
+         "textures", "audio")
 
 # kinds that are importable Python packages
 PACKAGES = ("scenes", "objects", "scripts")

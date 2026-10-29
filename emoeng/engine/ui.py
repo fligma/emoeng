@@ -2,11 +2,77 @@
 
 import pygame
 
+from . import paths
+
 DEFAULT_TEXT = (236, 236, 230)
 SHADOW = (8, 8, 10)
 
 _CACHE = {}
 _CACHE_MAX = 512          # one entry per distinct line/colour/size
+
+# The faces the engine ships, by the name a project writes. A system with
+# no such font would otherwise fall back to pygame's built-in compact face,
+# which is unreadable at HUD sizes, so each name also carries the system
+# faces a real platform is likely to have.
+_BUNDLED = {"tahoma": ("tahoma.ttf",),
+            "consolas": ("consola.ttf", "consolas.ttf")}
+_LOCAL = {
+    "tahoma": "tahoma,segoe ui,dejavusans,liberationsans,arial",
+    "consolas": "consolas,dejavusansmono,liberationmono,courier new",
+}
+_FONTS = {}
+_INITED = False
+
+
+def bundled_font_file(name):
+    """The TTF this build ships for a face; None when it ships none."""
+    folder = paths.bundled_fonts()
+    for cand in _BUNDLED.get(str(name).lower(), (f"{name}.ttf",)):
+        path = folder / cand
+        if path.is_file():
+            return path
+    return None
+
+
+def load_font(name, size, bold=False, italic=False):
+    """A pygame font by face name: the shipped file, then the platform's."""
+    global _INITED
+    size = max(1, int(size))
+    key = (str(name), size, bool(bold), bool(italic))
+    got = _FONTS.get(key)
+    if got is not None:
+        return got
+    if not _INITED:
+        pygame.font.init()
+        _INITED = True
+    font = None
+    path = bundled_font_file(name)
+    if path is not None:
+        try:
+            font = pygame.font.Font(str(path), size)
+        except (pygame.error, OSError):
+            font = None
+    if font is None:
+        face = _LOCAL.get(str(name).lower(), str(name))
+        try:
+            font = pygame.font.SysFont(face, size, bold=bold, italic=italic)
+        except (pygame.error, OSError):
+            font = None
+    if font is None:
+        try:
+            font = pygame.font.Font(None, size)
+        except (pygame.error, OSError):
+            return None
+    if bold or italic:
+        font.set_bold(bold)
+        font.set_italic(italic)
+    _FONTS[key] = font
+    return font
+
+
+def clear_fonts():
+    """Drop the cached faces; a font-size change rebuilds them."""
+    _FONTS.clear()
 
 
 def _raster(font, s, color):

@@ -25,6 +25,15 @@ The nodes that fill such a branch are `Model3D`, `Sprite2D`, `Collision3D`,
 live in `engine.components`, are exported as `fe.*`, and are documented under
 [Component nodes](#component-nodes) below.
 
+The last four rows are *entities* rather than plain objects: a thing that is
+scripted with state - health, a team, an AI mode, a hitbox it can be hit in -
+is an `Entity3D` / `Entity2D`, and a `Player3D` / `Player2D` is the same
+machinery pointed at a camera. Their documents live in `entities/` as
+`.ent3d` / `.ent2d`, while the inert ones - a wall, a lamp, a screen, a shape -
+stay in `objects/`. Nothing else about them is different: an entity is spawned,
+cloned, parented, faded and despawned exactly like any other object, and it is
+still built from nodes hung underneath it.
+
 ## `GameObject`
 
 ### Class attributes
@@ -119,6 +128,40 @@ child as it attaches, so a script's `self.spawn(...)` needs no bookkeeping;
 every update, which the editor also calls straight after a drag so a model, a
 light and a hitbox follow the prop without waiting a frame. Note that
 `clone_depth`, `root` and `lineage` above count *clone* hops, not tree depth.
+
+### The same tree, spelled the Godot way
+
+The names a Godot user reaches for are all there, added on top of the ones
+above rather than replacing them - each returns the same objects, so a script
+may be written in either voice and the documents, the editor and
+`scene.objects` keep working.
+
+| Name | Answers to | Notes |
+| --- | --- | --- |
+| `get_parent()` | `parent` | None at the top of a branch |
+| `get_children()` | `children` | A fresh list, so looping over it and freeing as you go is safe |
+| `get_child(index)` / `get_child_count()` | `children[i]` / `len(children)` | Past the end answers None |
+| `get_tree()` | `scene` | One tree per scene; a screen's nested scene is its own |
+| `is_inside_tree()` | `alive` and being in `scene.objects` | |
+| `get_node(path)` | a walk down `children` | `"."` is me, `".."` whoever I sit on, `"A/B#0"` a branch and a leading `/` asks the whole scene |
+| `find_child(name)` / `find_children(name)` | filtered `children` | A name is the `id` a scene document placed, a document key, a tag or a class, so `find_children("Torch")` collects my torches |
+| `queue_free()` | leaves at the end of the frame | The scene drains the queue once every live object has updated |
+| `free()` | `despawn()` | The Godot word for leaving right now |
+| `connect(name, fn)` / `disconnect(name, fn)` | `listen()` / `unlisten()` | `fn` is a callable - one argument hears the signal's name, two hear name and value - or an object plus the name of its hook |
+| `emit(name, value=None)` | `broadcast(name, value)` | |
+
+The scene spells them the same way: `scene.get_node("Enemy#0/Hitbox3D#0")`
+looks across the live tree - roots first, then every node - and
+`scene.find_by_name(name)` takes the first object that answers to a document
+key, a tag or a class. A node a scene document placed also answers to the `id`
+the document gave it, so `get_node("Lectern")` finds the entry the editor's
+tree lists by that name, and `get_node("Lectern/Screen")` walks into it.
+`queue_free()` is the one that is not simply a rename:
+removing an object in the middle of a loop over `get_children()` would skip the
+next one, so the request waits for the end of the frame. `broadcast` and
+`listen` stay exactly as they were; every object with an `on_trigger(name,
+value)` hook still hears it, and a `connect("door", fn)` listener is called
+beside them.
 
 ### Cameras from an object
 
@@ -461,7 +504,7 @@ class Crate(fe.Object3D):
 Placed from the page, the scene document writes that branch as `children`, one
 entry per node - see [Scenes](scenes.md).
 
-## Object documents (`objects/*.obj3d`, `objects/*.obj2d`)
+## Documents (`objects/*.obj3d`, `entities/*.ent3d`)
 
 An object has two files, and the extension says which world the thing lives in:
 `objects/torch.obj3d` beside `scripts/objects/torch.py`, or
@@ -469,6 +512,17 @@ An object has two files, and the extension says which world the thing lives in:
 the document is where it sits and how it looks. `Project.object()` reads both
 and hangs the document's look fields on the class as `look_defaults`, so a plain
 `self.spawn("torch")` already lands where the document says.
+
+An entity is the same pair in the other folder: `entities/guard.ent3d` beside
+`scripts/entities/guard.py`, read by `Project.entity()`. The folder is decided
+by the extension and the extension by the `type` - `scenedoc.doc_family(type)`
+asks the registry which family a node type belongs to, and `doc_ext(type)`
+answers the spelling - so a `player3d` document is written as
+`entities/visitor.ent3d` and never as `objects/visitor.obj3d`. A name is
+resolved from either folder: `self.spawn("guard")`, a scene document's
+`"object": "guard"` and a `uses = ("guard",)` entry all look in `entities/`
+first and `objects/` after, so moving a thing between the two folders changes
+no script.
 
 ```json
 {
@@ -500,15 +554,15 @@ filled from the page, and a script is only written when something has to
 | Field | Holds |
 | --- | --- |
 | `type` | The node the file makes - see the table below |
-| `script` | The project-relative `.py`; the document's own stem is tried when it is missing, and with no script at all the `type` alone builds the node |
-| `pos` | Three numbers for a `.obj3d`, two for a `.obj2d` |
+| `script` | The project-relative `.py`; the document's own stem is tried when it is missing, and with no script at all the `type` alone builds the node. An entity's stem is looked for under `scripts/entities/` |
+| `pos` | Three numbers for a `.obj3d` / `.ent3d`, two for a `.obj2d` / `.ent2d` |
 | `yaw`, `scale` | The solid world's turn and size |
 | `rot`, `size` | The flat world's turn and box |
 | `model`, `texture`, `color` | Optional look fields: a `models/<name>.model3d` or `.model2d` stem, a sheet, a tint |
 | `shader` | A `uv`/`texture` look by stem; a `models`/`textures`/`shaders` slot in the editor lists the project's files and the built-ins to pick from |
 | `showing` | A screen's scene - the keyword the screen's own constructor calls `name` |
 | `knobs` | What the node owns beyond a transform - a shape, a reach, a picture - set straight onto it before `build()` |
-| `nodes` | An object document's own branch (a label, a shape), filed the way a scene files `objects`; grafted under every placement |
+| `nodes` | The document's own branch (a label, a shape), filed the way a scene files `objects`; grafted under every placement |
 
 Every type you can create is one row of `scenedoc.NODE_TYPES`, which the
 editor's Create New Node dialog, the file extension and the Blocks drawer
@@ -528,8 +582,10 @@ three places changed.
 | `collision2d` | Collision2D | Physics | `.obj2d` | `Collision2D` |
 | `hitbox2d` | Hitbox2D | Physics | `.obj2d` | `Hitbox2D` |
 | `trigger2d` | Trigger2D | Physics | `.obj2d` | `Trigger2D` |
-| `player3d` | Player3D | Players | `.obj3d` | `Player3D` |
-| `player2d` | Player2D | Players | `.obj2d` | `Player2D` |
+| `entity3d` | Entity3D | Entities | `.ent3d` | `Entity3D` |
+| `entity2d` | Entity2D | Entities | `.ent2d` | `Entity2D` |
+| `player3d` | Player3D | Entities | `.ent3d` | `Player3D` |
+| `player2d` | Player2D | Entities | `.ent2d` | `Player2D` |
 | `camera3d` | Camera3D | Views | `.obj3d` | only code |
 | `camera2d` | Camera2D | Views | `.obj2d` | only code |
 | `screen3d` | Screen3D | Views | `.obj3d` | `Screen3D` |
@@ -557,27 +613,38 @@ and language blocks, a light only light and language blocks, and so on -
 see [Blocks](blocks.md).
 
 The stored-as column is the point of the split: a `Collision2D` has no
-business in a solid world, and `scenedoc.object_ext(type)` is what turns a type
-into the extension its documents use. `scenedoc.OBJECT_TYPES` is the same rows
+business in a solid world, and `scenedoc.doc_ext(type)` is what turns a type
+into the extension its documents use - `object_ext()` and `entity_ext()` are
+its two halves. `scenedoc.OBJECT_TYPES` is the same rows
 without the family and the class, for a reader that only wanted the labels.
 Where a script defines a class, that class decides behaviour; the type still
-says which scene kind can host it and which drawer draws it, and
+says which scene kind can host it, which folder its document is written into
+and which drawer draws it, and
 [Blocks](blocks.md) picks its drawers from it.
 
 `Project.upgrade_documents()` renames a project's legacy `.object` and `.model`
 files for you when it opens, reading each document's `type` to work out which
-half an `.object` was. A `.scene` can place the same object, in which case its
-own entry overrides the object document's defaults, and a `look=` keyword at the
-spawn site overrides both - see [Scenes](scenes.md).
+half an `.object` was, and moves an entity left in `entities/` with an object's
+extension onto `.ent3d` / `.ent2d`. A `.scene` can place the same object, in
+which case its own entry overrides the object document's defaults, and a
+`look=` keyword at the spawn site overrides both - see [Scenes](scenes.md).
 
 ## `Entity3D`
 
-A base class for 3D NPCs and enemies with built-in AI, health, and hitbox
-support. Inherits from `Object3D`.
+A base class for 3D NPCs, enemies - and, through `Player3D`, players. Health,
+AI, teams, attack timing and the hitbox it can be hit in all come from one
+mixin, `EntityBehaviour`, mixed in above `Object3D`; the same mixin makes
+`Entity2D`. What differs between the worlds is answered by the class underneath
+- which two axes it walks on, how it turns, which colliders it may wear - so
+both halves of every table below mean the same thing in metres and in pixels.
 
 Constructor: `Entity3D(scene, pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0,
 tag=None, opacity=1.0, **knobs)`; `clone_gap = (2.0, 0.0, 0.0)`,
 `clone_attrs = ('health', 'max_health', 'ai_type', 'ai_config', 'hitbox_shape', 'hitbox_half')`.
+
+The knobs a document may set on me are those same names, so an
+`entities/guard.ent3d` carrying `"health": 40, "ai_type": "patrol"` is applied
+before `build()` with no script at all.
 
 ### Health system
 
@@ -604,6 +671,13 @@ tag=None, opacity=1.0, **knobs)`; `clone_gap = (2.0, 0.0, 0.0)`,
 | `ai_state` | `'idle'` | Current AI state (internal) |
 | `ai_target` | `None` | What the AI is targeting (usually `self.scene.player`) |
 | `ai_timer` | `0.0` | Timer for AI decisions |
+
+Every one of these is copied onto the instance as it is built. A patrol keeps
+its `current_waypoint` in `ai_config`, and a wanderer its destination, so a
+class-level dict shared by every guard would hand one guard's waypoint to the
+next; `EntityBehaviour.__init__` copies `ai_config`, `hitbox_half`,
+`hitbox_size` and `move_speed` first, which is why two entities of one class
+walk different routes.
 
 | AI Type | Behavior |
 | --- | --- |
@@ -641,6 +715,36 @@ tag=None, opacity=1.0, **knobs)`; `clone_gap = (2.0, 0.0, 0.0)`,
 
 The hitbox is automatically created as a non-solid `Collider3D` in the `"entity"` group when the entity is built.
 
+### One call per knob
+
+Each number above can also be set with a single call, and each call hands back
+`self` so several can be chained. These are what the Blocks palette lowers to
+- a block that writes two attributes in one line can never be read back as a
+block, and a block that makes one call can - but they are ordinary methods and
+a script is free to use them:
+
+| Call | Sets |
+| --- | --- |
+| `set_health(value)` | `health`; reaching 0 kills me, as losing the last of it in a fight does |
+| `set_max_health(value)` | `max_health`, trimming what I have now to fit |
+| `set_team(name)` | `team` |
+| `set_ai(ai_type, config=None)` | `ai_type` and, when given, `ai_config`; I start the new behaviour fresh |
+| `set_ai_target(target)` | `ai_target` |
+| `set_aggro_range(distance, deaggro=None)` | `aggro_range`, and `deaggro_range` (twice the reach when left out) |
+| `set_attack(range=None, damage=None, cooldown=None)` | `attack_range`, `attack_damage`, `attack_cooldown`; only the ones given move |
+| `set_move_speed(walk, run=None)` | `move_speed` - a pair for 3D, one number for 2D, where `run` is the `run_ratio` step instead |
+| `set_hitbox(shape, half=None, radius=None, height=None)` | my 3D collider, rebuilt to the new shape |
+| `set_hitbox2d(shape, size=None, radius=None)` | my flat collider, rebuilt to the new shape |
+
+| Read | Answers |
+| --- | --- |
+| `is_dead()` | `health <= 0` |
+| `distance_to(other)` | How far another object stands, measured on my plane |
+| `take_damage(amount, source=None)` | Apply damage; True when it landed |
+| `heal(amount)` | Restore health |
+| `kill(source=None)` | Out of health at once: my death runs, then I go |
+| `die(source=None)` | What the last point of health calls: `on_death`, then `dispose()` |
+
 ### Example
 
 ```python
@@ -673,8 +777,10 @@ class Goblin(fe.Entity3D):
 
 ## `Entity2D`
 
-A base class for 2D NPCs and enemies with built-in AI, health, and hitbox
-support. Inherits from `Object2D`.
+A base class for 2D NPCs and enemies, and the flat half of the same
+`EntityBehaviour` mixin - so the health, AI, combat and one-call setter tables
+above are this class's tables, in world pixels and with a rect or a circle for
+a hitbox. Inherits from `Object2D`.
 
 Constructor:
 ```python
@@ -687,7 +793,9 @@ Entity2D(scene, pos=(0.0, 0.0), size=(64.0, 64.0), texture='white',
 ### Health system
 
 Same as `Entity3D`: `health`, `max_health`, `invulnerable_time`, `take_damage`,
-`heal`, `die`, `on_hit`, `on_death`.
+`heal`, `kill`, `die`, `is_dead`, `distance_to`, `on_hit`, `on_death` - and the
+same one-call setters, with `set_hitbox2d(shape, size=None, radius=None)` in
+place of `set_hitbox`.
 
 ### AI system
 
@@ -750,7 +858,11 @@ class Slime(fe.Entity2D):
 `scene.objects` is the live list, iterated in spawn order every frame - a
 node's own entries are in it as well, which is why `obj.children` says who
 holds whom. Use `scene.objects_of("crate")` to find instances of one class or
-file, and `scene.by_tag("door_front")` for a single named one. Tags default to
+file - the name is looked for in `entities/` first and then in `objects/`, so
+`objects_of("guard")` finds the guard wherever its document ended up - and
+`scene.by_tag("door_front")` for a single named one. Tags default to
 the lower class name, so set one explicitly when two instances must be told
 apart. `scene.colliders` is the parallel list of filed shape nodes, and
-`scene.player` the object that claimed the view.
+`scene.player` the object that claimed the view. Anything marked by
+`queue_free()` leaves `objects` once the frame's updates are done, before the
+draw.

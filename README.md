@@ -98,14 +98,17 @@ class Main(fe.Scene3D):
 ## The demo
 
 The included [demo project](emoeng/projects/demo) is a pair of small rooms:
-a walkable 3D stone hall and an illustrated 2D echo room. Both feature colored
-lighting, arched portals, and animated trippy shaders. Press **Tab** to switch
+a walkable 3D stone hall and its flat 2D companion. Both start wearing
+nothing - plain stone, plain picture - and both are re-dressed by the same
+nine switches: a lectern screen you click in the hall, floor plates you walk
+onto in the flat room. Each switch puts a different material on one part of
+the room, or a different look on a whole picture. Press **Tab** to switch
 between them.
 
 <table>
   <tr>
-    <td><img src="gitassets/demo-3d.png" alt="Prism Hall: a lit 3D stone room with three glowing arches" width="100%"></td>
-    <td><img src="gitassets/demo-2d.png" alt="Echo Room: a colorful 2D room with three portals" width="100%"></td>
+    <td><img src="gitassets/demo-3d.png" alt="Prism Hall: a plain stone room with a lectern of switches in the middle" width="100%"></td>
+    <td><img src="gitassets/demo-2d.png" alt="Echo Room: the same room flat, with a walker and nine floor plates" width="100%"></td>
   </tr>
   <tr>
     <th>Prism Hall - 3D room</th>

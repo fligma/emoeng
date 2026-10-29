@@ -15,6 +15,11 @@ OBJECT2D_EXT = ".obj2d"
 OBJECT_EXT = ".object"        # the old single spelling, still read
 OBJECT_EXTS = (OBJECT3D_EXT, OBJECT2D_EXT, OBJECT_EXT)
 
+# an entity is a scripted thing with behaviour: health, AI, a will of its own
+ENT3D_EXT = ".ent3d"
+ENT2D_EXT = ".ent2d"
+ENTITY_EXTS = (ENT3D_EXT, ENT2D_EXT)
+
 # the two model kinds: solid mesh, flat cutout rig
 MODEL3D_EXT = ".model3d"
 MODEL2D_EXT = ".model2d"
@@ -47,8 +52,10 @@ NODE_TYPES = (
      "Collision2D"),
     ("hitbox2d", "Hitbox2D", "Physics", "object2d", "2d", "Hitbox2D"),
     ("trigger2d", "Trigger2D", "Physics", "object2d", "2d", "Trigger2D"),
-    ("player3d", "Player3D", "Players", "object3d", "3d", "Player3D"),
-    ("player2d", "Player2D", "Players", "object2d", "2d", "Player2D"),
+    ("entity3d", "Entity3D", "Entities", "entity3d", "3d", "Entity3D"),
+    ("entity2d", "Entity2D", "Entities", "entity2d", "2d", "Entity2D"),
+    ("player3d", "Player3D", "Entities", "entity3d", "3d", "Player3D"),
+    ("player2d", "Player2D", "Entities", "entity2d", "2d", "Player2D"),
     ("camera3d", "Camera3D", "Views", "object3d", "3d", None),
     ("camera2d", "Camera2D", "Views", "object2d", "2d", None),
     ("screen3d", "Screen3D", "Views", "object3d", "3d", "Screen3D"),
@@ -93,15 +100,19 @@ SCENE_HELP = ("a scene document: script is what it runs, objects are what "
               "it places, overrides are what the editor moved")
 OBJECT_HELP = ("an object document: script is the class, type is the node, "
                "the rest is where it sits and how it looks")
+ENTITY_HELP = ("an entity document: a scripted thing with behaviour - a "
+               "player, an NPC, an enemy - in the entities folder")
 SHADER_HELP = ("a shader document: mode is screen, uv or texture, script is "
                "the class that paints it, knobs are its starting numbers")
 
 
 def kind_of(path):
-    """'scene', 'object' or 'shader' for a document path, else None."""
+    """'scene', 'object', 'entity' or 'shader' for a document path."""
     suffix = Path(path).suffix.lower()
     if suffix == SCENE_EXT:
         return "scene"
+    if suffix in ENTITY_EXTS:
+        return "entity"
     if suffix in OBJECT_EXTS:
         return "object"
     if suffix == SHADER_EXT:
@@ -128,6 +139,33 @@ def object_ext(kind):
     return OBJECT3D_EXT if type_family(kind) == "3d" else OBJECT2D_EXT
 
 
+def entity_ext(kind):
+    """The document extension an entity type is stored under."""
+    return ENT3D_EXT if type_family(kind) == "3d" else ENT2D_EXT
+
+
+def doc_family(kind):
+    """'entity' for a scripted thing with behaviour, else 'object'.
+
+    The registry's document-kind column is the only answer: a player and an
+    enemy share the entity family, a lamp and a collider do not.
+    """
+    row = node_type(kind)
+    return "entity" if str(row[3] if row else "").startswith("entity") \
+        else "object"
+
+
+def doc_ext(kind):
+    """The extension a node type's document is stored under."""
+    return entity_ext(kind) if doc_family(kind) == "entity" \
+        else object_ext(kind)
+
+
+def doc_folder(kind):
+    """The project folder a node type lives in."""
+    return "entities" if doc_family(kind) == "entity" else "objects"
+
+
 def engine_class(kind):
     """The engine class this type name builds, or None."""
     row = node_type(kind)
@@ -145,15 +183,18 @@ def node_groups():
 
 
 def doc_path(folder, name, kind, type=None):
-    """`<folder>/<name>.scene`, `.obj3d`, `.obj2d` or `.shader`."""
+    """`<folder>/<name>.scene`, `.obj3d`, `.ent3d`, `.obj2d` or `.shader`."""
     if kind == "scene":
         ext = SCENE_EXT
     elif kind == "shader":
         ext = SHADER_EXT
+    elif kind == "entity":
+        ext = entity_ext(type)
     else:
         ext = object_ext(type)
     p = Path(name)
-    if p.suffix.lower() in (SCENE_EXT, SHADER_EXT) + OBJECT_EXTS:
+    if p.suffix.lower() in \
+            (SCENE_EXT, SHADER_EXT) + OBJECT_EXTS + ENTITY_EXTS:
         p = p.with_suffix("")
     if p.is_absolute():
         return p.with_suffix(ext)
@@ -167,6 +208,9 @@ def find_doc(folder, name, kind):
         exts = (SCENE_EXT,)
     elif kind == "shader":
         exts = (SHADER_EXT,)
+    elif kind == "entity":
+        # entities kept an object's extension before the family split
+        exts = ENTITY_EXTS + OBJECT_EXTS
     else:
         exts = OBJECT_EXTS
     for ext in exts:
@@ -179,6 +223,11 @@ def find_doc(folder, name, kind):
 def object_suffix_is_flat(path):
     """Does this document path name the flat half?"""
     return Path(path).suffix.lower() in (OBJECT2D_EXT,)
+
+
+def entity_suffix_is_flat(path):
+    """Does this document path name a flat entity?"""
+    return Path(path).suffix.lower() in (ENT2D_EXT,)
 
 
 def upgrade_ext(path):
@@ -250,7 +299,8 @@ def resolve_instance(project, value):
             return found
     # no suffix; ask the folder and the reference
     for folder, want in ((getattr(project, "scenes_dir", None), "scene"),
-                        (getattr(project, "objects_dir", None), "object")):
+                        (getattr(project, "objects_dir", None), "object"),
+                        (getattr(project, "entities_dir", None), "entity")):
         found = find_doc(folder, guess.stem, want) if folder else None
         if found is not None:
             return found
@@ -301,10 +351,12 @@ def look(entry):
 def blank_object(name, kind="object3d", script=None):
     """A fresh object document with only meaningful fields."""
     known = [t[0] for t in OBJECT_TYPES]
+    kind = kind if kind in known else "object3d"
     doc = {"format": FORMAT,
-           "_help": OBJECT_HELP,
+           "_help": ENTITY_HELP if doc_family(kind) == "entity"
+           else OBJECT_HELP,
            "name": str(name),
-           "type": kind if kind in known else "object3d"}
+           "type": kind}
     if script:
         doc["script"] = str(script)
     if type_family(doc["type"]) == "3d":
@@ -313,6 +365,17 @@ def blank_object(name, kind="object3d", script=None):
         doc["pos"] = [0.0, 0.0]
     doc["nodes"] = []
     return doc
+
+
+def blank_entity(name, kind="entity3d", script=None):
+    """A fresh entity document: an object's shape, in the entity family.
+
+    A type the entity family does not claim becomes a plain entity, so a
+    document written into `entities/` always reads back as one.
+    """
+    if doc_family(kind) != "entity":
+        kind = "entity2d" if type_family(kind) == "2d" else "entity3d"
+    return blank_object(name, kind, script)
 
 
 def blank_shader(name, mode="screen", script=None, knobs=None):
@@ -346,7 +409,12 @@ def load(path, kind=None):
     kind = kind or kind_of(path)
     if kind == "shader":
         return _load_shader(path)
-    blank = blank_scene if kind == "scene" else blank_object
+    if kind == "scene":
+        blank = blank_scene
+    elif kind == "entity":
+        blank = blank_entity
+    else:
+        blank = blank_object
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -366,8 +434,11 @@ def load(path, kind=None):
             doc["overrides"] = {}
     else:
         # the extension says which half, even without `type`
-        doc.setdefault("type", "object2d" if object_suffix_is_flat(path)
-                       else "object3d")
+        if kind == "entity":
+            default = "entity2d" if entity_suffix_is_flat(path) else "entity3d"
+        else:
+            default = "object2d" if object_suffix_is_flat(path) else "object3d"
+        doc.setdefault("type", default)
         # an object file owns a branch like a scene does
         if not isinstance(doc.get("nodes"), list):
             doc["nodes"] = []

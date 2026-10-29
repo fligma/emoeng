@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pygame
 
-from . import colors, meshes
+from . import colors, meshes, ui
 from . import collision as collmod
 from .objects import ModelObject, Object2D, Object3D, UV_KNOBS
 
@@ -747,7 +747,7 @@ def paint_text(owner, text, color, font_name, font_size):
     key = f"node_text_{id(owner)}_{_text_seq}"
     rgb = colors.rgb(color, (1.0, 1.0, 1.0))
     byte_col = tuple(round(c * 255) for c in rgb)
-    font = pygame.font.SysFont(str(font_name), max(1, int(font_size)))
+    font = ui.load_font(str(font_name), max(1, int(font_size)))
     label = font.render(str(text), True, byte_col)
     w, h = label.get_size()
     canvas = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)

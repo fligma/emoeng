@@ -1,0 +1,15 @@
+{
+ "format": 1,
+ "_help": "an entity document: a scripted thing with behaviour - a player, an NPC, an enemy - in the entities folder",
+ "name": "visitor",
+ "type": "player3d",
+ "script": "scripts/entities/visitor.py",
+ "pos": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "yaw": 0.0,
+ "scale": 1.0,
+ "nodes": []
+}

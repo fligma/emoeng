@@ -15,8 +15,8 @@ hello/
 │   └── main.scene        what it runs, what it places, what the editor moved
 ├── objects/              one `.obj3d` / `.obj2d` document per object
 │   └── prop.obj3d        what it is, where it sits, how it looks
-├── entities/             one `.obj3d` / `.obj2d` document per entity (NPCs, enemies)
-│   └── enemy.obj3d       what it is, where it sits, how it looks, AI config
+├── entities/             one `.ent3d` / `.ent2d` document per entity
+│   └── enemy.ent3d       a player, an NPC, an enemy: same shape, plus AI
 ├── shaders/              one `.shader` document per screen look
 │   └── scanlines.shader  its mode and knobs; the class lives in scripts
 ├── scripts/              all of the Python
@@ -24,7 +24,7 @@ hello/
 │   │   └── main.py
 │   ├── objects/          Object3D / Object2D / UIObject subclasses
 │   │   └── prop.py
-│   ├── entities/         Entity3D / Entity2D subclasses (NPCs, enemies)
+│   ├── entities/         Entity3D / Entity2D / Player subclasses
 │   │   └── enemy.py
 │   ├── shaders/          one `fe.Shader` subclass per shader
 │   │   └── scanlines.py
@@ -38,10 +38,18 @@ hello/
 └── saves/                written by the game; never part of the project
 ```
 
-The split is the point: `scenes/` and `objects/` hold what you placed, and
-`scripts/` holds what you wrote. A document names the script it runs, so the
-two halves can be edited - and reverted - separately, and an object can be a
-node the engine already knows with no script behind it at all.
+The split is the point: `scenes/`, `objects/` and `entities/` hold what you
+placed and what you scripted, and `scripts/` holds the code. A document names
+the script it runs, so the two halves can be edited - and reverted -
+separately, and an object can be a node the engine already knows with no script
+behind it at all.
+
+The line between `objects/` and `entities/` is behaviour: an entity is a thing
+that is *scripted with state* - a player, an NPC, an enemy - while a wall, a
+lamp, a collider or a screen is inert and stays in `objects/`. The extension
+says which family a document is in (`.ent3d` / `.ent2d` against `.obj3d` /
+`.obj2d`), and the `type` still says what node it is, so a player document is
+`entities/visitor.ent3d` with `"type": "player3d"`.
 
 ## Folder kinds
 
@@ -49,7 +57,7 @@ node the engine already knows with no script behind it at all.
 | --- | --- | --- |
 | `scenes` | `KINDS` | `main.scene`, one document per scene; `scene_names()` lists the stems |
 | `objects` | `KINDS` | `prop.obj3d` / `prop.obj2d`; `object_names()` lists the stems |
-| `entities` | `KINDS` | `enemy.obj3d` / `enemy.obj2d`; `entity_names()` lists the stems |
+| `entities` | `KINDS` | `enemy.ent3d` / `enemy.ent2d`; `entity_names()` lists the stems |
 | `scripts` | `KINDS`, `PACKAGES` | `scripts/scenes/`, `scripts/objects/`, `scripts/entities/` and shared modules |
 | `models` | `KINDS` | `Model.load` / `Model2D.load` by stem |
 | `maps` | `KINDS` | `maps/<stem>.map3d` - model documents that build a mesh collider when placed; `map_names()` lists the stems |
@@ -59,20 +67,23 @@ node the engine already knows with no script behind it at all.
 
 The project root goes on `sys.path` (`Project._add_import_path()`), so the
 code folders are packages: a scene writes `from scripts.helpers import
-PIXELS` and an object is imported as `scripts.objects.prop`. A `.py` left
-directly in `scenes/` or `objects/` belongs to the old layout, is not
-imported, and the editor flags it.
+PIXELS`, an object is imported as `scripts.objects.prop` and an entity as
+`scripts.entities.enemy`. A `.py` left directly in `scenes/`, `objects/` or
+`entities/` belongs to the old layout, is not imported, and the editor flags
+it.
 
 ## Documents
 
-`scenes/*.scene` and `objects/*.obj3d` / `*.obj2d` are JSON documents beside
+`scenes/*.scene`, `objects/*.obj3d` / `*.obj2d` and `entities/*.ent3d` /
+`*.ent2d` are JSON documents beside
 the scripts: the script says what a thing does, the document says what it is,
 where it sits and how it looks. The engine only reads them - the editor writes
 them as you drag in the Scene tab - but they are plain JSON with a `format`
 number, so they diff cleanly and can be hand-edited. A project written before
 the split, with `*.object` and `*.model` files, is read as it is and renamed
 to the dimensioned spelling when the folder is opened
-(`Project.upgrade_documents`).
+(`Project.upgrade_documents`), and so is an entity document still wearing
+`.obj3d` / `.obj2d`.
 
 ```json
 {"format": 1, "name": "main", "kind": "scene3d",
@@ -85,7 +96,7 @@ to the dimensioned spelling when the folder is opened
                  "pos": [0.0, 0.5, 0.0],
                  "knobs": {"half": [0.5, 0.5, 0.5], "solid": true}}]},
              {"id": "walker", "type": "player3d",
-              "script": "scripts/objects/walker.py"}],
+              "script": "scripts/entities/walker.py"}],
  "overrides": {"Walker#0": {"pos": [0.0, 1.7, 4.0]}}}
 ```
 
@@ -98,7 +109,10 @@ An entry names either a script or one of the engine's node types - see
 level can be one file in `maps/`. An **object** document is a tree
 too: `objects/prop.obj3d` files its own branch under `nodes`, so a label or a
 collision shape it owns shows up nested under every placement of it - the same
-structure the Project View and Scene list draw.
+structure the Project View and Scene list draw. An **entity** document is the
+same shape in `entities/`: `entities/guard.ent3d` files the hitbox and the
+label its AI walks around with, and a scene or a placement referring to
+`"guard"` finds it without saying which folder it is in.
 
 A project without them runs from code exactly as before, and
 `Project.create()` scaffolds `scenes/main.scene` and `objects/prop.obj3d`
@@ -262,9 +276,9 @@ read, so the `_help` note can stay.
 | Member | Returns |
 | --- | --- |
 | `dir(kind)` | `path/<kind>`, created if missing |
-| `scenes_dir`, `objects_dir`, `scripts_dir`, `models_dir`, `maps_dir`, `textures_dir`, `audio_dir`, `shaders_dir`, `shader_scripts_dir`, `saves_dir` | the same, per kind |
+| `scenes_dir`, `objects_dir`, `entities_dir`, `scripts_dir`, `models_dir`, `maps_dir`, `textures_dir`, `audio_dir`, `shaders_dir`, `scene_scripts_dir`, `object_scripts_dir`, `entity_scripts_dir`, `shader_scripts_dir`, `saves_dir` | the same, per kind |
 | `files(kind)` | every file in that folder |
-| `scene_names()`, `object_names()`, `script_names()`, `shader_names()` | stems |
+| `scene_names()`, `object_names()`, `entity_names()`, `spawnable_names()`, `script_names()`, `shader_names()` | stems; `spawnable_names()` is both document folders at once |
 | `model_names()`, `model2d_names()`, `map_names()` | `.model3d` (old `.model` too) / `.model2d` / `.map3d` stems |
 | `texture_files()`, `audio_files()` | paths |
 | `relative(path)` | project-relative display path |
@@ -289,32 +303,38 @@ read, so the `_help` note can stay.
 | Member | Notes |
 | --- | --- |
 | `object(name, base=Object3D)` | The class an object name means: `scripts/objects/<name>.py` when it has a script, one of `engine.components` when its document names only a `type`. The `.obj3d` / `.obj2d` beside it becomes the class's `look_defaults` |
+| `entity(name, base=GameObject)` | The same, read through `entities/<name>.ent3d` / `.ent2d` and `scripts/entities/<name>.py` |
+| `spawnable(name, base=GameObject)` | The class a `spawn("<name>")` or a `uses` entry means: the entity when an entity document exists, the object otherwise. `Scene.object_class` calls it, so a script never has to say which folder a name lives in |
 | `node_class(type, base)` | The engine class a document's `type` states, or None when the scene's kind cannot host it |
 | `scene(name, game, plan=None)` | Import the document's `script` (or `scripts/scenes/<name>.py`), check `uses`, `setup()`, place the document's object tree, `finish_build()` |
 | `scene_script(name)` | The `.py` a scene runs, read from its document's `script` field |
 | `scene_doc(name)` / `save_scene_doc(name, doc)` | Read `scenes/<name>.scene` fresh / write it |
 | `object_doc(name)` / `save_object_doc(name, doc)` | The same pair for `objects/<name>.obj3d` or `.obj2d`, by the document's `type` |
+| `entity_doc(name)` / `save_entity_doc(name, doc)` | The same pair for `entities/<name>.ent3d` or `.ent2d`; a legacy `.obj3d` twin beside it is deleted |
+| `object_file(name)` / `entity_file(name)` / `spawnable_file(name)` | `(document, script path)` for a stem, from one folder or from either |
 | `shader_doc(name)` / `save_shader_doc(name, doc)` | Read / write `shaders/<name>.shader` |
 | `shader_class(name)` / `shader_script(name)` | The `fe.Shader` class a stem means, and the `scripts/shaders/<name>.py` it is imported from |
 | `load_shaders()` | Import every `scripts/shaders/*.py`; name -> class, mirroring object scripts |
-| `upgrade_documents()` | Rename legacy `.object` / `.model` files; run for you when the project opens |
-| `check_uses(cls, seen=None, base=Object3D)` | Object stems a scene (or object) needs but the project lacks |
-| `snapshot(kinds=None)` / `changed_since(snap, kinds=None)` | mtime+size watch over `WATCHED` = `scenes`, `objects`, `scripts`, `shaders` |
+| `upgrade_documents()` | Rename legacy `.object` / `.model` files, and move an `entities/` document still spelled `.obj3d` / `.obj2d` onto `.ent3d` / `.ent2d`; run for you when the project opens |
+| `check_uses(cls, seen=None, base=GameObject)` | Stems a scene (or an object) needs but neither document folder has |
+| `snapshot(kinds=None)` / `changed_since(snap, kinds=None)` | mtime+size watch over `WATCHED` = `scenes`, `objects`, `entities`, `scripts`, `shaders` |
 | `touch(kind, name)` | Create an empty file (the editor's New buttons) |
 | `ensure_templates(gitignore=True, readme=True)` | Write the folder docs, never overwriting |
 
 ## A note on `uses`
 
-A scene names the objects it spawns:
+A scene names what it spawns:
 
 ```python
 class Main(fe.Scene3D):
-    uses = ("prop", "gem")
+    uses = ("prop", "gem", "guard")
 ```
 
 `Project.scene()` runs `check_uses()` before anything is built, so a missing
 `scripts/objects/gem.py` fails with `scene 'main' needs
-scripts/objects/gem.py` instead of failing later inside `spawn()`. An object
+scripts/objects/gem.py` instead of failing later inside `spawn()`. A name is
+looked for in `entities/` first and in `objects/` after, so `uses = ("guard",)`
+resolves whether the guard is an entity document or an object one. An object
 that needs no script passes the check on its document alone: an
 `objects/gem.obj3d` naming a type the engine knows is a whole object. The same
 check follows an object's own `uses`, so a prop that spawns motes drags

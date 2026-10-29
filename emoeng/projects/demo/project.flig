@@ -5,7 +5,7 @@
   "start": "main",
   "seed": 13,
   "version": "1.0.0",
-  "description": "Two atmospheric rooms with animated arches, colorful lighting, and trippy shader effects.",
+  "description": "Two rooms that start plain and are re-dressed by nine switches: a lectern screen you click in the 3D hall, floor plates you walk onto in the flat one.",
   "window": {
     "size": [
       1152,
@@ -48,7 +48,36 @@
   },
   "input": {
     "actions": {},
-    "triggers": {}
+    "triggers": {
+      "_note": "the nine switches both demo rooms wear, keys 1 to 9",
+      "look_floor": [
+        "1"
+      ],
+      "look_walls": [
+        "2"
+      ],
+      "look_arches": [
+        "3"
+      ],
+      "look_portals": [
+        "4"
+      ],
+      "look_props": [
+        "5"
+      ],
+      "look_lectern": [
+        "6"
+      ],
+      "look_screen": [
+        "7"
+      ],
+      "look_room": [
+        "8"
+      ],
+      "look_clear": [
+        "9"
+      ]
+    }
   },
   "inputmapper": {
     "enabled": false,

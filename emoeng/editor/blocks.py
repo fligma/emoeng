@@ -14,8 +14,8 @@ HAT = "hat"              # an engine hook: nothing belongs above it
 RAW = "raw"              # verbatim Python the model does not structure
 
 # drawers the palette files under, in tab order
-CATEGORIES = ("events", "trigger", "scene", "object", "light", "audio",
-              "ui", "shader", "input", "save", "control", "data",
+CATEGORIES = ("events", "trigger", "scene", "object", "entity", "light",
+              "audio", "ui", "shader", "input", "save", "control", "data",
               "functions", "modules", "code")
 
 # what a block's nested stack means when it is empty
@@ -270,6 +270,27 @@ DEFAULTS = {
     "move": {"who": "self.player", "pos": "(0.0, 0.0, 0.0)"},
     "face": {"who": "self.player", "yaw": "0.0"},
     "clone": {"who": "self.player", "pos": "None"},
+    # entity: the who-forms never name self, because an entity's own block
+    # writes `self.<call>` and reads back as that block, not as this one
+    "set_health": {"who": "self.player", "value": "100.0"},
+    "heal": {"who": "self.player", "amount": "10.0"},
+    "damage": {"who": "self.player", "amount": "10.0", "source": "None"},
+    "kill": {"who": "self.player", "source": "None"},
+    "leave": {"who": "self.player"},
+    "set_ai": {"who": "self.player", "ai_type": '"follow"',
+               "config": "{}"},
+    "set_ai_target": {"who": "self.player",
+                      "target": "self.scene.player"},
+    "set_team": {"who": "self.player", "team": '"enemy"'},
+    "set_aggro_range": {"who": "self.player", "distance": "15.0",
+                        "deaggro": "None"},
+    "set_attack": {"who": "self.player", "range": "2.0", "dmg": "15.0",
+                   "cd": "1.5"},
+    "set_move_speed": {"who": "self.player", "walk": "3.0", "run": "8.0"},
+    "set_hitbox": {"who": "self.player", "shape": '"box"',
+                   "params": "(0.5, 1.0, 0.5)"},
+    "set_hitbox2d": {"who": "self.player", "shape": '"rect"',
+                     "params": "(32.0, 48.0)"},
     # light
     "lighton": {"who": "lamp"},
     "lightoff": {"who": "lamp"},
@@ -469,72 +490,101 @@ _s("clone", "clone %who% at %pos%", "object", STACK,
    doc="A live copy on the same scene, built and attached straight away.",
    kinds=WORLD_KINDS)
 
-# entity: AI, health, hitboxes, advanced behavior
-_s("set_health", "set %who% health to %value%", "object", STACK,
-   (("who", "self"), ("value", "100.0")),
-   make=lambda b: f"{_f(b, 'who')}.health = {_f(b, 'value')}",
-   doc="Directly set the entity's health value.",
-   kinds=ENTITY_KINDS, node="set %who% health")
-_s("heal", "heal %who% by %amount%", "object", STACK,
-   (("who", "self"), ("amount", "10.0")),
-   make=lambda b: f"{_f(b, 'who')}.heal({_f(b, 'amount')})",
-   doc="Restore health up to max_health.",
-   kinds=ENTITY_KINDS)
-_s("damage", "damage %who% by %amount% from %source%", "object", STACK,
-   (("who", "self"), ("amount", "10.0"), ("source", "None")),
-   make=lambda b: f"{_f(b, 'who')}.take_damage({_f(b, 'amount')}, {_f(b, 'source')})",
-   doc="Apply damage; triggers on_hit/on_death. Source is optional.",
-   kinds=ENTITY_KINDS)
-_s("kill", "kill %who% from %source%", "object", STACK,
-   (("who", "self"), ("source", "None")),
-   make=lambda b: f"{_f(b, 'who')}.take_damage({_f(b, 'who')}.max_health, {_f(b, 'source')})",
-   doc="Instantly kill the entity (damage = max_health).",
-   kinds=ENTITY_KINDS)
-_s("set_ai", "set %who% AI to %ai_type% with %config%", "object", STACK,
-   (("who", "self"), ("ai_type", '"follow"'), ("config", "{}")),
-   make=lambda b: f"{_f(b, 'who')}.ai_type = {_f(b, 'ai_type')}; {_f(b, 'who')}.ai_config = {_f(b, 'config')}",
-   doc="Change AI type: none, follow, patrol, wander, aggro. Config is a dict.",
-   kinds=ENTITY_KINDS, node="set %who% AI")
-_s("set_ai_target", "set %who% AI target to %target%", "object", STACK,
-   (("who", "self"), ("target", "self.scene.player")),
-   make=lambda b: f"{_f(b, 'who')}.ai_target = {_f(b, 'target')}",
-   doc="Set what the AI follows/chases (usually self.scene.player).",
-   kinds=ENTITY_KINDS, node="set AI target")
-_s("set_team", "set %who% team to %team%", "object", STACK,
-   (("who", "self"), ("team", '"enemy"')),
-   make=lambda b: f"{_f(b, 'who')}.team = {_f(b, 'team')}",
-   doc="Team: player, enemy, neutral, friendly. Affects aggro logic.",
-   kinds=ENTITY_KINDS, node="set %who% team")
-_s("set_aggro_range", "set %who% aggro range to %distance%", "object", STACK,
-   (("who", "self"), ("distance", "15.0")),
-   make=lambda b: f"{_f(b, 'who')}.aggro_range = {_f(b, 'distance')}",
-   doc="Distance at which aggro AI starts chasing.",
-   kinds=ENTITY_KINDS, node="set aggro range")
-_s("set_attack", "set %who% attack: range %range%, damage %dmg%, cooldown %cd%", "object", STACK,
-   (("who", "self"), ("range", "2.0"), ("dmg", "15.0"), ("cd", "1.5")),
-   make=lambda b: (f"{_f(b, 'who')}.attack_range = {_f(b, 'range')}; "
-                   f"{_f(b, 'who')}.attack_damage = {_f(b, 'dmg')}; "
-                   f"{_f(b, 'who')}.attack_cooldown = {_f(b, 'cd')}"),
-   doc="Configure attack parameters.",
-   kinds=ENTITY_KINDS, node="set attack")
-_s("set_move_speed", "set %who% move speed to %walk% (run %run%)", "object", STACK,
-   (("who", "self"), ("walk", "3.0"), ("run", "8.0")),
-   make=lambda b: f"{_f(b, 'who')}.move_speed = ({_f(b, 'walk')}, {_f(b, 'run')})",
-   doc="Walk and run speed for AI movement.",
-   kinds=ENTITY_KINDS, node="set move speed")
-_s("set_hitbox", "set %who% hitbox: %shape% %params%", "object", STACK,
-   (("who", "self"), ("shape", '"box"'), ("params", "(0.5, 1.0, 0.5)")),
-   make=lambda b: (f"{_f(b, 'who')}.hitbox_shape = {_f(b, 'shape')}; "
-                   f"{_f(b, 'who')}.hitbox_half = {_f(b, 'params')}"),
-   doc="Hitbox shape: box(half), sphere(radius), capsule(radius, height).",
-   kinds=ENTITY_KINDS, node="set hitbox")
-# 2D entity hitbox
-_s("set_hitbox2d", "set %who% 2D hitbox: %shape% %params%", "object", STACK,
-   (("who", "self"), ("shape", '"rect"'), ("params", "(32.0, 48.0)")),
-   make=lambda b: (f"{_f(b, 'who')}.hitbox_shape = {_f(b, 'shape')}; "
-                   f"{_f(b, 'who')}.hitbox_size = {_f(b, 'params')}"),
-   doc="2D hitbox: rect(w, h) or circle(radius).",
-   kinds=("entity2d", "object2d", "player2d"), node="set 2D hitbox")
+# entity: health, AI, hitboxes. Each block is one engine call, so a saved
+# file reads back as the blocks it was built from. `who` forms tell another
+# actor what to do; an actor's own blocks are the generated `self.` ones.
+ACTOR_KINDS = ENTITY_KINDS + ("scene3d", "scene2d", "sceneui")
+ENT3D_KINDS = ("entity3d", "object3d", "player3d", "scene3d")
+ENT2D_KINDS = ("entity2d", "object2d", "player2d", "scene2d")
+_s("set_health", "set %who% health to %value%", "entity", STACK,
+   (("who", "self.player"), ("value", "100.0")),
+   make=lambda b: f"{_f(b, 'who')}.set_health({_f(b, 'value') or '0.0'})",
+   doc="How much damage it can still take. Zero ends it, exactly as the "
+       "last of its health does in a fight.",
+   kinds=ACTOR_KINDS, node="set %who% health")
+_s("heal", "heal %who% by %amount%", "entity", STACK,
+   (("who", "self.player"), ("amount", "10.0")),
+   make=lambda b: f"{_f(b, 'who')}.heal({_f(b, 'amount') or '0.0'})",
+   doc="Health back, up to the maximum it carries.",
+   kinds=ACTOR_KINDS)
+_s("damage", "damage %who% by %amount% from %source%", "entity", STACK,
+   (("who", "self.player"), ("amount", "10.0"), ("source", "None")),
+   make=lambda b: (f"{_f(b, 'who')}.take_damage({_f(b, 'amount') or '0.0'}, "
+                   f"{_f(b, 'source') or 'None'})"),
+   doc="Apply damage and run its hit or death hook. The source is the "
+       "attacker, or nothing.",
+   kinds=ACTOR_KINDS)
+_s("kill", "kill %who% from %source%", "entity", STACK,
+   (("who", "self.player"), ("source", "None")),
+   make=lambda b: f"{_f(b, 'who')}.kill({_f(b, 'source') or 'None'})",
+   doc="Its health to zero at once: the death hook runs, then it is gone.",
+   kinds=ACTOR_KINDS, node="kill %who%")
+_s("leave", "take %who% out at the end of the frame", "entity", STACK,
+   (("who", "self.player"),),
+   make=lambda b: f"{_f(b, 'who')}.queue_free()",
+   doc="Godot's removal: it leaves when this frame's work is done, so "
+       "dropping it inside a loop over children is safe.",
+   kinds=ACTOR_KINDS, node="take %who% out later")
+_s("set_ai", "set %who% AI to %ai_type% with %config%", "entity", STACK,
+   (("who", "self.player"), ("ai_type", '"follow"'), ("config", "{}")),
+   make=lambda b: (f"{_f(b, 'who')}.set_ai({_f(b, 'ai_type') or '\"none\"'}, "
+                   f"{_f(b, 'config') or '{}'})"),
+   doc="One of none, follow, patrol, wander, aggro. The dict carries what "
+       "that needs: `waypoints`, a `wander_interval`.",
+   kinds=ACTOR_KINDS, node="set %who% AI")
+_s("set_ai_target", "set %who% AI target to %target%", "entity", STACK,
+   (("who", "self.player"), ("target", "self.scene.player")),
+   make=lambda b: (f"{_f(b, 'who')}.set_ai_target("
+                   f"{_f(b, 'target') or 'None'})"),
+   doc="Who it follows, chases or attacks; None until told.",
+   kinds=ACTOR_KINDS, node="set AI target")
+_s("set_team", "set %who% team to %team%", "entity", STACK,
+   (("who", "self.player"), ("team", '"enemy"')),
+   make=lambda b: f"{_f(b, 'who')}.set_team({_f(b, 'team') or '\"neutral\"'})",
+   doc="player, enemy, neutral or friendly: what aggro looks at before it "
+       "picks a target.",
+   kinds=ACTOR_KINDS, node="set %who% team")
+_s("set_aggro_range", "set %who% aggro range to %distance% and off at "
+   "%deaggro%", "entity", STACK,
+   (("who", "self.player"), ("distance", "15.0"), ("deaggro", "None")),
+   make=lambda b: (f"{_f(b, 'who')}.set_aggro_range("
+                   f"{_f(b, 'distance') or '0.0'}, "
+                   f"{_f(b, 'deaggro') or 'None'})"),
+   doc="How far off it takes notice. Leave the second row empty and it "
+       "loses interest at twice the distance.",
+   kinds=ACTOR_KINDS, node="set aggro range")
+_s("set_attack", "set %who% attack: reach %range%, damage %dmg%, "
+   "cooldown %cd%", "entity", STACK,
+   (("who", "self.player"), ("range", "2.0"), ("dmg", "15.0"),
+    ("cd", "1.5")),
+   make=lambda b: (f"{_f(b, 'who')}.set_attack({_f(b, 'range') or 'None'}, "
+                   f"{_f(b, 'dmg') or 'None'}, {_f(b, 'cd') or 'None'})"),
+   doc="How near it must be, how hard it hits and the seconds between "
+       "swings. An empty row keeps what it had.",
+   kinds=ACTOR_KINDS, node="set attack")
+_s("set_move_speed", "set %who% move speed to %walk% (run %run%)",
+   "entity", STACK,
+   (("who", "self.player"), ("walk", "3.0"), ("run", "8.0")),
+   make=lambda b: (f"{_f(b, 'who')}.set_move_speed("
+                   f"{_f(b, 'walk') or '0.0'}, {_f(b, 'run') or 'None'})"),
+   doc="Cruising speed and chasing speed, in the world's units a second.",
+   kinds=ACTOR_KINDS, node="set move speed")
+_s("set_hitbox", "set %who% hitbox: %shape% %params%", "entity", STACK,
+   (("who", "self.player"), ("shape", '"box"'),
+    ("params", "(0.5, 1.0, 0.5)")),
+   make=lambda b: (f"{_f(b, 'who')}.set_hitbox({_f(b, 'shape') or '\"box\"'}, "
+                   f"{_f(b, 'params') or 'None'})"),
+   doc="A box of half extents, a sphere of a radius or a capsule of a "
+       "radius and a height.",
+   kinds=ENT3D_KINDS, node="set hitbox")
+# the flat body a 2D entity collides with
+_s("set_hitbox2d", "set %who% 2D hitbox: %shape% %params%", "entity", STACK,
+   (("who", "self.player"), ("shape", '"rect"'), ("params", "(32.0, 48.0)")),
+   make=lambda b: (f"{_f(b, 'who')}.set_hitbox2d("
+                   f"{_f(b, 'shape') or '\"rect\"'}, "
+                   f"{_f(b, 'params') or 'None'})"),
+   doc="A rect of (width, height) or a circle of a radius.",
+   kinds=ENT2D_KINDS, node="set 2D hitbox")
 
 # light: one drawer; the shape picks the kind
 LIGHT_KINDS = ("scene3d", "scene2d", "object3d", "player3d",
@@ -1461,6 +1511,20 @@ METHODS = (
     ("off", None, "lightoff", ()),
     ("flash", None, "flash", ("amount", "seconds")),
     ("fade_to", None, "fade", ("amount", "seconds")),
+    # entity: one call on whoever the block names
+    ("set_health", None, "set_health", ("value",)),
+    ("heal", None, "heal", ("amount",)),
+    ("take_damage", None, "damage", ("amount", "source")),
+    ("kill", None, "kill", ("source",)),
+    ("queue_free", None, "leave", ()),
+    ("set_ai", None, "set_ai", ("ai_type", "config")),
+    ("set_ai_target", None, "set_ai_target", ("target",)),
+    ("set_team", None, "set_team", ("team",)),
+    ("set_aggro_range", None, "set_aggro_range", ("distance", "deaggro")),
+    ("set_attack", None, "set_attack", ("range", "dmg", "cd")),
+    ("set_move_speed", None, "set_move_speed", ("walk", "run")),
+    ("set_hitbox", None, "set_hitbox", ("shape", "params")),
+    ("set_hitbox2d", None, "set_hitbox2d", ("shape", "params")),
 )
 
 # a branch testing one input call: the block it wrote
@@ -1710,6 +1774,8 @@ KINDS = {
     "ui": "UI object",
     "player3d": "3D player",
     "player2d": "2D player",
+    "entity3d": "3D entity",
+    "entity2d": "2D entity",
     "camera3d": "3D camera",
     "camera2d": "2D camera",
     "screen3d": "3D screen",
@@ -1746,6 +1812,7 @@ KINDS = {
 BASES = {"Scene3D": "scene3d", "Scene2D": "scene2d", "SceneUI": "sceneui",
          "Object3D": "object3d", "Object2D": "object2d",
          "UIObject": "ui", "Player3D": "player3d", "Player2D": "player2d",
+         "Entity3D": "entity3d", "Entity2D": "entity2d",
          "Screen3D": "screen3d", "Screen2D": "screen2d",
          "Model3D": "model3d", "Sprite2D": "sprite2d",
          "Collider3D": "collision3d", "Collision3D": "collision3d",
@@ -1772,6 +1839,9 @@ SCRIPT_CATEGORIES = ("control", "data", "functions", "modules", "code")
 # strict per-node palettes: own drawer plus language, nothing else
 _LANG = SCRIPT_CATEGORIES
 TYPE_CATEGORIES = {
+    # an entity's own script: its body, its behaviour, its triggers, its light
+    "entity3d": ("object", "entity", "trigger", "light") + _LANG,
+    "entity2d": ("object", "entity", "trigger", "light") + _LANG,
     "model3d": ("object", "light") + _LANG,
     "sprite2d": ("object",) + _LANG,
     "collision3d": ("object",) + _LANG,

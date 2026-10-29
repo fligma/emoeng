@@ -110,14 +110,13 @@ UA = f"{USER_DIR}-installer/{VERSION}"
 # and the file endings that can actually be installed, best first.
 OS_TOKENS = {
     "win32": ("win", "windows", "pc"),
-    "darwin": ("mac", "osx", "darwin"),
+    "linux": ("linux", "ubuntu", "debian", "arch", "fedora"),
 }
 OS_EXT = {
     "win32": (".exe", ".msi", ".zip"),
-    "darwin": (".dmg", ".pkg", ".zip", ".tar.gz"),
     "linux": (".appimage", ".tar.gz", ".tgz", ".zip"),
 }
-OS_LABEL = {"win32": "Windows", "darwin": "macOS"}
+OS_LABEL = {"win32": "Windows", "linux": "Linux"}
 
 TOKEN_TIP = (
     "GitHub counts anonymous searches per IP - 60 an hour.",
@@ -187,6 +186,56 @@ def elide(font, s, width):
     return cut.rstrip() + "..."
 
 
+# ------------------------------------------------------------------ fonts
+# Tahoma is a Windows font and pygame's built-in face is unreadable at
+# these sizes, so the engine's own bundled TTF is tried first, then the
+# faces a real Linux or macOS desktop carries.
+FONT_DIRS = (ENGINE_DIR.parent / "fonts", APP_DIR / "fonts")
+FONT_FILES = {"tahoma": ("tahoma.ttf", "segoeui.ttf"),
+              "consolas": ("consola.ttf",)}
+FACES = "tahoma,segoe ui,dejavusans,liberationsans,arial"
+_FONTS = {}
+
+
+def font_file(name):
+    """The bundled TTF for a face, wherever this copy keeps it."""
+    for folder in FONT_DIRS:
+        for stem in FONT_FILES.get(str(name).lower(), (f"{name}.ttf",)):
+            path = folder / stem
+            if path.is_file():
+                return path
+    return None
+
+
+def load_font(name, size, bold=False):
+    """One named face at one size: the bundle, then the platform."""
+    size = max(1, int(size))
+    key = (str(name), size, bool(bold))
+    got = _FONTS.get(key)
+    if got is not None:
+        return got
+    path = font_file(name)
+    if path is not None:
+        try:
+            got = pygame.font.Font(str(path), size)
+        except (OSError, pygame.error):
+            got = None
+    if got is None:
+        try:
+            got = pygame.font.SysFont(FACES, size, bold=bold)
+        except (OSError, pygame.error):
+            got = None
+    if got is None:
+        try:
+            got = pygame.font.Font(None, size)
+        except (OSError, pygame.error):
+            return None
+    if bold:
+        got.set_bold(True)
+    _FONTS[key] = got
+    return got
+
+
 # ------------------------------------------------------------- settings
 # Everything the app itself remembers lives beside the executable:
 # one small json next to this file. There is no per-user data folder -
@@ -246,6 +295,21 @@ def _browse_windows():
     return buf.value if ok else None
 
 
+def _browse_linux():
+    """Try zenity or kdialog for folder selection on Linux."""
+    for cmd in (["zenity", "--file-selection", "--directory",
+                 "--title=Install folder"],
+                ["kdialog", "--title", "Install folder",
+                 "--getexistingdirectory", "."]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
 def browse_folder():
     """The OS's own folder picker. None when the user cancelled or no
     picker exists - the field can always be typed into instead, so a
@@ -260,12 +324,11 @@ def browse_folder():
                  '"Install Motion Engine")'],
                 capture_output=True, text=True)
             return out.stdout.strip().rstrip("/") or None
-        out = subprocess.run(["zenity", "--file-selection", "--directory",
-                              "--title=Install folder"],
-                             capture_output=True, text=True)
-        return out.stdout.strip() or None
+        if sys.platform.startswith("linux"):
+            return _browse_linux()
     except (OSError, ValueError):
-        return None
+        pass
+    return None
 
 
 # ------------------------------------------------------------ github api
@@ -329,7 +392,7 @@ def version_key(text_):
 def platform_key():
     if sys.platform.startswith("linux"):
         return "linux"
-    return sys.platform
+    return "win32"
 
 
 def latest_engine(repo, token):
@@ -472,8 +535,10 @@ def unpack(path, into):
         try:
             if sys.platform == "win32":
                 os.startfile(str(path))          # noqa: windows-only
-            else:
+            elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
             return f"launched the installer ({path.name})"
         except OSError as exc:
             return f"could not launch {path.name}: {exc}"
@@ -565,15 +630,22 @@ class Installer:
         if xp is None or winchrome is None:
             sys.exit("the installer needs emoeng/engine beside it "
                      "(xp.py, winchrome.py)")
-        pygame.init()
-        self.vsync = True
-        self.screen = self._make_window(760, 560)
+        try:
+            pygame.init()
+            self.vsync = True
+            self.screen = self._make_window(760, 560)
+        except (pygame.error, RuntimeError) as exc:
+            # a driver with no display to open is the usual answer here
+            sys.exit(f"the installer could not open a window: {exc}\n"
+                     "  a desktop session is needed: check DISPLAY (X11) or "
+                     "WAYLAND_DISPLAY, or name a driver with "
+                     "SDL_VIDEODRIVER")
         pygame.display.set_caption(f"{CODENAME} installer")
         self.clock = pygame.time.Clock()
         self.fonts = {
-            "small": pygame.font.SysFont("tahoma", 12),
-            "normal": pygame.font.SysFont("tahoma", 14),
-            "big": pygame.font.SysFont("tahoma", 17, bold=True),
+            "small": load_font("tahoma", 12),
+            "normal": load_font("tahoma", 14),
+            "big": load_font("tahoma", 17, bold=True),
         }
         self.chrome = winchrome.WindowChrome()
         self.settings = load_settings()
@@ -927,7 +999,7 @@ class Installer:
                 os.startfile(str(dest))             # noqa: windows-only
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", str(dest)])
-            else:
+            elif sys.platform.startswith("linux"):
                 subprocess.Popen(["xdg-open", str(dest)])
         except OSError as exc:
             self.log(f"cannot open {dest}: {exc}", "warn")
@@ -1210,10 +1282,12 @@ class Installer:
     def _sync_surface(self):
         if not self.chrome.supported():
             return
-        want = tuple(self.chrome.win.size)
-        if not want or want == self.screen.get_size():
+        got = self.chrome.frame_size()
+        if not got or min(got) < 1:
             return
-        self.screen = self._make_window(want[0], want[1])
+        if got == self.screen.get_size():
+            return
+        self.screen = self._make_window(got[0], got[1])
 
     def run(self):
         try:

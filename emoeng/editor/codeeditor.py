@@ -413,11 +413,7 @@ class CodeEditor:
             return
         text = self.selected_text()
         self.clipboard = text
-        try:
-            pygame.scrap.init()
-            pygame.scrap.put(pygame.SCRAP_TEXT, text.encode("utf-8"))
-        except Exception:
-            pass
+        widgets.copy_to_clipboard(text)
 
     def cut(self):
         if not self.has_selection():
@@ -428,14 +424,7 @@ class CodeEditor:
         self._changed()
 
     def paste(self):
-        text = self.clipboard
-        try:
-            pygame.scrap.init()
-            raw = pygame.scrap.get(pygame.SCRAP_TEXT)
-            if raw:
-                text = raw.decode("utf-8", errors="replace").replace("\x00", "")
-        except Exception:
-            pass
+        text = widgets.read_clipboard() or self.clipboard
         if not text:
             return
         self._snapshot()

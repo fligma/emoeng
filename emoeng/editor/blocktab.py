@@ -68,6 +68,7 @@ CATEGORY_COLORS = {
     "trigger": (232, 96, 140),
     "scene": (72, 145, 190),
     "object": (62, 172, 150),
+    "entity": (170, 90, 60),
     "light": (238, 128, 74),
     "audio": (202, 104, 176),
     "ui": (150, 188, 74),
@@ -87,7 +88,7 @@ CATEGORY_TITLES = {"audio": "Sound", "ui": "Hud", "shader": "Look",
 
 # three labelled palette bands; `blocks.CATEGORIES` keeps the order
 CATEGORY_GROUPS = (("world", ("events", "trigger", "scene", "object",
-                              "light", "audio", "ui", "shader")),
+                              "entity", "light", "audio", "ui", "shader")),
                    ("engine", ("input", "save")),
                    ("language", ("control", "data", "functions",
                                  "modules", "code")))
@@ -186,12 +187,16 @@ def pin_type(name, value):
             words.startswith("f'"):
         return "text"
     if name in ("pos", "color", "col", "amount", "seconds", "fade",
-                "size", "speed", "angle", "scale", "at", "rate"):
+                "size", "speed", "angle", "scale", "at", "rate",
+                "health", "distance", "walk", "run", "range", "damage",
+                "cooldown", "half", "extent"):
         return "num"
-    if name in ("who", "target", "scene", "model", "texture", "obj"):
+    if name in ("who", "target", "scene", "model", "texture", "obj",
+                "child"):
         return "object"
     if name in ("fn", "text", "label", "name", "title", "code", "args",
-                "key", "action", "path", "expr", "shader", "knob"):
+                "key", "action", "path", "expr", "shader", "knob",
+                "ai_type", "team", "signal", "hitshape"):
         return "text"
     try:
         float(words)
@@ -212,6 +217,7 @@ def _dedent(code):
 DRAWER_FOR = {"scene3d": "scene", "scene2d": "scene", "sceneui": "ui",
               "object3d": "object", "object2d": "object", "ui": "ui",
               "player3d": "object", "player2d": "object",
+              "entity3d": "entity", "entity2d": "entity",
               "camera3d": "object", "camera2d": "object",
               "screen3d": "object", "screen2d": "object",
               "model3d": "object", "sprite2d": "object",

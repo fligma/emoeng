@@ -33,10 +33,13 @@ A Motion Engine project: open this folder in the editor and press F5.
   drives it, and what it places
 - `objects/` holds one `.obj3d` (or `.obj2d`) per object: its script or
   node type, its placement and how it looks
+- `entities/` holds one `.ent3d` (or `.ent2d`) per scripted thing with
+  behaviour - a player, an NPC, an enemy - in the same shape as an
+  object document
 - `shaders/` holds one `.shader` per look the project wears, each paired
   with the class in `scripts/shaders/` that paints it
-- `scripts/scenes/` and `scripts/objects/` hold that code, one class per
-  file; `scripts/` itself holds whatever the two share
+- `scripts/scenes/`, `scripts/objects/` and `scripts/entities/` hold that
+  code, one class per file; `scripts/` itself holds whatever they share
 - `models/` holds `.model3d` meshes and `.model2d` rigs, and is loaded by
   file stem like `textures/` and `audio/` are
 - `saves/` is written by the game and is not part of the project
@@ -67,10 +70,11 @@ ASSET_MAP_DOC = {
 # one template per creator entry; the docstring is the lesson
 SCENE_TEMPLATE = '''"""Scene: edit me, then press F5 in the editor to play it.
 
-`uses` lists the objects/<name>.obj3d files this scene places; the
-loader checks them on load and `self.spawn("prop", pos)` resolves the
-script they name, by stem.
-The player is one more object: spawning `fe.Player3D` (or anything that
+`uses` names what this scene places, by stem: `objects/` holds the inert
+ones as `.obj3d`/`.obj2d` and `entities/` the scripted ones as
+`.ent3d`/`.ent2d`; the loader checks them on load and `self.spawn("prop",
+pos)` resolves the script the document names, from either folder.
+The player is one more entity: spawning `fe.Player3D` (or anything that
 flags `is_player = True`) hands it the camera - WASD moves, mouse looks,
 ESC pauses, all through named bindings the player can rebind. Add verbs
 of your own with `actions = {"push": ["mouse:left", "joy0:button0"]}`
@@ -284,11 +288,11 @@ class Widget(fe.UIObject):
 '''
 
 
-PLAYER3D_TEMPLATE = '''"""Player3D: a spawnable first-person object that owns a camera.
+PLAYER3D_TEMPLATE = '''"""Player3D: a spawnable first-person entity that owns a camera.
 
 Scene side:
 
-    from scripts.objects.player import Player
+    from scripts.entities.player import Player
     self.player = self.spawn(Player, pos=(0.0, 0.0, 6.0))
 
 The player is Godot-style: it polls the bound actions itself,
@@ -319,11 +323,11 @@ class Player(fe.Player3D):
         pass
 '''
 
-PLAYER2D_TEMPLATE = '''"""Player2D: a steered sprite that drags the 2D view along.
+PLAYER2D_TEMPLATE = '''"""Player2D: a steered sprite entity that drags the 2D view along.
 
 Scene side (2D classes are imported directly, not spawned by stem):
 
-    from scripts.objects.player import Player
+    from scripts.entities.player import Player
     self.player = self.spawn(Player, (480.0, 270.0),
                              size=(96.0, 24.0), texture="cloth")
 
@@ -550,8 +554,11 @@ ENTITY3D_TEMPLATE = '''"""Entity3D: an NPC/enemy with AI, health, and hitboxes.
 
 Scene side:
 
-    from scripts.objects.enemy import Enemy
+    from scripts.entities.enemy import Enemy
     self.spawn(Enemy, pos=(0.0, 0.0, 0.0), ai_type="aggro")
+
+A document for me lives in `entities/` as `<name>.ent3d`, beside the
+players, NPCs and enemies, because I am a scripted thing with behaviour.
 
 The entity has built-in AI types:
 - "none": no AI, just sits there
@@ -576,6 +583,14 @@ Advanced:
 - team: "player", "enemy", "neutral", "friendly"
 - aggro_range/deaggro_range: when to chase/lose interest
 - attack_range/attack_damage/attack_cooldown: combat settings
+
+The blocks palette reaches all of that through one call per knob -
+`set_health`, `set_ai`, `set_team`, `set_aggro_range`, `set_attack`,
+`set_move_speed`, `set_hitbox` - each of which returns me, so a script
+written by blocks reads back as blocks. `take_damage(n, source)` and
+`heal(n)` move the health bar, `is_dead()` and `distance_to(other)` read
+it, and `get_node(...)`, `queue_free()` and `connect/emit` work the way
+Godot names them.
 """
 
 import math
@@ -617,8 +632,10 @@ ENTITY2D_TEMPLATE = '''"""Entity2D: a 2D NPC/enemy with AI, health, and hitboxes
 
 Scene side (2D classes are imported directly):
 
-    from scripts.objects.enemy2d import Enemy2D
+    from scripts.entities.enemy2d import Enemy2D
     self.spawn(Enemy2D, (400.0, 300.0), ai_type="aggro")
+
+My document is `entities/<name>.ent2d`.
 
 Same AI types as Entity3D: "none", "follow", "patrol", "wander", "aggro"
 
@@ -629,7 +646,8 @@ Hitbox:
 - hitbox_radius: for circle
 - hitbox_size: (w, h) for rect
 
-Advanced behavior mirrors Entity3D but in 2D world pixels.
+Advanced behavior mirrors Entity3D but in 2D world pixels, and its
+setters (`set_health`, `set_ai`, `set_hitbox2d`, ...) are the same calls.
 """
 
 import emoeng as fe
@@ -753,20 +771,22 @@ OBJECT_PRESETS = {
                       "a widget a UI scene places"),
     "new_player_3d": ("player3d", PLAYER3D_TEMPLATE, "player",
                       "New Player 3D",
-                      "Adds scripts/objects/<name>.py and <name>.obj3d - "
+                      "Adds scripts/entities/<name>.py and <name>.ent3d - "
                       "a Player3D that owns the camera"),
     "new_player_2d": ("player2d", PLAYER2D_TEMPLATE, "player2d",
                       "New Player 2D",
-                      "Adds scripts/objects/<name>.py and <name>.obj2d - "
+                      "Adds scripts/entities/<name>.py and <name>.ent2d - "
                       "a Player2D a 2D scene drives"),
     "new_entity_3d": ("entity3d", ENTITY3D_TEMPLATE, "enemy",
                       "New Entity 3D",
-                      "Adds scripts/objects/<name>.py and <name>.obj3d - "
-                      "an Entity3D with AI, health, hitboxes for NPCs/enemies"),
+                      "Adds scripts/entities/<name>.py and <name>.ent3d - "
+                      "an Entity3D with AI, health, hitboxes for "
+                      "NPCs/enemies"),
     "new_entity_2d": ("entity2d", ENTITY2D_TEMPLATE, "enemy2d",
                       "New Entity 2D",
-                      "Adds scripts/objects/<name>.py and <name>.obj2d - "
-                      "an Entity2D with AI, health, hitboxes for NPCs/enemies"),
+                      "Adds scripts/entities/<name>.py and <name>.ent2d - "
+                      "an Entity2D with AI, health, hitboxes for "
+                      "NPCs/enemies"),
     "new_camera_3d": ("camera3d", CAMERA3D_TEMPLATE, "camera",
                       "New Camera 3D",
                       "Adds scripts/objects/<name>.py and <name>.obj3d - "
@@ -1394,9 +1414,16 @@ def layout(key, start=None):
     """What a template writes for `Project.create`."""
     got = spec(key)
     stem = str(start or got["start"])
-    # the stem and suffix are read off the template's objects
-    ext = {name: scenedoc.object_ext(kind)
-           for name, kind, _src, _nodes in got["objects"]}
+    # the folder and suffix are read off the template's own document types,
+    # so an entity is written into `entities/` and a prop into `objects/`
+    where = {name: (scenedoc.doc_folder(kind), scenedoc.doc_ext(kind))
+             for name, kind, _src, _nodes in got["objects"]}
+
+    def document_ref(ref):
+        """`objects/prop.obj3d` or `entities/guard.ent3d`, by its type."""
+        folder, ext = where.get(ref) or ("objects", "")
+        return f"{folder}/{ref}{ext}"
+
     scripts, documents = {}, {}
     for name, kind, source, places in got["scenes"]:
         file = stem if name == got["start"] else name
@@ -1404,17 +1431,17 @@ def layout(key, start=None):
         doc = scenedoc.blank_scene(
             file, kind, scenedoc.script_field("scripts/scenes",
                                               f"{file}.py"))
-        doc["objects"] = [{"id": ref,
-                           "object": f"objects/{ref}{ext.get(ref, '')}",
+        doc["objects"] = [{"id": ref, "object": document_ref(ref),
                            "pos": list(place)} for ref, place in places]
         documents[f"scenes/{file}.scene"] = doc
     for name, kind, source, nodes in got["objects"]:
-        path = f"scripts/objects/{name}.py"
-        scripts[path] = source
-        doc = scenedoc.blank_object(
-            name, kind, scenedoc.script_field("scripts/objects",
-                                              f"{name}.py"))
+        entity = scenedoc.doc_family(kind) == "entity"
+        folder = "scripts/entities" if entity else "scripts/objects"
+        scripts[f"{folder}/{name}.py"] = source
+        blank = scenedoc.blank_entity if entity else scenedoc.blank_object
+        doc = blank(name, kind, scenedoc.script_field(folder, f"{name}.py"))
         doc["nodes"] = [dict(node) for node in nodes]
-        documents[f"objects/{name}{scenedoc.object_ext(kind)}"] = doc
+        documents[f"{scenedoc.doc_folder(kind)}/{name}"
+                  f"{scenedoc.doc_ext(kind)}"] = doc
     return scripts, documents, tuple(got["models"]), \
         tuple(got.get("maps") or ())

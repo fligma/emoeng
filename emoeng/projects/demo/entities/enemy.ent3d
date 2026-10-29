@@ -1,0 +1,8 @@
+{
+ "format": 1,
+ "name": "enemy",
+ "type": "entity3d",
+ "script": "scripts/entities/enemy.py",
+ "nodes": [],
+ "_help": "an entity document: a scripted thing with behaviour - a player, an NPC, an enemy - in the entities folder"
+}

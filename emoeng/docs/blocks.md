@@ -92,17 +92,20 @@ the `bump` block's `op` slot (`+=`, `//=`, `|=`, `@=` and the rest).
 
 ## Categories
 
-Fourteen drawers, in the order the tab lists them: `blocks.CATEGORIES` is
-`events`, `scene`, `object`, `light`, `audio`, `ui`, `shader`, `input`,
-`save`, `control`, `data`, `functions`, `modules`, `code`. The palette
-column paints one colour per drawer (`blocktab.CATEGORY_COLORS`), deepened
-by 18% in the light theme so the same fills stay readable in both.
+Sixteen drawers, in the order the tab lists them: `blocks.CATEGORIES` is
+`events`, `trigger`, `scene`, `object`, `entity`, `light`, `audio`, `ui`,
+`shader`, `input`, `save`, `control`, `data`, `functions`, `modules`, `code`.
+The palette column paints one colour per drawer
+(`blocktab.CATEGORY_COLORS`), deepened by 18% in the light theme so the same
+fills stay readable in both.
 
 | Category | Colour (dark theme) | Holds |
 | --- | --- | --- |
 | `events` | `(255, 173, 31)` | the hook hats, built from `HOOK_ROWS` |
+| `trigger` | `(232, 96, 140)` | broadcast, listen, the signals an object emits |
 | `scene` | `(72, 145, 190)` | changing scene, ambient, sun, camera, screenshot |
-| `object` | `(62, 172, 150)` | spawning, models, meshes, moving a thing |
+| `object` | `(62, 172, 150)` | spawning, models, meshes, moving a thing, the tree |
+| `entity` | `(170, 90, 60)` | health, AI, teams, attack, the body it can be hit in |
 | `light` | `(238, 128, 74)` | lamps, presets, switching and fading |
 | `audio` | `(202, 104, 176)` | sounds, music, tones, sweeps, noise |
 | `ui` | `(150, 188, 74)` | HUD lines, panels, bars, prompts, captions |
@@ -115,7 +118,7 @@ by 18% in the light theme so the same fills stay readable in both.
 | `modules` | `(90, 175, 110)` | import, from |
 | `code` | `(130, 130, 140)` | note and raw |
 
-Fourteen labels will not fit down a 176 px drawer in one column, so the strip
+Sixteen labels will not fit down a 176 px drawer in one column, so the strip
 wraps: `_drawer_down` lays it out two per row once `CATEGORIES` is longer than
 eight, and stays single-column for a shorter list. Four labels are shortened
 for the chip by `blocktab.CATEGORY_TITLES` - `audio` reads `Sound`, `ui` reads
@@ -128,9 +131,9 @@ already filled in.
 
 ## What kind of file is open
 
-A scene, an object and a script answer to different methods, so the tab reads
-which one it holds and offers the blocks that run there. `blocks.file_kind()`
-looks at the base class of the file's own `class` blocks:
+A scene, an object, an entity and a script answer to different methods, so the
+tab reads which one it holds and offers the blocks that run there.
+`blocks.file_kind()` looks at the base class of the file's own `class` blocks:
 
 | Base | Kind | The chip reads |
 | --- | --- | --- |
@@ -140,6 +143,8 @@ looks at the base class of the file's own `class` blocks:
 | `Object3D` | `object3d` | 3D object |
 | `Object2D` | `object2d` | 2D object |
 | `UIObject` | `ui` | UI object |
+| `Entity3D` | `entity3d` | 3D entity |
+| `Entity2D` | `entity2d` | 2D entity |
 | `Player3D` | `player3d` | 3D player |
 | `Player2D` | `player2d` | 2D player |
 | `Shader` | `shader` | shader |
@@ -161,10 +166,10 @@ What the kind decides:
 | --- | --- |
 | drawer rows | `blocks.palette(category, kind)` drops a block whose `kinds` list does not name the file's kind |
 | language drawers | a script is offered `control`, `data`, `functions`, `modules` and `code` - `SCRIPT_CATEGORIES` - and nothing that needs a scene |
-| strict node drawers | a preset node's script is offered its own drawer plus the language, and nothing else - `blocks.TYPE_CATEGORIES`. An audio emitter sees `audio`, a light node sees `light`, a shader script sees `shader`, a timer sees only the language; `blocks.fits()` consults the allowlist before the `kinds` check |
+| strict node drawers | a preset node's script is offered its own drawer plus the language, and nothing else - `blocks.TYPE_CATEGORIES`. An audio emitter sees `audio`, a light node sees `light`, a shader script sees `shader`, a timer sees only the language; an entity sees `object`, `entity`, `trigger` and `light` on top of the language, because it spawns and moves, has behaviour, hears signals and carries a light of its own. `blocks.fits()` consults the allowlist before the `kinds` check |
 | events drawer | `HOOK_ROWS` carries the kinds a hook runs in: `on_enter` and `on_exit` are a scene's, `build` and `update` belong to any file; a hitbox or trigger also hears `on_enter(self, other)` / `on_exit(self, other)`, a timer hears `on_timeout(self)`, and a shader script hears the `frag(self, g)` hat |
 | toolbar | a chip beside the file's name says which kind was read |
-| drawer on open | the palette opens on the drawer that kind is made from - `scene` for a 3D scene, `object` for a 3D object, `ui` for a UI scene, `light` for a light node, `audio` for an emitter, `shader` for a shader script, `functions` for a timer, `data` for a script (`blocktab.DRAWER_FOR`) |
+| drawer on open | the palette opens on the drawer that kind is made from - `scene` for a 3D scene, `object` for a 3D object, `entity` for an entity script, `ui` for a UI scene, `light` for a light node, `audio` for an emitter, `shader` for a shader script, `functions` for a timer, `data` for a script (`blocktab.DRAWER_FOR`) |
 | Inspector | `info()` lists it under *Kind* |
 | an empty file | the hint names the kind: "an empty 3d scene - drag a block out of the drawer" |
 | an empty drawer | the drawer says "nothing here for a 2d object" rather than going blank |
@@ -178,37 +183,6 @@ shows, filled from the block's fields the same way; left empty, the title is
 the label's opening words. `kinds` lists the files the block runs in and is
 empty when it runs in all of them. `defaults` is what it is dropped with, and
 `blocks.DEFAULTS` holds the same words for the hand-written kinds.
-
-The engine's own blocks are not written out here: their rows, words and
-defaults all come from the engine's own signatures (see
-[Blocks from the engine](#blocks-from-the-engine)). What is left is the
-language itself and the handful of engine blocks that write something other
-than one plain call.
-
-### Entity blocks (new)
-
-The `object` drawer now includes blocks for working with `Entity3D` and
-`Entity2D` - the base classes for NPCs and enemies with AI, health, and hitboxes.
-
-| Kind | Says | Drawer | Shape | Writes |
-| --- | --- | --- | --- | --- |
-| `set_health` | set *who* health to *value* | object | stack | `who.health = value` |
-| `heal` | heal *who* by *amount* | object | stack | `who.heal(amount)` |
-| `damage` | damage *who* by *amount* from *source* | object | stack | `who.take_damage(amount, source)` |
-| `kill` | kill *who* from *source* | object | stack | `who.take_damage(who.max_health, source)` |
-| `set_ai` | set *who* AI to *ai_type* with *config* | object | stack | `who.ai_type = ai_type; who.ai_config = config` |
-| `set_ai_target` | set *who* AI target to *target* | object | stack | `who.ai_target = target` |
-| `set_team` | set *who* team to *team* | object | stack | `who.team = team` |
-| `set_aggro_range` | set *who* aggro range to *distance* | object | stack | `who.aggro_range = distance` |
-| `set_attack` | set *who* attack: range *range*, damage *dmg*, cooldown *cd* | object | stack | sets `attack_range`, `attack_damage`, `attack_cooldown` |
-| `set_move_speed` | set *who* move speed to *walk* (run *run*) | object | stack | `who.move_speed = (walk, run)` |
-| `set_hitbox` | set *who* hitbox: *shape* *params* | object | stack | sets `hitbox_shape` and `hitbox_half`/`hitbox_radius`/`hitbox_height` |
-| `set_hitbox2d` | set *who* 2D hitbox: *shape* *params* | object | stack | sets `hitbox_shape` and `hitbox_size`/`hitbox_radius` |
-
-These blocks are available in files whose kind is `entity3d`, `entity2d`,
-`object3d`, `object2d`, `player3d`, or `player2d`. They work with any object
-that has the corresponding attributes (i.e. any class inheriting from
-`Entity3D` or `Entity2D`).
 
 The engine's own blocks are not written out here: their rows, words and
 defaults all come from the engine's own signatures (see
@@ -244,6 +218,67 @@ than one plain call.
 
 New statement shape = one more `SPEC` entry plus its `make` function. Nothing
 in the tab is specialised for a kind.
+
+### Entity blocks
+
+The `entity` drawer is the behaviour an `Entity3D` or `Entity2D` carries: its
+health, its AI, its team, its attack, its walking speed, the body it can be hit
+in and the way it leaves. Twenty-three blocks, in two families that answer one
+question - *whose entity is this about*:
+
+| Family | Kinds | Receiver | Built by | Files |
+| --- | --- | --- | --- | --- |
+| mine | `health`, `maxhealth`, `ai`, `aitarget`, `team`, `aggro`, `attack`, `speed`, `hitbox`, `hitbox2d` | `self` | a `Call` in `api.py`, its rows read off the setter's own signature | `blocks.ENTITY_KINDS` - the two entity kinds, the two object kinds and the two player kinds |
+| who | `set_health`, `heal`, `damage`, `kill`, `leave`, `set_ai`, `set_ai_target`, `set_team`, `set_aggro_range`, `set_attack`, `set_move_speed`, `set_hitbox`, `set_hitbox2d` | whoever the *who* row names, dropped with `self.player` | a `make` in `blocks.py` | `blocks.ACTOR_KINDS` - the same six plus the three scene kinds, because a scene tells entities what to do |
+
+The two hitbox pairs are split by world: `blocks.ENT3D_KINDS` and
+`blocks.ENT2D_KINDS` keep a flat shape out of a solid script and a solid one
+out of a flat script. A *hitshape* row takes the words that entity's own class
+lists - `box`, `sphere`, `capsule` on a 3D body, `rect` or `circle` on a flat
+one - and the engine folds anything it does not list into the shape its size
+already makes.
+
+Every block lowers to one engine call, which is the whole reason it can be a
+block rather than a `raw` note: `who.set_ai("patrol", config)` reads back as
+itself, while the two attribute pokes it replaces - `who.ai_type = "patrol"`
+and `who.ai_config = config` - are ordinary statements a reader cannot tell
+from any other pair of assignments. Those calls are the setters
+`EntityBehaviour` owns, each one writing only the rows it was given and
+answering with the entity, so an empty row leaves what it had in place.
+
+| Kind | Says | A fresh block writes |
+| --- | --- | --- |
+| `health` | set my health to *health* | `self.set_health(100.0)` |
+| `maxhealth` | set my full health to *health* | `self.set_max_health(100.0)` |
+| `ai` | switch my AI to *ai_type* with *config* | `self.set_ai("follow", config={})` |
+| `aitarget` | follow *target* | `self.set_ai_target(self.player)` |
+| `team` | join the *team* team | `self.set_team("enemy")` |
+| `aggro` | notice a target *distance* away | `self.set_aggro_range(15.0)` |
+| `attack` | attack with reach *range* for *damage* every *cooldown*s | `self.set_attack(range=2.0, damage=15.0, cooldown=1.5)` |
+| `speed` | walk at *walk* and run at *run* | `self.set_move_speed(3.0, run=8.0)` |
+| `hitbox` | set my hitbox to *hitshape* | `self.set_hitbox("box", half=(0.5, 1.0, 0.5))` |
+| `hitbox2d` | set my flat hitbox to *hitshape* | `self.set_hitbox2d("box", size=(32.0, 48.0))` |
+| `set_health` | set *who* health to *value* | `self.player.set_health(100.0)` |
+| `heal` | heal *who* by *amount* | `self.player.heal(10.0)` |
+| `damage` | damage *who* by *amount* from *source* | `self.player.take_damage(10.0, None)` |
+| `kill` | kill *who* from *source* | `self.player.kill(None)` |
+| `leave` | take *who* out at the end of the frame | `self.player.queue_free()` |
+| `set_ai` | set *who* AI to *ai_type* with *config* | `self.player.set_ai("follow", {})` |
+| `set_ai_target` | set *who* AI target to *target* | `self.player.set_ai_target(self.scene.player)` |
+| `set_team` | set *who* team to *team* | `self.player.set_team("enemy")` |
+| `set_aggro_range` | set *who* aggro range to *distance* and off at *deaggro* | `self.player.set_aggro_range(15.0, None)` |
+| `set_attack` | set *who* attack: reach *range*, damage *dmg*, cooldown *cd* | `self.player.set_attack(2.0, 15.0, 1.5)` |
+| `set_move_speed` | set *who* move speed to *walk* (run *run*) | `self.player.set_move_speed(3.0, 8.0)` |
+| `set_hitbox` | set *who* hitbox: *shape* *params* | `self.player.set_hitbox("box", (0.5, 1.0, 0.5))` |
+| `set_hitbox2d` | set *who* 2D hitbox: *shape* *params* | `self.player.set_hitbox2d("rect", (32.0, 48.0))` |
+
+`leave` is `queue_free()` and not the object drawer's `remove` call to
+`self.despawn(...)`: it leaves when the frame's work is done, so dropping an
+entity while walking `self.get_children()` cannot shift the row being walked.
+The tree calls the entity script also owns - `node` for `get_node`, `free` for
+the same `queue_free` on whatever it is mixed into - sit in the `object`
+drawer, and the signal calls `connect` / `emit` in the `trigger` one; see
+[Objects](objects.md) for what each does.
 
 ### Blocks from the engine
 
@@ -281,6 +316,8 @@ What a signature cannot say, `Call` adds:
 | --- | --- | --- |
 | `scene` | `play_scene`, `push_scene`, `pop_scene`, `set_ambient`, `set_sun`, `add_camera`, `set_active_camera`, `shake`, `follow`, `look_at`, `set_post`, `set_shader_knob` | `self.play_scene("menu")`, `self.set_sun(dir=(0.4, 0.8, 0.3), color=(1.0, 1.0, 1.0))` |
 | `object` | `spawn`, `place_model`, `model_object`, `add`, `dynamic`, and the words the object classes take | `self.spawn("spark", (0.0, 0.0, 0.0))`, `self.place_model("crate", (0.0, 0.0, 0.0))` |
+| `entity` | the setters `EntityBehaviour` owns: `set_health`, `set_max_health`, `set_ai`, `set_ai_target`, `set_team`, `set_aggro_range`, `set_attack`, `set_move_speed`, `set_hitbox`, `set_hitbox2d` | `self.set_health(100.0)`, `self.set_attack(range=2.0, damage=15.0, cooldown=1.5)` (see [Entity blocks](#entity-blocks)) |
+| `trigger` | `self.connect`, `self.disconnect`, `self.emit`, on top of the scene's own `broadcast` / `listen` / `unlisten` | `self.connect("door", self.on_door)`, `self.emit("door", True)` |
 | `light` | `add_light`, `add_preset`, `remove_light`, `Object3D.light` | `self.add_light(pos=(0.0, 0.0, 0.0), color=(1.0, 1.0, 1.0), shape="point")` |
 | `audio` | `Audio.play`, `tone`, `sweep`, `music`, `noise`, `set_master` | `self.audio.play("pickup")`, `self.audio.tone("pickup", freq=440.0)` |
 | `ui` | `Hud.text`, `panel`, `bar`, `prompt`, `hints`, `subtitle` | `self.hud.bar((12, 12, 200, 40), 0.6)` |
@@ -421,7 +458,7 @@ the slots that really take an asset open a list:
 | `sound` | `audio` | the built-in synth tones |
 | `path` | `audio` | nothing built in |
 | `scene` | `scenes` | nothing built in |
-| `obj` | `objects` | nothing built in |
+| `obj` | `objects` and `entities` | nothing built in |
 
 `api.choices(project, slot)` builds the list, and `api.known` checks a word
 against it - a colour spelling counts for a sheet, since the renderer turns

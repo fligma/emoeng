@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pygame
 
-from . import colors, meshes, shaders as shadermod
+from . import colors, meshes, shaders as shadermod, ui
 from .timers import Timers
 
 
@@ -138,6 +138,40 @@ class ModelObject:
         self.meshes = []
 
 
+def answers_to(obj, word):
+    """Does this node go by that word: its document name, tag or class?
+
+    A placed node keeps the `id` its scene document gave it, so a script can
+    ask for `get_node("Lectern")` using the name the editor's tree shows.
+    """
+    want = str(word or "").strip()
+    if not want:
+        return False
+    leaf = (getattr(obj, "doc_key", None) or "").rsplit("/", 1)[-1]
+    named = (getattr(obj, "placed_id", None) or "").rsplit("/", 1)[-1]
+    return want in (leaf, named, getattr(obj, "tag", None),
+                    type(obj).__name__)
+
+
+def node_from(roots, parts):
+    """The node a branch names, starting at whichever root answers to the
+    first word. `None` when no root reaches the end of the branch."""
+    if not parts:
+        return None
+    for start in roots:
+        if not getattr(start, "alive", True) or \
+                not answers_to(start, parts[0]):
+            continue
+        node = start
+        for part in parts[1:]:
+            node = node.find_child(part)
+            if node is None:
+                break
+        if node is not None:
+            return node
+    return None
+
+
 class GameObject:
     """Shared tree, clone and lifecycle machinery for every object type."""
 
@@ -169,6 +203,7 @@ class GameObject:
         # what a `.scene` says about my placement and look
         self.look = {}
         self.doc_key = None         # my stable name there: `Torch#0`
+        self.placed_id = None       # the `id` a scene document placed me under
         self.clones = []            # clones made from me
         self.meshes = []            # DynamicMesh objects I own
         self.objects = []           # ModelObject instances I own
@@ -230,7 +265,14 @@ class GameObject:
         return out
 
     def tree_path(self):
-        """My branch as words: `Torch#0/Flame#0`."""
+        """My branch as words: `Torch#0/Flame#0`.
+
+        A document key already spells the whole branch, so it is the answer
+        on its own; an object built by hand, with no document, is named by
+        walking up its parents.
+        """
+        if self.doc_key:
+            return self.doc_key
         chain = [ent for ent in reversed(self.ancestors())]
         chain.append(self)
         return "/".join(getattr(ent, "doc_key", None)
@@ -310,6 +352,84 @@ class GameObject:
         for child in self.descendants():
             child.follow_parent()
         return self
+
+    # -- tree names, as Godot spells them --------------------------------
+    def get_parent(self):
+        """Who I am a node of, or None at the top."""
+        return self.parent
+
+    def get_children(self):
+        """My nodes, in the order they were placed."""
+        return list(self.children)
+
+    def get_child(self, index):
+        """The node at `index`, or None past the end."""
+        try:
+            return self.children[int(index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    def get_child_count(self):
+        """How many nodes I hold."""
+        return len(self.children)
+
+    def get_tree(self):
+        """The scene that holds me; every node lives in one tree."""
+        return self.scene
+
+    def is_inside_tree(self):
+        """Am I live in a scene right now?"""
+        return bool(self.alive) and \
+            any(o is self for o in self.scene.objects)
+
+    def find_child(self, name):
+        """My direct node that goes by that name, or None."""
+        for child in self.children:
+            if answers_to(child, name):
+                return child
+        return None
+
+    def find_children(self, name):
+        """Every direct node that goes by that name.
+
+        An object's name is its document key, its tag or its class, so
+        `find_children("Torch")` collects the torches I hold.
+        """
+        return [child for child in self.children
+                if answers_to(child, name)]
+
+    def get_node(self, path):
+        """The node a branch names below me: `get_node("Flame#0/Spark#0")`.
+
+        `.` is me, `..` whoever I sit on, and a leading `/` asks the whole
+        scene, so `get_node("/Enemy#0")` reads like `Scene.get_node("Enemy#0")`.
+        None when the branch dead-ends.
+        """
+        text = str(path or "").strip().replace("\\", "/")
+        if text.startswith("/"):
+            return self.scene.get_node(text[1:])
+        node = self
+        parts = [p for p in text.split("/") if p and p != "."]
+        while parts and parts[0] == "..":
+            parts.pop(0)
+            node = node.parent if node.parent is not None else node
+        if not parts:
+            return node
+        return node_from(node.children, parts)
+
+    # -- lifetime, as Godot spells it ----------------------------------------
+    def queue_free(self):
+        """Leave at the end of this frame instead of this instant.
+
+        Safe inside a loop over `get_children()`: the scene takes the node
+        out once every live object has had its update.
+        """
+        self.scene.queue_free(self)
+        return self
+
+    def free(self):
+        """Leave right now: the Godot name for `despawn()`."""
+        return self.despawn()
 
     @property
     def is_clone(self):
@@ -520,6 +640,19 @@ class GameObject:
     def unlisten(self, name, owner=None):
         """Drop one trigger's listener, or all of them."""
         return self.scene.unlisten(name, owner)
+
+    # -- signals ------------------------------------------------------------
+    def connect(self, name, fn):
+        """Hear a signal: `connect("door", self.on_door)`."""
+        return self.scene.connect(name, fn)
+
+    def disconnect(self, name, fn=None):
+        """Forget one listener of a signal, or every listener of it."""
+        return self.scene.disconnect(name, fn)
+
+    def emit(self, name, value=None):
+        """Fire a signal: the Godot name for `broadcast()`."""
+        return self.broadcast(name, value)
 
     # -- timers -----------------------------------------------------------
     def after(self, delay, func, *args, **kwargs):
@@ -1073,7 +1206,7 @@ class UIObject(Object2D):
         """Render self.text to an RGBA texture; returns (key, w_px, h_px)."""
         UIObject._tex_seq += 1
         key = f"ui_text_{id(self)}_{UIObject._tex_seq}"
-        font = pygame.font.SysFont(self.font_name, self.font_size)
+        font = ui.load_font(self.font_name, self.font_size)
         label = font.render(self.text, True,
                             tuple(round(c * 255) for c in self.text_color))
         w, h = label.get_size()
@@ -1249,14 +1382,15 @@ class _EntityHitbox:
                 width, height)
 
 
-class Entity3D(Object3D):
-    """Base class for 3D entities (NPCs, enemies) with AI, health, hitboxes."""
+class EntityBehaviour:
+    """Health, AI and attack: the behaviour a 3D and a 2D entity share.
 
-    kind = "3d"
-    name = "entity3d"
-    clone_gap = (2.0, 0.0, 0.0)
-    clone_attrs = ("health", "max_health", "ai_type", "ai_config", "hitbox_shape", "hitbox_half")
-    doc_knobs = ("opacity", "shader", "health", "max_health", "ai_type", "ai_config", "hitbox_shape", "hitbox_half") + UV_KNOBS
+    Mixed in above `Object3D`/`Object2D`. What is not alike between the two
+    worlds is answered by the class below it: `_plane()` says which two axes
+    it walks on, `_facing()` how it turns, `_moved()` how a move gets about,
+    `_hitbox_shape()` which colliders it may wear and `_flat()` whether
+    anything it carries rides it in the round.
+    """
 
     # Health
     health = 100.0
@@ -1270,42 +1404,82 @@ class Entity3D(Object3D):
     ai_target = None          # what the AI is targeting
     ai_timer = 0.0
 
-    # Hitbox
-    hitbox_shape = "box"      # "box", "sphere", "capsule"
-    hitbox_half = (0.5, 1.0, 0.5)  # for box
-    hitbox_radius = 0.5       # for sphere/capsule
-    hitbox_height = 2.0       # for capsule
-
-    # Advanced behavior
+    # Behaviour
     team = "neutral"          # "player", "enemy", "neutral", "friendly"
-    aggro_range = 10.0        # distance to aggro
-    deaggro_range = 20.0      # distance to lose interest
-    attack_range = 1.5        # distance to attack
     attack_damage = 10.0
     attack_cooldown = 1.0
     attack_timer = 0.0
-    move_speed = (3.0, 6.0)   # (walk, run)
 
-    def __init__(self, scene, pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0,
-                 tag=None, opacity=1.0, **knobs):
-        super().__init__(scene, pos=pos, yaw=yaw, scale=scale, tag=tag, opacity=opacity)
-        self.set_knobs(knobs)
+    # The same ideas, restated by each class in its world's own units
+    hitbox_shapes = ()            # the shapes that get a collider filed
+    ai_arrive = 0.5               # within this of a spot, it is reached
+    wander_range = (2.0, 8.0)     # how far a wander step may reach
+    run_ratio = 1.5               # chase speed when only one is set
+
+    # -- what each world answers ------------------------------------------
+    def _plane(self):
+        """The two axes of `pos` I walk on."""
+        return (0, 1)
+
+    def _facing(self, dx, dy):
+        """Turn to face a move along my plane."""
+
+    def _moved(self):
+        """Announce a direct change of `pos`."""
+
+    def _flat(self):
+        """True when nothing below me turns or rises with me."""
+        return True
+
+    def _hitbox_shape(self, shape):
+        """The shape my collider takes for a name."""
+        return str(shape)
+
+    # -- setup ------------------------------------------------------------
+    def _own_state(self):
+        """Hand me my own copy of anything my class holds.
+
+        An AI walk writes into `ai_config` as it goes (`current_waypoint`,
+        `wander_target`) and a document's knobs arrive as one dict shared by
+        every instance built from it, so without this copy two enemies
+        patrolling the same room would steer each other.
+        """
+        for name in ("ai_config", "hitbox_half", "hitbox_size",
+                     "move_speed"):
+            value = getattr(self, name, None)
+            if isinstance(value, dict):
+                setattr(self, name, dict(value))
+            elif isinstance(value, (list, tuple)):
+                setattr(self, name, type(value)(value))
+
+    def _entity_init(self):
+        """The half of `__init__` both worlds share, run after their own."""
+        self._own_state()
         self.health = float(self.max_health)
         self._hitbox = None
         self._setup_hitbox()
 
     def _setup_hitbox(self):
-        """Create the collision/hitbox for this entity."""
-        if self.hitbox_shape in ("box", "sphere", "capsule"):
+        """File my collider with the scene when my shape is a real one."""
+        if self.hitbox_shape in self.hitbox_shapes:
             self._hitbox = _EntityHitbox(self)
             self.scene.add_collider(self._hitbox)
 
+    def _rebuild_hitbox(self):
+        """Move my collider to a shape it did not have before."""
+        if getattr(self, "_hitbox", None) is not None:
+            self.scene.remove_collider(self._hitbox)
+            self._hitbox = None
+        self._setup_hitbox()
+        return self
+
     def dispose(self):
-        if self._hitbox is not None:
+        if getattr(self, "_hitbox", None) is not None:
             self.scene.remove_collider(self._hitbox)
             self._hitbox = None
         return super().dispose()
 
+    # -- health -----------------------------------------------------------
     def take_damage(self, amount, source=None):
         """Apply damage to this entity."""
         if self.invulnerable_time > 0 or self.health <= 0:
@@ -1321,6 +1495,18 @@ class Entity3D(Object3D):
     def heal(self, amount):
         """Heal this entity."""
         self.health = min(self.max_health, self.health + float(amount))
+        return self
+
+    def kill(self, source=None):
+        """Out of health at once, whoever did it.
+
+        The same end damage brings about: my death runs, then I go.
+        """
+        if self.health <= 0.0:
+            return self
+        self.health = 0.0
+        self.die(source)
+        return self
 
     def die(self, source=None):
         """Called when health reaches 0."""
@@ -1330,14 +1516,171 @@ class Entity3D(Object3D):
 
     def on_hit(self, source):
         """Hook called when damaged but not killed."""
-        # Flash red briefly
-        if hasattr(self, "flash_hit"):
-            self.flash_hit()
+        flash = getattr(self, "flash_hit", None)
+        if callable(flash):
+            flash()                 # a body that can flash it red, briefly
 
     def on_death(self, source):
         """Hook called when killed."""
-        pass
 
+    def is_dead(self):
+        """Have I run out of health?"""
+        return self.health <= 0
+
+    def distance_to(self, other):
+        """How far away another object stands, measured on my plane."""
+        ix, iy = self._plane()
+        pos = list(getattr(other, "pos", None) or ()) + [0.0, 0.0]
+        if self._flat():
+            return math.hypot(float(pos[ix]) - self.pos[ix],
+                              float(pos[iy]) - self.pos[iy])
+        return math.sqrt((float(pos[0]) - self.pos[0]) ** 2 +
+                         (float(pos[1]) - self.pos[1]) ** 2 +
+                         (float(pos[2]) - self.pos[2]) ** 2)
+
+    # -- one-call setters, which is what a block lowers to ----------------
+    def set_health(self, value):
+        """How much damage I can still take, never past my maximum.
+
+        Reaching zero kills me, exactly as losing the last of my health does
+        in a fight.
+        """
+        was = self.health
+        self.health = max(0.0, min(float(self.max_health), float(value)))
+        if self.health <= 0.0 and was > 0.0:
+            self.die()
+        return self
+
+    def set_max_health(self, value):
+        """My full health; what I have now is kept, or trimmed to fit."""
+        self.max_health = max(1.0, float(value))
+        self.health = min(self.health, self.max_health)
+        return self
+
+    def set_team(self, name):
+        """Whose side I am on: `player`, `enemy`, `neutral` or `friendly`."""
+        self.team = str(name)
+        return self
+
+    def set_ai(self, ai_type, config=None):
+        """How I behave on my own: `none`, `follow`, `patrol`, `wander`.
+
+        `config` carries what that behaviour needs, a list of `waypoints` to
+        patrol or a `wander_interval` in seconds; leaving it out keeps what
+        I already was told. Either way I start the new behaviour fresh.
+        """
+        self.ai_type = str(ai_type)
+        if config is not None:
+            self.ai_config = dict(config)
+        self.ai_state = "idle"
+        self.ai_timer = 0.0
+        return self
+
+    def set_ai_target(self, target):
+        """Who I follow, chase or attack; nobody until told."""
+        self.ai_target = target
+        return self
+
+    def set_aggro_range(self, distance, deaggro=None):
+        """How far off I take notice, and how far to lose interest."""
+        self.aggro_range = float(distance)
+        self.deaggro_range = self.aggro_range * 2.0 if deaggro is None \
+            else float(deaggro)
+        return self
+
+    def set_attack(self, range=None, damage=None, cooldown=None):
+        """My reach, how hard I hit and the seconds between swings."""
+        if range is not None:
+            self.attack_range = float(range)
+        if damage is not None:
+            self.attack_damage = float(damage)
+        if cooldown is not None:
+            self.attack_cooldown = max(0.0, float(cooldown))
+        return self
+
+    def set_move_speed(self, walk, run=None):
+        """How fast I travel, and how fast when I am chasing.
+
+        A body that carries a pair stores both; one that carries a single
+        number runs at `run_ratio` times it.
+        """
+        speed = float(walk)
+        if isinstance(self.move_speed, (list, tuple)):
+            self.move_speed = (speed, speed * self.run_ratio
+                               if run is None else float(run))
+        else:
+            self.move_speed = speed
+        return self
+
+    def set_hitbox(self, shape, half=None, radius=None, height=None):
+        """My 3D collider: a `box` of half-extents, a `sphere` or a `capsule`."""
+        self.hitbox_shape = self._hitbox_shape(shape)
+        if half is not None:
+            self.hitbox_half = tuple(float(c) for c in half)
+        if radius is not None:
+            self.hitbox_radius = float(radius)
+        if height is not None:
+            self.hitbox_height = float(height)
+        return self._rebuild_hitbox()
+
+    def set_hitbox2d(self, shape, size=None, radius=None):
+        """My flat collider: a `rect` of (width, height) or a `circle`."""
+        self.hitbox_shape = self._hitbox_shape(shape)
+        if size is not None:
+            self.hitbox_size = tuple(float(c) for c in size)
+        if radius is not None:
+            self.hitbox_radius = float(radius)
+        return self._rebuild_hitbox()
+
+    # -- speeds -----------------------------------------------------------
+    def _walk_speed(self):
+        """My cruising speed, in the world's units per second."""
+        speed = self.move_speed
+        if isinstance(speed, (list, tuple)):
+            return float(speed[0])
+        return float(speed)
+
+    def _run_speed(self):
+        """My chasing speed: a pair's second number, or a step up."""
+        speed = self.move_speed
+        if isinstance(speed, (list, tuple)):
+            return float(speed[1]) if len(speed) > 1 else float(speed[0])
+        return float(speed) * self.run_ratio
+
+    # -- movement ---------------------------------------------------------
+    def _delta_to(self, pos):
+        """My plane's (dx, dy) toward a world position."""
+        ix, iy = self._plane()
+        where = list(pos) + [0.0] * (max(ix, iy) + 1)
+        return (float(where[ix]) - self.pos[ix],
+                float(where[iy]) - self.pos[iy])
+
+    def _step(self, dx, dy, speed, dt):
+        """Slide along my plane toward a delta, turning to face it."""
+        length = math.hypot(dx, dy)
+        if length <= 0.0:
+            return False
+        ix, iy = self._plane()
+        self.pos[ix] += dx / length * speed * dt
+        self.pos[iy] += dy / length * speed * dt
+        self._facing(dx, dy)
+        self._moved()
+        return True
+
+    def _scattered(self, angle, distance):
+        """A spot `distance` away from me along my plane, turned by `angle`."""
+        ix, iy = self._plane()
+        return (self.pos[ix] + math.cos(angle) * distance,
+                self.pos[iy] + math.sin(angle) * distance)
+
+    def _plane_delta(self, pair):
+        """My plane's (dx, dy) toward a pair stored in plane terms."""
+        ix, iy = self._plane()
+        where = list(pair) + [0.0, 0.0]
+        return (float(where[0]) - self.pos[ix],
+                float(where[1]) - self.pos[iy])
+
+    # -- behaviour --------------------------------------------------------
     def update(self, dt):
         super().update(dt)
         if self.invulnerable_time > 0:
@@ -1346,103 +1689,72 @@ class Entity3D(Object3D):
         self._update_attack(dt)
 
     def _update_ai(self, dt):
-        """Update AI behavior based on ai_type."""
+        """Step through whatever `ai_type` says I should be doing."""
         if self.ai_type == "none" or self.health <= 0:
             return
         self.ai_timer += dt
+        walk = {"follow": self._ai_follow, "patrol": self._ai_patrol,
+                "wander": self._ai_wander, "aggro": self._ai_aggro}
+        step = walk.get(self.ai_type)
+        if step is not None:
+            step(dt)
 
-        if self.ai_type == "follow":
-            self._ai_follow(dt)
-        elif self.ai_type == "patrol":
-            self._ai_patrol(dt)
-        elif self.ai_type == "wander":
-            self._ai_wander(dt)
-        elif self.ai_type == "aggro":
-            self._ai_aggro(dt)
-
-    def _ai_follow(self, dt):
-        """Follow a target (player or another entity)."""
+    def _who(self):
+        """Who I am after, taking the player when nobody was named."""
         target = self.ai_target
         if target is None:
-            # Try to find player
-            if hasattr(self.scene, "player") and self.scene.player:
-                target = self.scene.player
-                self.ai_target = target
-        if target and hasattr(target, "pos"):
-            dist = math.hypot(target.pos[0] - self.pos[0], target.pos[2] - self.pos[2])
-            if dist > self.attack_range:
-                # Move toward target
-                dx = target.pos[0] - self.pos[0]
-                dz = target.pos[2] - self.pos[2]
-                length = math.hypot(dx, dz)
-                if length > 0:
-                    speed = self.move_speed[0]
-                    self.pos[0] += dx / length * speed * dt
-                    self.pos[2] += dz / length * speed * dt
-                    self.yaw = math.atan2(dx, dz)
-                    self.push_local()
-                    self.propagate()
+            target = getattr(self.scene, "player", None)
+            self.ai_target = target
+        if target is None or getattr(target, "pos", None) is None:
+            return None
+        return target
+
+    def _ai_follow(self, dt):
+        """Keep within reach of whoever I follow."""
+        target = self._who()
+        if target is None:
+            return
+        dx, dy = self._delta_to(target.pos)
+        if math.hypot(dx, dy) > self.attack_range:
+            self._step(dx, dy, self._walk_speed(), dt)
 
     def _ai_patrol(self, dt):
-        """Patrol between waypoints."""
-        waypoints = self.ai_config.get("waypoints", [])
+        """Walk a list of `waypoints`, one after the other, forever."""
+        waypoints = self.ai_config.get("waypoints") or ()
         if not waypoints:
             return
-        current = self.ai_config.get("current_waypoint", 0)
-        target_pos = waypoints[current]
-        dx = target_pos[0] - self.pos[0]
-        dz = target_pos[2] - self.pos[2]
-        dist = math.hypot(dx, dz)
-        if dist < 0.5:
-            # Reached waypoint, move to next
-            current = (current + 1) % len(waypoints)
-            self.ai_config["current_waypoint"] = current
+        current = int(self.ai_config.get("current_waypoint", 0)) % \
+            len(waypoints)
+        dx, dy = self._delta_to(waypoints[current])
+        if math.hypot(dx, dy) < self.ai_arrive:
+            self.ai_config["current_waypoint"] = (current + 1) % \
+                len(waypoints)
         else:
-            speed = self.move_speed[0]
-            self.pos[0] += dx / dist * speed * dt
-            self.pos[2] += dz / dist * speed * dt
-            self.yaw = math.atan2(dx, dz)
-            self.push_local()
-            self.propagate()
+            self._step(dx, dy, self._walk_speed(), dt)
 
     def _ai_wander(self, dt):
-        """Random wandering behavior."""
+        """Amble to a new nearby spot every few seconds."""
         if self.ai_timer > self.ai_config.get("wander_interval", 3.0):
             self.ai_timer = 0.0
-            # Pick random direction
             angle = self.rng.uniform(0, 2 * math.pi)
-            distance = self.rng.uniform(2.0, 8.0)
-            target_x = self.pos[0] + math.sin(angle) * distance
-            target_z = self.pos[2] + math.cos(angle) * distance
-            self.ai_config["wander_target"] = (target_x, target_z)
-
+            distance = self.rng.uniform(*self.wander_range)
+            self.ai_config["wander_target"] = self._scattered(angle, distance)
         target = self.ai_config.get("wander_target")
-        if target:
-            dx = target[0] - self.pos[0]
-            dz = target[1] - self.pos[2]
-            dist = math.hypot(dx, dz)
-            if dist < 0.5:
-                self.ai_config["wander_target"] = None
-            else:
-                speed = self.move_speed[0]
-                self.pos[0] += dx / dist * speed * dt
-                self.pos[2] += dz / dist * speed * dt
-                self.yaw = math.atan2(dx, dz)
-                self.push_local()
-                self.propagate()
+        if not target:
+            return
+        dx, dy = self._plane_delta(target)
+        if math.hypot(dx, dy) < self.ai_arrive:
+            self.ai_config["wander_target"] = None
+        else:
+            self._step(dx, dy, self._walk_speed(), dt)
 
     def _ai_aggro(self, dt):
-        """Aggressive AI: chase and attack player."""
-        # Find player
+        """Chase the player and hit them once I am within reach."""
         player = getattr(self.scene, "player", None)
-        if not player or not hasattr(player, "pos"):
+        if player is None or getattr(player, "pos", None) is None:
             return
-
-        dx = player.pos[0] - self.pos[0]
-        dz = player.pos[2] - self.pos[2]
-        dist = math.hypot(dx, dz)
-
-        # Check aggro/deaggro
+        dx, dy = self._delta_to(player.pos)
+        dist = math.hypot(dx, dy)
         if self.ai_state == "idle":
             if dist <= self.aggro_range:
                 self.ai_state = "chase"
@@ -1454,13 +1766,7 @@ class Entity3D(Object3D):
             elif dist <= self.attack_range:
                 self.ai_state = "attack"
             else:
-                # Chase
-                speed = self.move_speed[1]  # run speed
-                self.pos[0] += dx / dist * speed * dt
-                self.pos[2] += dz / dist * speed * dt
-                self.yaw = math.atan2(dx, dz)
-                self.push_local()
-                self.propagate()
+                self._step(dx, dy, self._run_speed(), dt)
         elif self.ai_state == "attack":
             if dist > self.attack_range:
                 self.ai_state = "chase"
@@ -1468,55 +1774,105 @@ class Entity3D(Object3D):
                 self._try_attack(dt)
 
     def _update_attack(self, dt):
+        """Cool down between swings."""
         if self.attack_timer > 0:
             self.attack_timer -= dt
 
     def _try_attack(self, dt):
+        """One hit per cooldown, however long I stay within reach."""
         if self.attack_timer <= 0:
             self.attack_timer = self.attack_cooldown
             self._perform_attack()
 
     def _perform_attack(self):
         """Override in subclass to implement actual attack."""
-        if hasattr(self.ai_target, "take_damage"):
-            self.ai_target.take_damage(self.attack_damage, self)
+        hit = getattr(self.ai_target, "take_damage", None)
+        if callable(hit):
+            hit(self.attack_damage, self)
 
 
-class Entity2D(Object2D):
+class Entity3D(EntityBehaviour, Object3D):
+    """Base class for 3D entities (NPCs, enemies) with AI, health, hitboxes."""
+
+    kind = "3d"
+    name = "entity3d"
+    clone_gap = (2.0, 0.0, 0.0)
+    clone_attrs = ("health", "max_health", "ai_type", "ai_config",
+                   "hitbox_shape", "hitbox_half")
+    doc_knobs = ("opacity", "shader", "health", "max_health", "ai_type",
+                 "ai_config", "hitbox_shape", "hitbox_half") + UV_KNOBS
+
+    # Hitbox
+    hitbox_shape = "box"      # "box", "sphere", "capsule"
+    hitbox_shapes = ("box", "sphere", "capsule")
+    hitbox_half = (0.5, 1.0, 0.5)  # for box
+    hitbox_radius = 0.5       # for sphere/capsule
+    hitbox_height = 2.0       # for capsule
+
+    # Distances, in metres
+    aggro_range = 10.0        # distance to aggro
+    deaggro_range = 20.0      # distance to lose interest
+    attack_range = 1.5        # distance to attack
+    move_speed = (3.0, 6.0)   # (walk, run)
+
+    # Walking numbers, in a world you can sprint across
+    ai_arrive = 0.5
+    wander_range = (2.0, 8.0)
+    run_ratio = 2.0
+
+    def __init__(self, scene, pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0,
+                 tag=None, opacity=1.0, **knobs):
+        super().__init__(scene, pos=pos, yaw=yaw, scale=scale, tag=tag,
+                         opacity=opacity)
+        self.set_knobs(knobs)
+        self._entity_init()
+
+    # -- my world ---------------------------------------------------------
+    def _plane(self):
+        """I cross the floor: x and z, never the height between."""
+        return (0, 2)
+
+    def _facing(self, dx, dy):
+        """Turn my yaw to a move; the second word is depth, not height."""
+        self.yaw = math.atan2(dx, dy)
+
+    def _moved(self):
+        """Re-place the nodes I carry."""
+        self.push_local()
+        self.propagate()
+
+    def _flat(self):
+        """On the ground, so a torch I hold swings when I turn."""
+        return abs(float(self.pos[1])) < 1e-6
+
+
+class Entity2D(EntityBehaviour, Object2D):
     """Base class for 2D entities (NPCs, enemies) with AI, health, hitboxes."""
 
     kind = "2d"
     name = "entity2d"
     clone_gap = (64.0, 0.0)
-    clone_attrs = ("health", "max_health", "ai_type", "ai_config", "hitbox_shape", "hitbox_radius")
-    doc_knobs = ("opacity", "shader", "health", "max_health", "ai_type", "ai_config", "hitbox_shape", "hitbox_radius")
-
-    # Health
-    health = 100.0
-    max_health = 100.0
-    invulnerable_time = 0.0
-
-    # AI
-    ai_type = "none"          # "none", "follow", "patrol", "wander", "aggro"
-    ai_config = {}            # dict of ai-specific settings
-    ai_state = "idle"         # current ai state
-    ai_target = None          # what the AI is targeting
-    ai_timer = 0.0
+    clone_attrs = ("health", "max_health", "ai_type", "ai_config",
+                   "hitbox_shape", "hitbox_radius")
+    doc_knobs = ("opacity", "shader", "health", "max_health", "ai_type",
+                 "ai_config", "hitbox_shape", "hitbox_radius")
 
     # Hitbox
     hitbox_shape = "rect"     # "rect", "circle"
+    hitbox_shapes = ("rect", "circle")
     hitbox_radius = 24.0      # for circle
     hitbox_size = (48.0, 48.0)  # for rect
 
-    # Advanced behavior
-    team = "neutral"          # "player", "enemy", "neutral", "friendly"
-    aggro_range = 200.0       # distance to aggro (pixels)
+    # Distances, in pixels
+    aggro_range = 200.0       # distance to aggro
     deaggro_range = 400.0     # distance to lose interest
     attack_range = 32.0       # distance to attack
-    attack_damage = 10.0
-    attack_cooldown = 1.0
-    attack_timer = 0.0
     move_speed = 100.0        # pixels per second
+
+    # Walking numbers, in a world measured in pixels
+    ai_arrive = 10.0
+    wander_range = (50.0, 200.0)
+    run_ratio = 1.5
 
     def __init__(self, scene, pos=(0.0, 0.0), size=(64.0, 64.0),
                  texture="white", col=(1.0, 1.0, 1.0), rot=0.0,
@@ -1526,181 +1882,24 @@ class Entity2D(Object2D):
                          rot=rot, anchor=anchor, grid=grid, frame=frame, uv=uv,
                          flip=flip, tag=tag, blend=blend, opacity=opacity)
         self.set_knobs(knobs)
-        self.health = float(self.max_health)
-        self._hitbox = None
-        self._setup_hitbox()
+        self._entity_init()
 
-    def _setup_hitbox(self):
-        """Create the collision/hitbox for this entity."""
-        if self.hitbox_shape in ("circle", "rect"):
-            self._hitbox = _EntityHitbox(self)
-            self.scene.add_collider(self._hitbox)
+    # -- my world ---------------------------------------------------------
+    def _plane(self):
+        """I cross the screen: x and y, the pair a sprite is placed by."""
+        return (0, 1)
 
-    def dispose(self):
-        if self._hitbox is not None:
-            self.scene.remove_collider(self._hitbox)
-            self._hitbox = None
-        return super().dispose()
+    def _facing(self, dx, dy):
+        """Turn my rotation toward a move."""
+        self.rot = math.atan2(dy, dx)
 
-    def take_damage(self, amount, source=None):
-        """Apply damage to this entity."""
-        if self.invulnerable_time > 0 or self.health <= 0:
-            return False
-        self.health = max(0.0, self.health - float(amount))
-        self.invulnerable_time = 0.2
-        if self.health <= 0:
-            self.die(source)
-        else:
-            self.on_hit(source)
-        return True
+    def _moved(self):
+        """Redraw where I stand, and re-place the nodes I carry."""
+        self.moved()
 
-    def heal(self, amount):
-        """Heal this entity."""
-        self.health = min(self.max_health, self.health + float(amount))
-
-    def die(self, source=None):
-        """Called when health reaches 0."""
-        self.on_death(source)
-        self.alive = False
-        self.dispose()
-
-    def on_hit(self, source):
-        """Hook called when damaged but not killed."""
-        pass
-
-    def on_death(self, source):
-        """Hook called when killed."""
-        pass
-
-    def update(self, dt):
-        super().update(dt)
-        if self.invulnerable_time > 0:
-            self.invulnerable_time -= dt
-        self._update_ai(dt)
-        self._update_attack(dt)
-
-    def _update_ai(self, dt):
-        """Update AI behavior based on ai_type."""
-        if self.ai_type == "none" or self.health <= 0:
-            return
-        self.ai_timer += dt
-
-        if self.ai_type == "follow":
-            self._ai_follow(dt)
-        elif self.ai_type == "patrol":
-            self._ai_patrol(dt)
-        elif self.ai_type == "wander":
-            self._ai_wander(dt)
-        elif self.ai_type == "aggro":
-            self._ai_aggro(dt)
-
-    def _ai_follow(self, dt):
-        """Follow a target (player or another entity)."""
-        target = self.ai_target
-        if target is None:
-            if hasattr(self.scene, "player") and self.scene.player:
-                target = self.scene.player
-                self.ai_target = target
-        if target and hasattr(target, "pos"):
-            dx = target.pos[0] - self.pos[0]
-            dy = target.pos[1] - self.pos[1]
-            dist = math.hypot(dx, dy)
-            if dist > self.attack_range:
-                speed = self.move_speed
-                self.pos[0] += dx / dist * speed * dt
-                self.pos[1] += dy / dist * speed * dt
-                self.rot = math.atan2(dy, dx)
-                self.moved()
-
-    def _ai_patrol(self, dt):
-        """Patrol between waypoints."""
-        waypoints = self.ai_config.get("waypoints", [])
-        if not waypoints:
-            return
-        current = self.ai_config.get("current_waypoint", 0)
-        target_pos = waypoints[current]
-        dx = target_pos[0] - self.pos[0]
-        dy = target_pos[1] - self.pos[1]
-        dist = math.hypot(dx, dy)
-        if dist < 10.0:
-            current = (current + 1) % len(waypoints)
-            self.ai_config["current_waypoint"] = current
-        else:
-            speed = self.move_speed
-            self.pos[0] += dx / dist * speed * dt
-            self.pos[1] += dy / dist * speed * dt
-            self.rot = math.atan2(dy, dx)
-            self.moved()
-
-    def _ai_wander(self, dt):
-        """Random wandering behavior."""
-        if self.ai_timer > self.ai_config.get("wander_interval", 3.0):
-            self.ai_timer = 0.0
-            angle = self.rng.uniform(0, 2 * math.pi)
-            distance = self.rng.uniform(50.0, 200.0)
-            target_x = self.pos[0] + math.cos(angle) * distance
-            target_y = self.pos[1] + math.sin(angle) * distance
-            self.ai_config["wander_target"] = (target_x, target_y)
-
-        target = self.ai_config.get("wander_target")
-        if target:
-            dx = target[0] - self.pos[0]
-            dy = target[1] - self.pos[1]
-            dist = math.hypot(dx, dy)
-            if dist < 10.0:
-                self.ai_config["wander_target"] = None
-            else:
-                speed = self.move_speed
-                self.pos[0] += dx / dist * speed * dt
-                self.pos[1] += dy / dist * speed * dt
-                self.rot = math.atan2(dy, dx)
-                self.moved()
-
-    def _ai_aggro(self, dt):
-        """Aggressive AI: chase and attack player."""
-        player = getattr(self.scene, "player", None)
-        if not player or not hasattr(player, "pos"):
-            return
-
-        dx = player.pos[0] - self.pos[0]
-        dy = player.pos[1] - self.pos[1]
-        dist = math.hypot(dx, dy)
-
-        if self.ai_state == "idle":
-            if dist <= self.aggro_range:
-                self.ai_state = "chase"
-                self.ai_target = player
-        elif self.ai_state == "chase":
-            if dist > self.deaggro_range:
-                self.ai_state = "idle"
-                self.ai_target = None
-            elif dist <= self.attack_range:
-                self.ai_state = "attack"
-            else:
-                speed = self.move_speed * 1.5
-                self.pos[0] += dx / dist * speed * dt
-                self.pos[1] += dy / dist * speed * dt
-                self.rot = math.atan2(dy, dx)
-                self.moved()
-        elif self.ai_state == "attack":
-            if dist > self.attack_range:
-                self.ai_state = "chase"
-            else:
-                self._try_attack(dt)
-
-    def _update_attack(self, dt):
-        if self.attack_timer > 0:
-            self.attack_timer -= dt
-
-    def _try_attack(self, dt):
-        if self.attack_timer <= 0:
-            self.attack_timer = self.attack_cooldown
-            self._perform_attack()
-
-    def _perform_attack(self):
-        """Override in subclass to implement actual attack."""
-        if hasattr(self.ai_target, "take_damage"):
-            self.ai_target.take_damage(self.attack_damage, self)
+    def _hitbox_shape(self, shape):
+        """A circle is round; anything else is the box my size makes."""
+        return "circle" if str(shape) == "circle" else "rect"
 
 
 def first_object_class(module, base=GameObject):

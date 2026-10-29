@@ -1,6 +1,8 @@
 """Editor widgets on XP primitives: tree, field, panel."""
 
 import os
+import subprocess
+import sys
 import time
 
 import pygame
@@ -345,6 +347,9 @@ _ICON_COLORS = {
     ".object": ((120, 96, 160), "Ob"),
     ".obj3d": ((120, 96, 160), "O3"),
     ".obj2d": ((70, 140, 190), "O2"),
+    # entities are drawn from these tiles; there is no PNG for them
+    ".ent3d": ((170, 90, 60), "E3"),
+    ".ent2d": ((60, 150, 150), "E2"),
     ".shader": ((150, 80, 160), "Sh"),
     ".png": ((70, 150, 90), "Im"),
     ".jpg": ((70, 150, 90), "Im"),
@@ -862,10 +867,18 @@ class CreateDialog:
             rows.append((None, "Scene"))
             for key, preset in SCENE_PRESETS.items():
                 rows.append((key, preset[3].replace("New ", "")))
+        # a preset's node type says which folder it is written into, so the
+        # dialog groups the same way the Project View does
+        if self.only in (None, "entity"):
+            rows.append((None, "Entity"))
+            for key, preset in OBJECT_PRESETS.items():
+                if scenedoc.doc_family(preset[0]) == "entity":
+                    rows.append((key, preset[3].replace("New ", "")))
         if self.only in (None, "object"):
             rows.append((None, "Object"))
             for key, preset in OBJECT_PRESETS.items():
-                rows.append((key, preset[3].replace("New ", "")))
+                if scenedoc.doc_family(preset[0]) != "entity":
+                    rows.append((key, preset[3].replace("New ", "")))
         if self.only in (None, "shader"):
             rows.append((None, "Shader"))
             rows.append(("new_shader", "Look"))
@@ -1565,25 +1578,89 @@ class ChoiceDialog:
         return "ok"
 
 
-def copy_to_clipboard(text):
-    """Put `text` on the system clipboard; report whether it landed."""
-    text = str(text)
+def clipboard_tools():
+    """The clipboard writers this platform offers, the best one first."""
+    if os.name == "nt":
+        return [("powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Set-Clipboard -Value @input")]
+    if sys.platform == "darwin":
+        return [("pbcopy",)]
+    tools = []
+    if os.environ.get("WAYLAND_DISPLAY"):
+        tools.append(("wl-copy",))
+    tools.append(("xclip", "-selection", "clipboard"))
+    tools.append(("xsel", "--clipboard", "--input"))
+    return tools
+
+
+def paste_tools():
+    """The clipboard readers this platform offers, the best one first."""
+    if os.name == "nt":
+        return [("powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-Clipboard")]
+    if sys.platform == "darwin":
+        return [("pbpaste",)]
+    tools = []
+    if os.environ.get("WAYLAND_DISPLAY"):
+        tools.append(("wl-paste", "--no-newline"))
+    tools.append(("xclip", "-selection", "clipboard", "-o"))
+    tools.append(("xsel", "--clipboard", "--output"))
+    return tools
+
+
+def read_clipboard():
+    """The clipboard's text, through whichever route answers."""
+    try:
+        pygame.scrap.init()
+        raw = pygame.scrap.get(pygame.SCRAP_TEXT)
+        if raw:
+            return raw.decode("utf-8", errors="replace").replace("\x00", "")
+    except Exception:
+        pass
+    for tool in paste_tools():
+        try:
+            got = subprocess.run(tool, capture_output=True, text=True,
+                                 timeout=4)
+        except Exception:
+            continue
+        if got.returncode == 0 and got.stdout:
+            return got.stdout
+    return ""
+
+
+def _copy_scrap(text):
+    """Hand the text to pygame; the window owns the selection after."""
     try:
         pygame.scrap.init()
         pygame.scrap.put(pygame.SCRAP_TEXT, text.encode("utf-8"))
         return True
     except Exception:
-        pass
-    if os.name == "nt":
+        return False
+
+
+def _copy_tools(text):
+    """Pipe the text through a clipboard helper program."""
+    for tool in clipboard_tools():
         try:
-            import subprocess
-            subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
-                            "-Command", "Set-Clipboard -Value @input"],
-                           input=text, capture_output=True, text=True,
-                           timeout=4)
+            subprocess.run(tool, input=text, capture_output=True,
+                           text=True, timeout=4, check=True)
             return True
         except Exception:
-            return False
+            continue
+    return False
+
+
+def copy_to_clipboard(text):
+    """Put `text` on the system clipboard; report whether it landed."""
+    text = str(text)
+    # under X11 / Wayland `scrap` only passes the data on while the window
+    # owns the selection, so there the desktop tools get asked first
+    tools_first = sys.platform.startswith("linux")
+    steps = (_copy_tools, _copy_scrap) if tools_first \
+        else (_copy_scrap, _copy_tools)
+    for step in steps:
+        if step(text):
+            return True
     return False
 
 

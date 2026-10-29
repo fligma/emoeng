@@ -91,7 +91,7 @@ class _Tab:
 
     def __init__(self, path, kind, doc):
         self.path = Path(path)
-        self.kind = kind                 # "scene" or "object"
+        self.kind = kind                 # "scene", "object" or "entity"
         self.doc = doc                   # the JSON dict, in memory
         self.name = self.path.stem
         self.sel = None                  # the picked node's id, None = root
@@ -161,8 +161,12 @@ class DocTab:
             doc = scenedoc.load(path, kind)
         except Exception as exc:                 # a broken file opens blank
             self.app.log(f"{path.name}: {exc}", "error")
-            doc = (scenedoc.blank_scene(path.stem) if kind == "scene"
-                   else scenedoc.blank_object(path.stem))
+            if kind == "scene":
+                doc = scenedoc.blank_scene(path.stem)
+            elif kind == "entity":
+                doc = scenedoc.blank_entity(path.stem)
+            else:
+                doc = scenedoc.blank_object(path.stem)
         self.tabs.append(_Tab(path, kind, doc))
         self.active = len(self.tabs) - 1
         self.grip = self.popup = None
@@ -198,6 +202,9 @@ class DocTab:
         try:
             if tab.kind == "scene":
                 self.project.save_scene_doc(tab.name, tab.doc)
+            elif tab.kind == "entity":
+                # an entity document goes back where it was read from
+                self.project.save_entity_doc(tab.name, tab.doc)
             else:
                 self.project.save_object_doc(tab.name, tab.doc)
         except Exception as exc:
@@ -320,11 +327,12 @@ class DocTab:
         return True
 
     def _instance_options(self, family):
-        """The project's own object/scene files, for the Add Node menu."""
+        """The project's own documents, for the Add Node menu."""
         if self.project is None:
             return []
         out = []
         for kind, exts in (("objects", scenedoc.OBJECT_EXTS),
+                           ("entities", scenedoc.ENTITY_EXTS),
                            ("scenes", (scenedoc.SCENE_EXT,))):
             for p in self.project.files(kind):
                 if p.suffix.lower() not in exts:
@@ -515,9 +523,11 @@ class DocTab:
             rows.append(("overrides", str(len(ov)), None))
             return rows
         entry = self._selected(tab) if tab.kind == "scene" else tab.doc
-        fam = (self._family(tab) if tab.kind == "object"
+        # an object or entity document edits its own root, not a picked node
+        owned = tab.kind in ("object", "entity")
+        fam = (self._family(tab) if owned
                else self._node_family(entry or {}, self._family(tab)))
-        label = "object" if tab.kind == "object" else "node"
+        label = tab.kind if owned else "node"
         rows.append(("-", ""))
         rows.append((label, str(entry.get("id") or entry.get("name")
                                  or tab.name), None))

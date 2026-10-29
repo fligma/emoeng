@@ -28,6 +28,8 @@ OWNERS = {
     "GameObject": objmod.GameObject,
     "Object3D": objmod.Object3D,
     "Object2D": objmod.Object2D,
+    "Entity3D": objmod.Entity3D,
+    "Entity2D": objmod.Entity2D,
     "UIObject": objmod.UIObject,
     "Audio": audiomod.Audio,
     "Input": inputmod.Input,
@@ -64,6 +66,13 @@ WORDS = {
     "pulse": "None", "radius": "None", "angle": "None", "inner": "None",
     "follow": "False", "path": "theme.ogg", "fade_ms": "500",
     "loop": "True", "sound": "ui_click",
+    # an entity's own rows: health, behaviour, the tree, signals
+    "health": "100.0", "ai_type": "follow", "config": "{}",
+    "target": "self.player", "team": "enemy", "distance": "15.0",
+    "range": "2.0", "damage": "15.0", "cooldown": "1.5",
+    "walk": "3.0", "run": "8.0", "half": "(0.5, 1.0, 0.5)",
+    "hitshape": "box", "extent": "(32.0, 48.0)", "height": "None",
+    "deaggro": "None", "child": "Door", "signal": "door", "fn": "on_door",
     # a shader's rows: `g` call words plus the look name
     "uv": "g.uv", "a": "g.color", "b": "g.color", "t": "0.5",
     "x": "g.grey(g.color)", "h": "g.time", "lo": "0.0", "hi": "1.0",
@@ -88,6 +97,13 @@ START = {
     "x": "g.grey(g.color)", "h": "g.time",
     "direction": "(1.0, 0.0)", "shader": '"scanlines"',
     "knob": '"amount"', "value": "0.5",
+    # an entity's own rows, quoted where the engine wants words
+    "health": "100.0", "ai_type": '"follow"', "config": "{}",
+    "team": '"enemy"', "distance": "15.0", "range": "2.0",
+    "damage": "15.0", "cooldown": "1.5", "walk": "3.0", "run": "8.0",
+    "half": "(0.5, 1.0, 0.5)", "hitshape": '"box"',
+    "extent": "(32.0, 48.0)", "child": '"Door"', "signal": '"door"',
+    "fn": "self.on_door",
 }
 
 
@@ -122,12 +138,28 @@ class Param:
         return f"<Param {self.arg} as {self.slot}>"
 
 
+# the calls an entity is told, the tree it stands in and the signals it hears
+_ENTITY_CALLS = ("self.set_health", "self.set_max_health", "self.set_ai",
+                 "self.set_ai_target", "self.set_team",
+                 "self.set_aggro_range", "self.set_attack",
+                 "self.set_move_speed", "self.set_hitbox",
+                 "self.set_hitbox2d")
+_TREE_CALLS = ("self.get_node", "self.queue_free")
+_SIGNAL_CALLS = ("self.connect", "self.disconnect", "self.emit")
+
+
 def _category(target):
     """Which drawer a call hangs in, from its expression."""
     if target.startswith("self.hud."):
         return "ui"
     if target.startswith("self.audio."):
         return "audio"
+    if target in _ENTITY_CALLS:
+        return "entity"
+    if target in _TREE_CALLS:
+        return "object"
+    if target in _SIGNAL_CALLS:
+        return "trigger"
     if target in ("self.add_light", "self.add_preset", "self.remove_light",
                   "self.light"):
         return "light"
@@ -323,6 +355,7 @@ PICKERS = {
     "sound": ("audio", BUILTIN_TONES),
     "path": ("audio", ()),
     "scene": ("scenes", ()),
+    # a spawned name is looked for in either folder
     "obj": ("objects", ()),
     "map": ("maps", ()),
 }
@@ -330,7 +363,7 @@ PICKERS = {
 # loader methods ask each folder, skipping unloadable `.py`
 NAMERS = {
     "scenes": ("scene_names",),
-    "objects": ("object_names",),
+    "objects": ("object_names", "entity_names"),
     "shaders": ("shader_names",),
     "models": ("model_names", "model2d_names"),
     "maps": ("map_names",),
@@ -401,6 +434,14 @@ _SCENES = ("scene3d", "scene2d", "sceneui")
 _OBJECTS = ("object3d", "object2d", "ui", "player3d", "player2d",
             "model3d", "sprite2d")
 
+# bodies that carry behaviour: health, an AI, a team, a collider
+_BEHAVIOUR = ("entity3d", "entity2d", "object3d", "object2d",
+              "player3d", "player2d")
+_BODY3D = ("entity3d", "object3d", "player3d")
+_BODY2D = ("entity2d", "object2d", "player2d")
+# files whose `self` is a node in a tree: it can look around and leave
+_TREE = _SCENES + _OBJECTS + ("entity3d", "entity2d")
+
 
 CALLS = (
     # scene: the flow between screens, the world's light, the camera
@@ -461,8 +502,8 @@ CALLS = (
     # object: creating one, and stamping the world it stands in
     Call("spawn", "spawn %obj% at %pos%", "self.spawn",
          "Scene.spawn", skip=("parent", "clone_of"), seeds=("pos",),
-         doc="An objects/<name> stem or a class; the object builds as it "
-             "lands."),
+         doc="An objects/ or entities/ stem, or a class; the object builds "
+             "as it lands."),
     Call("spawn3d", "spawn the 3D prop %obj% at %pos% yawed %yaw% "
                   "scaled %scale%",
          "self.spawn", "Scene.spawn", skip=("parent", "clone_of"),
@@ -504,9 +545,88 @@ CALLS = (
          "GameObject.set_shader", kinds=_OBJECTS,
          names={"name": "shader"}, quoted=("shader",),
          node="wear %shader%",
-         doc="A uv or texture look from shaders/ on this object's own mesh. "
-             "Decide it before build(); `set self.shader to None` takes "
-             "the look off again."),
+         doc="A uv or texture look from shaders/ run over this object's own "
+              "mesh. Decide it before build(); `set self.shader to None` "
+              "takes the look off again."),
+
+    # tree: Godot's names for where a node stands and when it goes
+    Call("node", "read the node at %child%", "self.get_node",
+         "GameObject.get_node", names={"path": "child"},
+         quoted=("child",), writes="node", kinds=_TREE,
+         node="the node %child%",
+         doc="Find a node by the name the outline shows: `Enemy`, `Gate#0`, "
+             "`Entrance/Gate`, or `.` and `..` for where I stand."),
+    Call("free", "leave the scene at the end of the frame",
+         "self.queue_free", "GameObject.queue_free", kinds=_TREE,
+         doc="Godot's removal, and it is safe inside a loop: everything "
+             "marked goes once this frame's update is done."),
+
+    # signals: the same bus as broadcast and listen, spelled Godot's way
+    Call("connect", "connect %signal% to %fn%", "self.connect",
+         "GameObject.connect", names={"name": "signal"},
+         quoted=("signal",), seeds=("fn",), kinds=_TREE,
+         node="connect %signal%",
+         doc="Ask a callable to hear one signal. The second row is any "
+             "function; `self.on_trigger` is what an object already has."),
+    Call("emit", "emit %signal% with %value%", "self.emit",
+         "GameObject.emit", names={"name": "signal"},
+         quoted=("signal",), kinds=_TREE, node="emit %signal%",
+         doc="Say this signal fired, with or without a value. Everything "
+             "connected to it, and every listener, hears it this frame."),
+
+    # entity: what an actor is told about itself, one call each
+    Call("health", "set my health to %health%", "self.set_health",
+         "Entity3D.set_health", names={"value": "health"}, kinds=_BEHAVIOUR,
+         node="my health",
+         doc="How much damage I can still take. Reaching zero ends me, "
+             "exactly as the last of my health does in a fight."),
+    Call("maxhealth", "set my full health to %health%",
+         "self.set_max_health", "Entity3D.set_max_health",
+         names={"value": "health"}, kinds=_BEHAVIOUR, node="my full health",
+         doc="My maximum. What I have now is kept, or trimmed to fit under "
+             "a ceiling that came down."),
+    Call("ai", "switch my AI to %ai_type% with %config%", "self.set_ai",
+         "Entity3D.set_ai", quoted=("ai_type",), seeds=("config",),
+         kinds=_BEHAVIOUR, node="my AI is %ai_type%",
+         doc="One of `none`, `follow`, `patrol`, `wander`, `aggro`. The dict "
+             "is what that behaviour needs: `waypoints` to patrol, a "
+             "`wander_interval` in seconds."),
+    Call("aitarget", "follow %target%", "self.set_ai_target",
+         "Entity3D.set_ai_target", kinds=_BEHAVIOUR, node="follow %target%",
+         doc="Who I chase or walk with. None means nobody until I am told."),
+    Call("team", "join the %team% team", "self.set_team",
+         "Entity3D.set_team", quoted=("team",), kinds=_BEHAVIOUR,
+         node="my team", doc="`player`, `enemy`, `neutral` or `friendly`: "
+         "what an aggro body looks at before it picks a target."),
+    Call("aggro", "notice a target %distance% away", "self.set_aggro_range",
+         "Entity3D.set_aggro_range", seeds=("distance",), kinds=_BEHAVIOUR,
+         node="my aggro range",
+         doc="How far off I take notice. Leave the second row empty and I "
+             "lose interest at twice that distance."),
+    Call("attack", "attack with reach %range% for %damage% every %cooldown%s",
+         "self.set_attack", "Entity3D.set_attack",
+         seeds=("range", "damage", "cooldown"), kinds=_BEHAVIOUR,
+         node="my attack",
+         doc="How near I must be, how hard I hit, and the seconds between "
+             "swings. An empty row keeps what I had."),
+    Call("speed", "walk at %walk% and run at %run%", "self.set_move_speed",
+         "Entity3D.set_move_speed", seeds=("walk", "run"), kinds=_BEHAVIOUR,
+         node="my speed",
+         doc="Cruising speed and chasing speed, in the world's units a "
+             "second: metres in a 3D body, pixels in a flat one."),
+    Call("hitbox", "set my hitbox to %hitshape%", "self.set_hitbox",
+         "Entity3D.set_hitbox", names={"shape": "hitshape"},
+         quoted=("hitshape",), seeds=("half",), kinds=_BODY3D,
+         node="my hitbox",
+         doc="My 3D collider: a `box` of half extents, a `sphere` of a "
+             "radius, or a `capsule` of a radius and a height."),
+    Call("hitbox2d", "set my flat hitbox to %hitshape%",
+         "self.set_hitbox2d", "Entity2D.set_hitbox2d",
+         names={"shape": "hitshape", "size": "extent"},
+         quoted=("hitshape",), seeds=("extent",), kinds=_BODY2D,
+         node="my flat hitbox",
+         doc="My flat collider: a `rect` of (width, height) or a `circle` of "
+             "a radius."),
 
     # light: one drawer; the shape picks the kind
     Call("lamp", "add a %shape% light at %pos% in %color%",

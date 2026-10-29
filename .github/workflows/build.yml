@@ -1,4 +1,4 @@
-# Build and release the engine app and its installer for every OS.
+# Build and release the engine app and its installer for Windows and Linux.
 #
 # The version comes from emoeng/const.py - nowhere else. Pushing a new
 # VERSION there (or running this workflow by hand) tags the commit
@@ -7,10 +7,8 @@
 #
 #   MotionEngine-windows.zip         one-file bundle, from build_release.py
 #   MotionEngine-linux.tar.gz        (carries projects/ beside the exe)
-#   MotionEngine-macos.zip
 #   MotionEngine-installer-windows.zip   the standalone installer app
 #   MotionEngine-installer-linux.tar.gz
-#   MotionEngine-installer-macos.zip
 #
 # The bundle names are what installer/installer.py searches for: it
 # looks for the newest `engineV*` release and picks the file whose name
@@ -71,8 +69,6 @@ jobs:
             label: windows
           - os: ubuntu-24.04
             label: linux
-          - os: macos-latest
-            label: macos
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +87,7 @@ jobs:
           fi
 
       # The repo's own build tool: freezes emoeng into
-      # tools/dist/MotionEngine.exe (Windows) or MotionEngine (Linux/macOS)
+      # tools/dist/MotionEngine.exe (Windows) or MotionEngine (Linux)
       # with the engine CLI baked in, the projects folder already copied beside the exe.
       # --no-run because a headless runner must not try to open a window.
       - name: Freeze the app
