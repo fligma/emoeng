@@ -42,7 +42,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -286,46 +288,78 @@ def stage_icon():
         log(f"icon not staged: {exc}", "error")
 
 
+# what a release carries: the app and the folders staged beside it
+BUNDLE_FOLDERS = ("projects", "docs", "fonts", "editor")
+
+
+def stage_bundle(target: Path, exe: Path):
+    """Copy the finished app and its sidecars into one clean tree.
+
+    Packing `dist/` straight would archive whatever else happens to live
+    there - including the archive of the last run - and tar refuses to
+    read a file it is busy writing. A staging tree ends both problems.
+    """
+    # copy2 keeps the mode, so a one-file binary stays executable inside a
+    # tarball instead of needing a chmod after unpacking
+    shutil.copy2(exe, target / exe.name)
+    for folder in BUNDLE_FOLDERS:
+        src = DIST / folder
+        if src.is_dir():
+            shutil.copytree(src, target / folder)
+    icon = DIST / const.ICON_NAME
+    if icon.is_file():
+        shutil.copy2(icon, target / const.ICON_NAME)
+
+
+def zip_bundle(source: Path, archive: Path):
+    """A deflate zip of `source`, written by zipfile rather than by shell."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in sorted(source.rglob("*")):
+            if file.is_file():
+                zf.write(file, file.relative_to(source))
+
+
+def pack_tools(cmd):
+    """Run a packing tool, printing its words first if it refuses.
+
+    `capture_output` hides the reason for a failed tar or ditto behind a
+    bare CalledProcessError, which reads as a mystery in a CI log.
+    """
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        for line in ((exc.stdout or "") + (exc.stderr or "")).splitlines():
+            log(line, "error")
+        raise
+
+
 def pack_release():
     """Create the release archive for the current platform."""
     exe = exe_path()
     if not exe.is_file():
         log(f"expected exe missing: {exe}", "error")
         return None
-    # For one-file builds, stage files next to exe before packing
-    if IS_WINDOWS:
-        archive = DIST / f"{ENGINE_NAME}-windows.zip"
-        # Create a temp folder with exe + data files
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            # Copy exe
-            shutil.copy2(exe, tmpdir / exe.name)
-            # Copy data folders if they exist
-            for folder in ("projects", "docs", "fonts", "editor"):
-                src = DIST / folder
-                if src.is_dir():
-                    shutil.copytree(src, tmpdir / folder)
-            # Copy icon if exists
-            icon_src = DIST / const.ICON_NAME
-            if icon_src.is_file():
-                shutil.copy2(icon_src, tmpdir / const.ICON_NAME)
-            # Use Python's zipfile instead of PowerShell
-            import zipfile
-            with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for file in tmpdir.rglob('*'):
-                    if file.is_file():
-                        zf.write(file, file.relative_to(tmpdir))
-    elif IS_MACOS:
-        archive = DIST / f"{ENGINE_NAME}-macos.zip"
-        dest_dir = DIST
-        cmd = ["ditto", "-c", "-k", "--sequesterRsrc", str(dest_dir), str(archive)]
-        subprocess.run(cmd, check=True, capture_output=True)
-    else:
-        archive = DIST / f"{ENGINE_NAME}-linux.tar.gz"
-        dest_dir = DIST
-        cmd = ["tar", "-czf", str(archive), "-C", str(dest_dir), "."]
-        subprocess.run(cmd, check=True, capture_output=True)
+    suffix = ("windows.zip" if IS_WINDOWS else
+              "macos.zip" if IS_MACOS else "linux.tar.gz")
+    archive = DIST / f"{ENGINE_NAME}-{suffix}"
+    # a bundle unpacked from an archive carries only the modes the archive
+    # recorded, so make sure the bit worth recording is set before staging
+    ensure_executable(exe)
+    with tempfile.TemporaryDirectory() as scratch:
+        # the bundle and its archive are siblings: nothing archives a tree
+        # that holds the archive being built
+        root = Path(scratch) / "bundle"
+        root.mkdir()
+        stage_bundle(root, exe)
+        local = Path(scratch) / archive.name
+        if IS_WINDOWS:
+            zip_bundle(root, local)
+        elif IS_MACOS:
+            pack_tools(["ditto", "-c", "-k", "--sequesterRsrc",
+                        str(root), str(local)])
+        else:
+            pack_tools(["tar", "-czf", str(local), "-C", str(root), "."])
+        shutil.copy2(local, archive)
     log(f"packed: {archive}", "ok")
     return archive
 
