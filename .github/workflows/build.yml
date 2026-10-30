@@ -31,7 +31,6 @@ on:
 
 permissions:
   contents: write                  # tag, release, assets
-
 jobs:
   version:
     runs-on: ubuntu-latest
