@@ -53,13 +53,13 @@ def arm_faults():
     try:
         import signal
         usr1 = getattr(signal, "SIGUSR1", None)
-        if usr1 is not None:
+        if usr1 is not None and sink is not None:
             faulthandler.register(usr1, file=sink, all_threads=True)
     except (ValueError, OSError):
         pass
     try:
         secs = int(os.environ.get("EMOTION_ENGINE_WATCHDOG", "0"))
-        if secs > 0:
+        if secs > 0 and sink is not None:
             faulthandler.dump_traceback_later(secs, repeat=True,
                                               file=sink, exit=False)
     except (ValueError, OSError):

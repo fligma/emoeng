@@ -30,15 +30,17 @@ SHOT_PREFIX = const.ENGINE_NAME.lower() + "_"
 
 def startup_help(why):
     """Why no window opened, and the fix on either system."""
-    print(f"{const.CODENAME} could not start: {why}", file=sys.stderr)
-    print("  - a desktop session is needed; check DISPLAY (X11) or "
-          "WAYLAND_DISPLAY", file=sys.stderr)
-    print("  - SDL can be pinned: export SDL_VIDEODRIVER=x11 (or wayland, "
-          "offscreen, dummy)", file=sys.stderr)
-    print("  - a missing library (libGL, libxkbcommon, SDL2_mixer, ALSA) "
-          "comes from your distro's pygame dependencies", file=sys.stderr)
-    print("  - no sound device: export SDL_AUDIODRIVER=dummy",
-          file=sys.stderr)
+    stderr = sys.stderr
+    if stderr is not None:
+        print(f"{const.CODENAME} could not start: {why}", file=stderr)
+        print("  - a desktop session is needed; check DISPLAY (X11) or "
+              "WAYLAND_DISPLAY", file=stderr)
+        print("  - SDL can be pinned: export SDL_VIDEODRIVER=x11 (or wayland, "
+              "offscreen, dummy)", file=stderr)
+        print("  - a missing library (libGL, libxkbcommon, SDL2_mixer, ALSA) "
+              "comes from your distro's pygame dependencies", file=stderr)
+        print("  - no sound device: export SDL_AUDIODRIVER=dummy",
+              file=stderr)
 
 
 def boot_pygame():
@@ -1364,7 +1366,8 @@ def finish_process(code=0):
         pass
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.flush()
+            if stream is not None:
+                stream.flush()
         except (OSError, ValueError):
             pass
     os._exit(code)
