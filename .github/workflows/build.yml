@@ -24,6 +24,8 @@ on:
     branches: [master]
     paths:
       - emoeng/const.py            # a version bump is a release
+      - emoeng/__main__.py         # entry point / fault handling
+      - emoeng/engine/game.py      # core runtime / shutdown
       - tools/build_release.py
       - installer/installer.py
       - .github/workflows/build.yml
