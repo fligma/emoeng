@@ -4,7 +4,7 @@ NAME = "emoeng"
 
 CODENAME = "Motion Engine"
 
-VERSION = "1.0"
+VERSION = "1.0.1"
 __version__ = VERSION
 
 TITLE = CODENAME
