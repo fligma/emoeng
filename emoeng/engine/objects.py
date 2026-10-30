@@ -10,7 +10,7 @@ from .timers import Timers
 
 
 def _pair(value, default=1.0):
-    """A 2-tuple from a number or a sequence, `default` filling gaps."""
+    """A 2-tuple from a number, a pair, or `default`."""
     if isinstance(value, (int, float)):
         return (float(value), float(value))
     got = tuple(float(c) for c in value)[:2]
@@ -51,7 +51,7 @@ class ModelObject:
         self.dirty = False
 
     def uv_pin(self):
-        """Where my metre sheet is pinned: my place, and which way I face."""
+        """Where the metre sheet is pinned, and my facing."""
         return meshes.frame_pin(self.pos, self.yaw)
 
     def _groups(self):
@@ -139,11 +139,8 @@ class ModelObject:
 
 
 def answers_to(obj, word):
-    """Does this node go by that word: its document name, tag or class?
-
-    A placed node keeps the `id` its scene document gave it, so a script can
-    ask for `get_node("Lectern")` using the name the editor's tree shows.
-    """
+    """Does that word name me: document id, tag or class?
+    A placed node answers to the id its document gave."""
     want = str(word or "").strip()
     if not want:
         return False
@@ -154,8 +151,8 @@ def answers_to(obj, word):
 
 
 def node_from(roots, parts):
-    """The node a branch names, starting at whichever root answers to the
-    first word. `None` when no root reaches the end of the branch."""
+    """The node a branch names, from whichever root answers.
+    None when no root reaches the branch's end."""
     if not parts:
         return None
     for start in roots:
@@ -172,20 +169,32 @@ def node_from(roots, parts):
     return None
 
 
+def node_branch(cls):
+    """The nodes a class's own document lists, as it was stamped.
+    The nearest definer answers, so a subclass never rebuilds
+    the branch its parent's document already spoke for."""
+    for klass in getattr(cls, "__mro__", ()) or ():
+        if "doc_nodes" in klass.__dict__:
+            return klass.__dict__["doc_nodes"] or ()
+    return ()
+
+
 class GameObject:
     """Shared tree, clone and lifecycle machinery for every object type."""
 
     kind = "object"
     name = "object"
     uses = ()                   # extra files this object spawns
-    clone_attrs = ()            # attributes clone() copies via __init__
-    clone_gap = (1.2,)          # default clone nudge, in the scene's unit
-    look_camera = None          # camera give_camera()/use_camera() handed me
-    light_layer = None          # which lights may reach me (see Light.layer)
+    clone_attrs = ()
+    clone_gap = (1.2,)
+    look_camera = None
+    light_layer = None
     doc_knobs = ()              # attributes a document may set and read back
-    opacity = 1.0               # how solid I am; 0.4 is a ghost
-    shader = None               # the name of the look I wear, if any
-    shader_pas = None           # ... and the compiled shader it resolved to
+    doc_nodes = ()              # the branch my own document files under me
+    doc_name = None             # the document that spoke for me
+    opacity = 1.0
+    shader = None
+    shader_pas = None
 
     def __init__(self, scene, pos=(0.0, 0.0), tag=None):
         self.scene = scene
@@ -197,17 +206,17 @@ class GameObject:
         self.t = 0.0
         self.timers = Timers()
         self.alive = True
-        self.parent = None          # object I am a node of, if any
-        self.children = []          # objects I spawned or hold
-        self.clone_of = None        # object I was cloned from
+        self.parent = None
+        self.children = []
+        self.clone_of = None
         # what a `.scene` says about my placement and look
         self.look = {}
         self.doc_key = None         # my stable name there: `Torch#0`
         self.placed_id = None       # the `id` a scene document placed me under
-        self.clones = []            # clones made from me
-        self.meshes = []            # DynamicMesh objects I own
-        self.objects = []           # ModelObject instances I own
-        self.lights = []            # Light3D / Light2D I added
+        self.clones = []
+        self.meshes = []
+        self.objects = []
+        self.lights = []
         # my transform as the parent sees it; `pos` is world
         self.local_pos = list(self.pos)
 
@@ -266,11 +275,7 @@ class GameObject:
 
     def tree_path(self):
         """My branch as words: `Torch#0/Flame#0`.
-
-        A document key already spells the whole branch, so it is the answer
-        on its own; an object built by hand, with no document, is named by
-        walking up its parents.
-        """
+        A document key is the branch; hand-built nodes walk parents."""
         if self.doc_key:
             return self.doc_key
         chain = [ent for ent in reversed(self.ancestors())]
@@ -355,7 +360,7 @@ class GameObject:
 
     # -- tree names, as Godot spells them --------------------------------
     def get_parent(self):
-        """Who I am a node of, or None at the top."""
+        """Who I sit on, or None at the top."""
         return self.parent
 
     def get_children(self):
@@ -374,7 +379,7 @@ class GameObject:
         return len(self.children)
 
     def get_tree(self):
-        """The scene that holds me; every node lives in one tree."""
+        """The scene holding me; every node lives in one tree."""
         return self.scene
 
     def is_inside_tree(self):
@@ -390,21 +395,14 @@ class GameObject:
         return None
 
     def find_children(self, name):
-        """Every direct node that goes by that name.
-
-        An object's name is its document key, its tag or its class, so
-        `find_children("Torch")` collects the torches I hold.
-        """
+        """Every direct child that goes by that name:
+        its document key, tag or class."""
         return [child for child in self.children
                 if answers_to(child, name)]
 
     def get_node(self, path):
-        """The node a branch names below me: `get_node("Flame#0/Spark#0")`.
-
-        `.` is me, `..` whoever I sit on, and a leading `/` asks the whole
-        scene, so `get_node("/Enemy#0")` reads like `Scene.get_node("Enemy#0")`.
-        None when the branch dead-ends.
-        """
+        """The node a branch names below me: `Flame#0/Spark#0`.
+        `.` is me, `..` my parent, `/` the whole scene."""
         text = str(path or "").strip().replace("\\", "/")
         if text.startswith("/"):
             return self.scene.get_node(text[1:])
@@ -417,13 +415,42 @@ class GameObject:
             return node
         return node_from(node.children, parts)
 
+    # -- the branch, as a script reads it ---------------------------------
+    def node(self, name):
+        """A node under me, by its document id, tag or class name.
+        A name with a `/` walks deeper: `self.node("Flame/Spark")`."""
+        text = str(name or "").strip()
+        if not text:
+            return None
+        if "/" in text or "\\" in text:
+            return self.get_node(text)
+        return self.find_child(text)
+
+    def nodes(self, name=None):
+        """My direct nodes, or only the ones answering to `name`."""
+        if name is None:
+            return list(self.children)
+        return self.find_children(name)
+
+    def branch_line(self):
+        """One line naming me: my class and the id my document gave."""
+        leaf = str(self.placed_id or "").rsplit("/", 1)[-1] or \
+            str(self.doc_key or "").rsplit("/", 1)[-1]
+        kind = type(self).__name__
+        return f"{kind} {leaf}" if leaf else kind
+
+    def branch(self, indent=""):
+        """My tree as words: me first, my nodes filed under me."""
+        lines = [f"{indent}{self.branch_line()}"]
+        for child in self.children:
+            if child is self or not getattr(child, "alive", True):
+                continue
+            lines.append(child.branch(indent + "  "))
+        return "\n".join(lines)
+
     # -- lifetime, as Godot spells it ----------------------------------------
     def queue_free(self):
-        """Leave at the end of this frame instead of this instant.
-
-        Safe inside a loop over `get_children()`: the scene takes the node
-        out once every live object has had its update.
-        """
+        """Leave this frame, not now; safe while looping children."""
         self.scene.queue_free(self)
         return self
 
@@ -647,7 +674,7 @@ class GameObject:
         return self.scene.connect(name, fn)
 
     def disconnect(self, name, fn=None):
-        """Forget one listener of a signal, or every listener of it."""
+        """Forget one listener of a signal, or all of them."""
         return self.scene.disconnect(name, fn)
 
     def emit(self, name, value=None):
@@ -699,6 +726,18 @@ class GameObject:
             child.follow_parent()
         return self
 
+    def __getattr__(self, name):
+        """A direct node by its document id: `self.block.half = ...`.
+        Python only asks me this when nothing else answers, so a real
+        attribute, method or property always wins."""
+        if name.startswith("_"):
+            raise AttributeError(name)
+        for child in self.__dict__.get("children") or ():
+            if answers_to(child, name):
+                return child
+        raise AttributeError(f"{type(self).__name__} has no attribute "
+                             f"'{name}', and no node of that name")
+
     def __repr__(self):
         where = " ".join(f"{c:g}" for c in self.pos)
         origin = f" clone of {type(self.clone_of).__name__}" \
@@ -716,9 +755,9 @@ class Object3D(GameObject):
     clone_gap = (1.2, 0.0, 0.0)
     doc_knobs = ("opacity", "shader") + UV_KNOBS
     uv_tile = 0.0               # metres per texture repeat; 0 = the sheet
-    uv_scale = (1.0, 1.0)       # copies of the picture across and down
-    uv_offset = (0.0, 0.0)      # slide the picture, in sheets
-    uv_spin = 0.0               # turn the picture, radians
+    uv_scale = (1.0, 1.0)
+    uv_offset = (0.0, 0.0)
+    uv_spin = 0.0
 
     def __init__(self, scene, pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0,
                  tag=None, opacity=1.0):
@@ -782,7 +821,7 @@ class Object3D(GameObject):
 
     # -- geometry ----------------------------------------------------------
     def uv_pin(self):
-        """Where my metre sheet is pinned: my place, and which way I face."""
+        """Where the metre sheet is pinned, and my facing."""
         return meshes.frame_pin(self.pos, self.yaw)
 
     def uv_look(self):
@@ -801,7 +840,7 @@ class Object3D(GameObject):
         # `owner=self` keeps this geometry replaceable for live drags
         sheet, look = self._wear(texture, shader)
         if look is not None and not self.scene.live:
-            # a uv program runs per vertex, so it cannot ride a shared batch
+            # a uv program runs per vertex: no shared batch
             self.dynamic(data, texture=texture, blend=blend, opacity=opacity,
                          shader=shader)
             return
@@ -1347,7 +1386,7 @@ class UIObject(Object2D):
 
 
 class _EntityHitbox:
-    """A collider view over an entity's live transform and hitbox settings."""
+    """A collider over an entity's live transform and hitbox."""
 
     solid = False
     group = "entity"
@@ -1383,25 +1422,18 @@ class _EntityHitbox:
 
 
 class EntityBehaviour:
-    """Health, AI and attack: the behaviour a 3D and a 2D entity share.
-
-    Mixed in above `Object3D`/`Object2D`. What is not alike between the two
-    worlds is answered by the class below it: `_plane()` says which two axes
-    it walks on, `_facing()` how it turns, `_moved()` how a move gets about,
-    `_hitbox_shape()` which colliders it may wear and `_flat()` whether
-    anything it carries rides it in the round.
-    """
+    """Health, AI and attack: what 3D and 2D entities share.
+    Each world answers `_plane()`, `_moved()` and `_hitbox_shape()`."""
 
     # Health
     health = 100.0
     max_health = 100.0
     invulnerable_time = 0.0
 
-    # AI
     ai_type = "none"          # "none", "follow", "patrol", "wander", "aggro"
-    ai_config = {}            # dict of ai-specific settings
-    ai_state = "idle"         # current ai state
-    ai_target = None          # what the AI is targeting
+    ai_config = {}
+    ai_state = "idle"
+    ai_target = None
     ai_timer = 0.0
 
     # Behaviour
@@ -1410,10 +1442,10 @@ class EntityBehaviour:
     attack_cooldown = 1.0
     attack_timer = 0.0
 
-    # The same ideas, restated by each class in its world's own units
-    hitbox_shapes = ()            # the shapes that get a collider filed
-    ai_arrive = 0.5               # within this of a spot, it is reached
-    wander_range = (2.0, 8.0)     # how far a wander step may reach
+    # The same ideas, in each world's own units
+    hitbox_shapes = ()
+    ai_arrive = 0.5
+    wander_range = (2.0, 8.0)
     run_ratio = 1.5               # chase speed when only one is set
 
     # -- what each world answers ------------------------------------------
@@ -1437,13 +1469,8 @@ class EntityBehaviour:
 
     # -- setup ------------------------------------------------------------
     def _own_state(self):
-        """Hand me my own copy of anything my class holds.
-
-        An AI walk writes into `ai_config` as it goes (`current_waypoint`,
-        `wander_target`) and a document's knobs arrive as one dict shared by
-        every instance built from it, so without this copy two enemies
-        patrolling the same room would steer each other.
-        """
+        """Hand me my own copy of anything my class holds:
+        a shared `ai_config` would let two enemies steer each other."""
         for name in ("ai_config", "hitbox_half", "hitbox_size",
                      "move_speed"):
             value = getattr(self, name, None)
@@ -1453,20 +1480,20 @@ class EntityBehaviour:
                 setattr(self, name, type(value)(value))
 
     def _entity_init(self):
-        """The half of `__init__` both worlds share, run after their own."""
+        """The `__init__` half both worlds share, run after theirs."""
         self._own_state()
         self.health = float(self.max_health)
         self._hitbox = None
         self._setup_hitbox()
 
     def _setup_hitbox(self):
-        """File my collider with the scene when my shape is a real one."""
+        """File my collider when my shape is a real one."""
         if self.hitbox_shape in self.hitbox_shapes:
             self._hitbox = _EntityHitbox(self)
             self.scene.add_collider(self._hitbox)
 
     def _rebuild_hitbox(self):
-        """Move my collider to a shape it did not have before."""
+        """Move my collider to a new shape."""
         if getattr(self, "_hitbox", None) is not None:
             self.scene.remove_collider(self._hitbox)
             self._hitbox = None
@@ -1498,10 +1525,7 @@ class EntityBehaviour:
         return self
 
     def kill(self, source=None):
-        """Out of health at once, whoever did it.
-
-        The same end damage brings about: my death runs, then I go.
-        """
+        """Out of health at once: death runs, then I go."""
         if self.health <= 0.0:
             return self
         self.health = 0.0
@@ -1538,13 +1562,10 @@ class EntityBehaviour:
                          (float(pos[1]) - self.pos[1]) ** 2 +
                          (float(pos[2]) - self.pos[2]) ** 2)
 
-    # -- one-call setters, which is what a block lowers to ----------------
+    # -- one-call setters, what a block lowers to
     def set_health(self, value):
-        """How much damage I can still take, never past my maximum.
-
-        Reaching zero kills me, exactly as losing the last of my health does
-        in a fight.
-        """
+        """Damage I can still take, never past my maximum.
+        Zero kills me, as losing my last health does."""
         was = self.health
         self.health = max(0.0, min(float(self.max_health), float(value)))
         if self.health <= 0.0 and was > 0.0:
@@ -1552,7 +1573,7 @@ class EntityBehaviour:
         return self
 
     def set_max_health(self, value):
-        """My full health; what I have now is kept, or trimmed to fit."""
+        """My full health; current health is kept or trimmed."""
         self.max_health = max(1.0, float(value))
         self.health = min(self.health, self.max_health)
         return self
@@ -1563,12 +1584,8 @@ class EntityBehaviour:
         return self
 
     def set_ai(self, ai_type, config=None):
-        """How I behave on my own: `none`, `follow`, `patrol`, `wander`.
-
-        `config` carries what that behaviour needs, a list of `waypoints` to
-        patrol or a `wander_interval` in seconds; leaving it out keeps what
-        I already was told. Either way I start the new behaviour fresh.
-        """
+        """My behaviour: `none`, `follow`, `patrol` or `wander`.
+        `config` carries its `waypoints` or `wander_interval`."""
         self.ai_type = str(ai_type)
         if config is not None:
             self.ai_config = dict(config)
@@ -1582,14 +1599,14 @@ class EntityBehaviour:
         return self
 
     def set_aggro_range(self, distance, deaggro=None):
-        """How far off I take notice, and how far to lose interest."""
+        """How far off I notice, and when I lose interest."""
         self.aggro_range = float(distance)
         self.deaggro_range = self.aggro_range * 2.0 if deaggro is None \
             else float(deaggro)
         return self
 
     def set_attack(self, range=None, damage=None, cooldown=None):
-        """My reach, how hard I hit and the seconds between swings."""
+        """My reach, my damage, and seconds between swings."""
         if range is not None:
             self.attack_range = float(range)
         if damage is not None:
@@ -1599,11 +1616,8 @@ class EntityBehaviour:
         return self
 
     def set_move_speed(self, walk, run=None):
-        """How fast I travel, and how fast when I am chasing.
-
-        A body that carries a pair stores both; one that carries a single
-        number runs at `run_ratio` times it.
-        """
+        """Walk and chase speed; a single number
+        runs at `run_ratio` times it."""
         speed = float(walk)
         if isinstance(self.move_speed, (list, tuple)):
             self.move_speed = (speed, speed * self.run_ratio
@@ -1613,7 +1627,7 @@ class EntityBehaviour:
         return self
 
     def set_hitbox(self, shape, half=None, radius=None, height=None):
-        """My 3D collider: a `box` of half-extents, a `sphere` or a `capsule`."""
+        """My 3D collider: a `box`, `sphere` or `capsule`."""
         self.hitbox_shape = self._hitbox_shape(shape)
         if half is not None:
             self.hitbox_half = tuple(float(c) for c in half)
@@ -1624,7 +1638,7 @@ class EntityBehaviour:
         return self._rebuild_hitbox()
 
     def set_hitbox2d(self, shape, size=None, radius=None):
-        """My flat collider: a `rect` of (width, height) or a `circle`."""
+        """My flat collider: a `rect` (width, height) or a `circle`."""
         self.hitbox_shape = self._hitbox_shape(shape)
         if size is not None:
             self.hitbox_size = tuple(float(c) for c in size)
@@ -1641,7 +1655,7 @@ class EntityBehaviour:
         return float(speed)
 
     def _run_speed(self):
-        """My chasing speed: a pair's second number, or a step up."""
+        """Chase speed: a pair's second number, or a step up."""
         speed = self.move_speed
         if isinstance(speed, (list, tuple)):
             return float(speed[1]) if len(speed) > 1 else float(speed[0])
@@ -1656,7 +1670,7 @@ class EntityBehaviour:
                 float(where[iy]) - self.pos[iy])
 
     def _step(self, dx, dy, speed, dt):
-        """Slide along my plane toward a delta, turning to face it."""
+        """Slide along my plane, turning to face the delta."""
         length = math.hypot(dx, dy)
         if length <= 0.0:
             return False
@@ -1668,13 +1682,13 @@ class EntityBehaviour:
         return True
 
     def _scattered(self, angle, distance):
-        """A spot `distance` away from me along my plane, turned by `angle`."""
+        """A spot `distance` along my plane, turned by `angle`."""
         ix, iy = self._plane()
         return (self.pos[ix] + math.cos(angle) * distance,
                 self.pos[iy] + math.sin(angle) * distance)
 
     def _plane_delta(self, pair):
-        """My plane's (dx, dy) toward a pair stored in plane terms."""
+        """`(dx, dy)` on my plane, from a plane-space pair."""
         ix, iy = self._plane()
         where = list(pair) + [0.0, 0.0]
         return (float(where[0]) - self.pos[ix],
@@ -1700,7 +1714,7 @@ class EntityBehaviour:
             step(dt)
 
     def _who(self):
-        """Who I am after, taking the player when nobody was named."""
+        """Who I am after; the player when nobody was named."""
         target = self.ai_target
         if target is None:
             target = getattr(self.scene, "player", None)
@@ -1749,7 +1763,7 @@ class EntityBehaviour:
             self._step(dx, dy, self._walk_speed(), dt)
 
     def _ai_aggro(self, dt):
-        """Chase the player and hit them once I am within reach."""
+        """Chase the player, hitting once within reach."""
         player = getattr(self.scene, "player", None)
         if player is None or getattr(player, "pos", None) is None:
             return
@@ -1792,7 +1806,7 @@ class EntityBehaviour:
 
 
 class Entity3D(EntityBehaviour, Object3D):
-    """Base class for 3D entities (NPCs, enemies) with AI, health, hitboxes."""
+    """3D entities (NPCs, enemies) with AI, health and hitboxes."""
 
     kind = "3d"
     name = "entity3d"
@@ -1805,14 +1819,14 @@ class Entity3D(EntityBehaviour, Object3D):
     # Hitbox
     hitbox_shape = "box"      # "box", "sphere", "capsule"
     hitbox_shapes = ("box", "sphere", "capsule")
-    hitbox_half = (0.5, 1.0, 0.5)  # for box
-    hitbox_radius = 0.5       # for sphere/capsule
-    hitbox_height = 2.0       # for capsule
+    hitbox_half = (0.5, 1.0, 0.5)  # box, or sphere/capsule radius,
+    hitbox_radius = 0.5       # hitbox_height: capsule
+    hitbox_height = 2.0
 
     # Distances, in metres
-    aggro_range = 10.0        # distance to aggro
-    deaggro_range = 20.0      # distance to lose interest
-    attack_range = 1.5        # distance to attack
+    aggro_range = 10.0
+    deaggro_range = 20.0
+    attack_range = 1.5
     move_speed = (3.0, 6.0)   # (walk, run)
 
     # Walking numbers, in a world you can sprint across
@@ -1829,11 +1843,11 @@ class Entity3D(EntityBehaviour, Object3D):
 
     # -- my world ---------------------------------------------------------
     def _plane(self):
-        """I cross the floor: x and z, never the height between."""
+        """I cross the floor: x and z, not height."""
         return (0, 2)
 
     def _facing(self, dx, dy):
-        """Turn my yaw to a move; the second word is depth, not height."""
+        """Turn my yaw toward a move, second value is depth."""
         self.yaw = math.atan2(dx, dy)
 
     def _moved(self):
@@ -1842,12 +1856,12 @@ class Entity3D(EntityBehaviour, Object3D):
         self.propagate()
 
     def _flat(self):
-        """On the ground, so a torch I hold swings when I turn."""
+        """On the ground: what I hold swings as I turn."""
         return abs(float(self.pos[1])) < 1e-6
 
 
 class Entity2D(EntityBehaviour, Object2D):
-    """Base class for 2D entities (NPCs, enemies) with AI, health, hitboxes."""
+    """2D entities (NPCs, enemies) with AI, health and hitboxes."""
 
     kind = "2d"
     name = "entity2d"
@@ -1864,9 +1878,9 @@ class Entity2D(EntityBehaviour, Object2D):
     hitbox_size = (48.0, 48.0)  # for rect
 
     # Distances, in pixels
-    aggro_range = 200.0       # distance to aggro
-    deaggro_range = 400.0     # distance to lose interest
-    attack_range = 32.0       # distance to attack
+    aggro_range = 200.0
+    deaggro_range = 400.0
+    attack_range = 32.0
     move_speed = 100.0        # pixels per second
 
     # Walking numbers, in a world measured in pixels
@@ -1886,7 +1900,7 @@ class Entity2D(EntityBehaviour, Object2D):
 
     # -- my world ---------------------------------------------------------
     def _plane(self):
-        """I cross the screen: x and y, the pair a sprite is placed by."""
+        """I cross the screen: x and y, like a sprite."""
         return (0, 1)
 
     def _facing(self, dx, dy):
@@ -1898,7 +1912,7 @@ class Entity2D(EntityBehaviour, Object2D):
         self.moved()
 
     def _hitbox_shape(self, shape):
-        """A circle is round; anything else is the box my size makes."""
+        """A circle is round; anything else is my box."""
         return "circle" if str(shape) == "circle" else "rect"
 
 

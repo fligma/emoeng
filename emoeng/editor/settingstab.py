@@ -62,6 +62,30 @@ def binding_label(names):
     return "  +  ".join(token_label(n) for n in (names or ())) or "(none)"
 
 
+# the controls a binding cell may hold, in `engine.input` spelling
+TOKEN_KEYS = ("w", "a", "s", "d", "up", "down", "left", "right",
+              "space", "lshift", "lctrl", "lalt", "tab", "return",
+              "escape", "backspace", "f1", "f2", "f3", "f4", "f5",
+              "f6", "f7", "f8", "f9", "f10", "f11", "f12", "e", "q",
+              "r", "t", "g", "c", "v", "b", "h", "j", "k", "l", "m",
+              "n", "o", "p", "u", "i", "y", "z", "x", "1", "2", "3",
+              "4", "5", "6", "7", "8", "9", "0")
+TOKEN_POINTER = ("mouse:left", "mouse:middle", "mouse:right", "mouse:x1",
+                 "mouse:x2", "wheel:up", "wheel:down")
+TOKEN_PADS = 2
+TOKEN_BUTTONS = 12
+TOKEN_AXES = ("axis+0", "axis-0", "axis+1", "axis-1")
+
+
+def token_words():
+    """Every control one binding cell can hold, commonest first."""
+    out = list(TOKEN_KEYS) + list(TOKEN_POINTER)
+    for pad in range(TOKEN_PADS):
+        out += [f"joy{pad}:button{i}" for i in range(TOKEN_BUTTONS)]
+        out += [f"joy{pad}:{axis}" for axis in TOKEN_AXES]
+    return tuple(out)
+
+
 def capture_token(e):
     """The binding name an event would store, or None."""
     if e.type == pygame.KEYDOWN:

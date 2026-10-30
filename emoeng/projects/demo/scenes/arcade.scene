@@ -3,5 +3,6 @@
   "name": "arcade",
   "kind": "scene2d",
   "script": "scripts/scenes/arcade.py",
+  "map": "echo",
   "objects": []
 }

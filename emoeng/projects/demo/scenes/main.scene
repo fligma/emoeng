@@ -1,7 +1,23 @@
 {
-  "format": 1,
-  "name": "main",
-  "kind": "scene3d",
-  "script": "scripts/scenes/main.py",
-  "objects": []
+ "format": 1,
+ "name": "main",
+ "kind": "scene3d",
+ "script": "scripts/scenes/main.py",
+ "map": "hall",
+ "objects": [],
+ "overrides": {
+  "Player3D#0": {
+   "pos": [
+    0.0,
+    0.4124,
+    5.2
+   ],
+   "yaw": 3.1416,
+   "scale": 1.0,
+   "knobs": {
+    "eye_height": 1.72,
+    "world_radius": 0.0
+   }
+  }
+ }
 }

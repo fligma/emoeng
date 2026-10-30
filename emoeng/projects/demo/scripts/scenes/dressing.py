@@ -1,9 +1,10 @@
-"""The dress both demo rooms wear: parts, looks, and how they get swapped.
+"""What a room wears, and the only thing its switches talk to.
 
-Each room is built out of named *parts* - floor, walls, arches, portals,
-props, lectern - and every part is drawn as one live mesh rather than
-batched statics, so a switch can change what one part is made of while the
-room still stands. A part wears at most one `uv` shader at a time.
+Every room is one map file - `maps/hall.map3d`, `maps/echo.map2d` - carved
+into named *parts*: floor, walls, arches, portals, props, lectern. Nothing
+here builds a room; the map owns the geometry, so one dresser can dress a
+hall, then the vault it is swapped for, and a part is re-dressed by giving
+its faces another sheet.
 
 Two more levers sit beside the parts, because a whole picture is more than
 its surfaces:
@@ -11,17 +12,15 @@ its surfaces:
   wash   the shader chain the room's own frame runs through
   screen the shader chain the lectern's panel runs through
 
-`Scene.dynamic()` is what makes a part re-shadable, and `merge()` is what
-makes it cheap: several `MeshData` become one, so a wall of ten boxes still
-costs a single draw call.
+`Dresser.set_level()` is what ties it to a map: it reads the parts the map
+carved and puts back whatever each one was wearing before the swap.
 """
-
 
 # the surfaces a switch may re-dress, in the order a board lists them
 PARTS = ("floor", "walls", "arches", "portals", "props", "lectern")
 
-# what one surface may wear: `None` is the plain, unshadered material
-LOOKS = (None, "uvscroll", "tintpulse", "kaleido", "portal")
+# what one surface may wear: `None` gives the map's own carved sheet back
+LOOKS = (None, "stone", "bark", "rust", "cloth", "grid")
 
 # the room's whole frame, as (name shown on a switch, shader chain)
 WASHES = (
@@ -56,38 +55,8 @@ ACTS = {
 }
 
 
-def merge(*parts):
-    """Several meshes as one, so a part costs a single draw call.
-
-    `MeshData.append` keeps each piece's own vertices and re-bases its
-    indices, so pieces need no shared origin - they are merged where they
-    already stand.
-    """
-    first = parts[0]
-    for other in parts[1:]:
-        first.append(other)
-    return first
-
-
-def by_sheet(pieces):
-    """`(mesh, texture)` pieces bucketed by sheet, each bucket merged.
-
-    One mesh wears one texture, so only pieces of the same sheet may be
-    merged; what comes back is `[(mesh, texture)]`, which is what
-    `Dresser.add_part` takes for one part.
-    """
-    order, bucket = [], {}
-    for data, texture in pieces:
-        key = str(texture)
-        if key not in bucket:
-            order.append(key)
-            bucket[key] = ([], texture)
-        bucket[key][0].append(data)
-    return [(merge(*bucket[key][0]), bucket[key][1]) for key in order]
-
-
 def look_word(look):
-    """One word for a look: a shader class or name, or `plain`."""
+    """One word for a look: a sheet's name, or `plain`."""
     if look is None:
         return "plain"
     return str(getattr(look, "name", look) or "plain")
@@ -129,31 +98,25 @@ class Dresser:
 
     def __init__(self, scene):
         self.scene = scene
-        self.parts = {}        # part -> [DynamicMesh]
-        self.looks = {}        # part -> the uv shader it wears, or None
+        self.level = None      # the loaded map, once there is one
+        self.parts = tuple(PARTS)
+        self.looks = {}        # part -> the sheet it wears, or None
         self.wash = 0          # index into WASHES
         self.screen = 0        # index into SCREENS
         self.panel = None      # the lectern's Screen, once it exists
 
-    # -- building ---------------------------------------------------------
-    def add(self, part, data, texture="white", blend="opaque", uv=None,
-            owner=None):
-        """One live mesh of one part; `owner` is what disposes it."""
-        kw = {"texture": texture, "blend": blend}
-        if uv is not None:
-            kw["uv"] = uv
-        draw = owner.dynamic if owner is not None else self.scene.dynamic
-        mesh = draw(data, **kw)
-        self.parts.setdefault(part, []).append(mesh)
-        self.looks.setdefault(part, None)
-        return mesh
+    # -- the map ----------------------------------------------------------
+    def set_level(self, level):
+        """Take over a freshly loaded map and dress it as it was left.
 
-    def add_part(self, part, pieces, blend="opaque", uv=None, owner=None):
-        """Every sheet of one part, as merged by `by_sheet`; returns count."""
-        for data, texture in pieces:
-            self.add(part, data, texture=texture, blend=blend, uv=uv,
-                     owner=owner)
-        return len(pieces)
+        A swap hands back the same part names in another room, so what a
+        switch chose survives it: only the map behind the sheets changes.
+        """
+        self.level = level
+        self.parts = tuple(level.parts() or PARTS) if level else tuple(PARTS)
+        for part in self.parts:
+            self.set_look(part, self.looks.get(part))
+        return self
 
     def set_panel(self, panel):
         """Name the screen whose picture these switches dress."""
@@ -161,15 +124,16 @@ class Dresser:
         return panel
 
     # -- the levers -------------------------------------------------------
-    def set_look(self, part, look):
-        """Dress one part in one uv shader, or in plain material."""
-        for mesh in self.parts.get(part, ()):
-            mesh.set_shader(look)
-        self.looks[part] = look
-        return look
+    def set_look(self, part, key):
+        """Dress one part in one sheet, or in the map's own material."""
+        key = key or None
+        self.looks[str(part)] = key
+        if self.level is not None:
+            self.level.set_part_texture(part, key)
+        return key
 
     def cycle_look(self, part):
-        """The next look this part has not worn yet, wrapping round."""
+        """The next sheet this part has not worn yet, wrapping round."""
         try:
             here = LOOKS.index(self.looks.get(part))
         except ValueError:
@@ -201,7 +165,7 @@ class Dresser:
 
     def clear(self):
         """Nothing worn anywhere: every part plain, no wash, plain screen."""
-        for part in list(self.parts):
+        for part in self.parts:
             self.set_look(part, None)
         self.set_wash(0)
         self.set_screen(0)

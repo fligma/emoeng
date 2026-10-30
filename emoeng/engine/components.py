@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pygame
 
-from . import colors, meshes, ui
+from . import colors, meshes, particles, ui
 from . import collision as collmod
 from .objects import ModelObject, Object2D, Object3D, UV_KNOBS
 
@@ -50,7 +50,7 @@ class Collider3D(Object3D):
     shapes = ("box", "sphere", "capsule")
     half = (0.5, 0.5, 0.5)      # metres from the centre to each face
     solid = True                # False: reports, never stops
-    group = ""                  # who this stops; "" = everybody
+    group = ""
     # where the shape sits relative to the node's pivot
     offset = (0.0, 0.0, 0.0)
 
@@ -226,7 +226,7 @@ class Model3D(Object3D):
 
     model = None                 # a models/<name>.model3d stem
     tint = None                  # a colour, or None for the model's own
-    texture = None               # one sheet over the whole model
+    texture = None
     blend = "opaque"
     stamp = False
 
@@ -279,13 +279,14 @@ class Map3D(Object3D):
 
     kind = "3d"
     name = "map3d"
-    clone_attrs = ("map", "tint", "solid", "group")
-    doc_knobs = ("solid", "group", "tint") + UV_KNOBS
+    clone_attrs = ("map", "tint", "solid", "group", "collision")
+    doc_knobs = ("solid", "group", "tint", "collision") + UV_KNOBS
 
     map = None                  # a maps/<name>.map3d stem
-    tint = None                 # a colour, or None for the map's own
+    tint = None
     solid = True                # a map stops you by default
     group = ""                  # who this stops; "" = everybody
+    collision = "mesh"          # mesh | boxes | none
 
     def __init__(self, scene, pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0,
                  map=None, tag=None, **knobs):
@@ -294,6 +295,8 @@ class Map3D(Object3D):
             self.map = map
         self.obj = None
         self.mesh = None
+        self.model = None           # the loaded Model the map draws
+        self.shape_nodes = []       # `boxes` files one Collision3D per part
         self._stamp = None
         self.set_knobs(knobs)
 
@@ -310,27 +313,60 @@ class Map3D(Object3D):
         pts = md.pos
         return [pts[i:i + 3] for i in range(0, len(pts) - 2, 3)]
 
+    def _part_boxes(self, model):
+        """One world AABB per carved part, in place of the mesh."""
+        pts = model.meshdata(self.pos, self.yaw, self.scale,
+                             self._tint()).pos
+        out = []
+        for part in model.objects or ():
+            verts = [pts[i] for f in (part.get("faces") or ())
+                     for i in (3 * f, 3 * f + 1, 3 * f + 2)
+                     if 3 * f + 2 < len(pts)]
+            if not verts:
+                continue
+            lo = [min(v[k] for v in verts) for k in range(3)]
+            hi = [max(v[k] for v in verts) for k in range(3)]
+            out.append(self.spawn(
+                Collision3D, pos=[(a + b) / 2.0 for a, b in zip(lo, hi)],
+                half=tuple((b - a) / 2.0 for a, b in zip(lo, hi)),
+                solid=self.solid, group=self.group,
+                tag=f"map_{part.get('name')}"))
+        return out
+
+    def _collide(self, model):
+        """File what this map's own faces stop a body with."""
+        for node in self.shape_nodes:
+            self.scene.despawn(node)
+        self.shape_nodes = []
+        self.mesh = None
+        mode = str(self.collision or "mesh")
+        if mode == "mesh":
+            self.mesh = collmod.TriMesh(self._world_tris(model))
+        elif mode == "boxes":
+            self.shape_nodes = self._part_boxes(model)
+        return self
+
     def build(self):
         name = self.map_name()
         if not name:
             # no map picked yet is a half-built branch
             return self
         model = self.project.map(name)
+        self.model = model
         self.obj = ModelObject(self.scene, model, self.pos, self.yaw,
                                self.scale, self._tint(), uv=self.uv_look())
         self.objects.append(self.obj)
-        self.mesh = collmod.TriMesh(self._world_tris(model))
+        self._collide(model)
         self._stamp = (tuple(self.pos), float(self.yaw), float(self.scale))
         self.scene.add_collider(self)
         return self
 
     def _rebuild(self):
-        """Re-file triangles after a move, so collision follows."""
+        """Re-file the stop shapes after a move, so collision follows."""
         name = self.map_name()
         if not name:
             return
-        self.mesh = collmod.TriMesh(
-            self._world_tris(self.project.map(name)))
+        self._collide(self.project.map(name))
         self._stamp = (tuple(self.pos), float(self.yaw), float(self.scale))
 
     def box(self):
@@ -378,10 +414,136 @@ class Map3D(Object3D):
     def dispose(self):
         self.scene.remove_collider(self)
         self.mesh = None
+        self.shape_nodes = []
         return super().dispose()
+
+    def part_faces(self, part):
+        """The faces one named part of the map owns."""
+        if self.model is None:
+            return []
+        for got in self.model.objects:
+            if got.get("name") == str(part):
+                return list(got.get("faces") or ())
+        return []
+
+    def set_part_texture(self, part, key):
+        """Re-dress one named part: floor, walls, arches, ..."""
+        if self.obj is None:
+            return self
+        for face in self.part_faces(part):
+            self.obj.set_surface(face, key)
+        self.obj.update(0.0)
+        return self
+
+    def parts(self):
+        """The part names this map can be re-dressed by."""
+        return [str(o.get("name")) for o in (self.model.objects
+                                             if self.model else ())]
 
     def __repr__(self):
         return f"<Map3D {self.map_name() or '(nothing)'} at " \
+               f"{self.tree_path()}>"
+
+
+class Map2D(Object2D):
+    """A whole `.map2d`, drawn flat with one solid rect per part."""
+
+    kind = "2d"
+    name = "map2d"
+    clone_attrs = ("map", "tint", "solid", "group", "collision")
+    doc_knobs = ("solid", "group", "tint", "collision")
+
+    map = None                  # a maps/<name>.map2d stem
+    tint = None
+    solid = True                # a flat map stops you by default
+    group = ""                  # who this stops; "" = everybody
+    collision = "boxes"         # boxes | none; a flat map has no mesh
+
+    def __init__(self, scene, pos=(0.0, 0.0), size=(64.0, 64.0),
+                 texture="white", col=(1.0, 1.0, 1.0), rot=0.0, map=None,
+                 tag=None, **knobs):
+        super().__init__(scene, pos=pos, size=size, texture=texture,
+                         col=col, rot=rot, tag=tag)
+        if map is not None:
+            self.map = map
+        self.obj = None
+        self.model = None
+        self.boxes = []             # one Collision2D per carved part
+        self.set_knobs(knobs)
+
+    def map_name(self):
+        """Which flat map to draw: my knob or the document's."""
+        return self.map or self.look.get("map")
+
+    def _tint(self):
+        return self.tint or self.look.get("color")
+
+    def build(self):
+        name = self.map_name()
+        if not name:
+            return self
+        model = self.project.map2d(name)
+        self.model = model
+        self.obj = ModelObject(self.scene, model,
+                               (self.pos[0], self.pos[1], 0.0), 0.0, 1.0,
+                               self._tint(), blend="alpha")
+        self.objects.append(self.obj)
+        self._boxes(model)
+        return self
+
+    def _boxes(self, model):
+        """A solid rect over each part, so the picture is a wall."""
+        if str(self.collision or "boxes") == "none":
+            return
+        for part in model.objects or ():
+            box = model.obj_bounds(part.get("name"))
+            if box is None:
+                continue
+            lo, hi = box
+            size = (max(1.0, hi[0] - lo[0]), max(1.0, hi[1] - lo[1]))
+            centre = (self.pos[0] + (lo[0] + hi[0]) / 2.0,
+                      self.pos[1] + (lo[1] + hi[1]) / 2.0)
+            self.boxes.append(self.spawn(
+                Collision2D, pos=centre, size=size, solid=self.solid,
+                group=self.group, tag=f"map_{part.get('name')}"))
+
+    def part_faces(self, part):
+        """The faces one named part of the flat map owns."""
+        if self.model is None:
+            return []
+        for got in self.model.objects:
+            if got.get("name") == str(part):
+                return list(got.get("faces") or ())
+        return []
+
+    def set_part_texture(self, part, key):
+        """Re-dress one named part of the flat map."""
+        if self.obj is None:
+            return self
+        for face in self.part_faces(part):
+            self.obj.set_surface(face, key)
+        self.obj.update(0.0)
+        return self
+
+    def parts(self):
+        """The part names this map can be re-dressed by."""
+        return [str(o.get("name")) for o in (self.model.objects
+                                             if self.model else ())]
+
+    def update(self, dt):
+        super().update(dt)
+        if self.obj is not None:
+            self.obj.update(dt)
+        return self
+
+    def dispose(self):
+        if self.obj is not None:
+            self.obj.dispose()
+            self.obj = None
+        return super().dispose()
+
+    def __repr__(self):
+        return f"<Map2D {self.map_name() or '(nothing)'} at " \
                f"{self.tree_path()}>"
 
 
@@ -395,7 +557,7 @@ class Sprite2D(Object2D):
 
     model = None                 # a models/<name>.model2d stem
     playing = True               # the rig's tracks run on their own
-    speed = 1.0                  # and this fast
+    speed = 1.0
 
     def __init__(self, scene, pos=(0.0, 0.0), size=(64.0, 64.0),
                  texture="white", col=(1.0, 1.0, 1.0), rot=0.0,
@@ -577,7 +739,8 @@ class LightNode3D(Object3D):
     kind = "3d"
     name = "light3d"
     clone_attrs = ("shape", "color", "radius", "energy", "angle", "inner",
-                   "layer", "glow", "flicker", "pulse", "enabled", "bake")
+                   "layer", "glow", "flicker", "flicker_rate", "pulse",
+                   "pulse_rate", "aim", "enabled", "bake")
     doc_knobs = clone_attrs
 
     shape = "point"
@@ -587,10 +750,13 @@ class LightNode3D(Object3D):
     energy = 1.0
     angle = None                 # a spot's cone, degrees
     inner = None                 # how much of it is full brightness
+    aim = None                   # a spot's (pan, tilt), degrees off plumb
     layer = 0
     glow = 0.0
     flicker = 0.0
+    flicker_rate = 9.0           # how fast it gutters
     pulse = 0.0
+    pulse_rate = 1.0             # how fast it breathes
     enabled = True
     bake = False                 # freeze into a lightmap instead of lighting
 
@@ -607,11 +773,15 @@ class LightNode3D(Object3D):
     def build(self):
         kw = {}
         for key in ("radius", "energy", "layer", "glow", "flicker",
-                    "pulse", "bake"):
+                    "flicker_rate", "pulse", "pulse_rate", "bake"):
             kw[key] = getattr(self, key)
         for key in ("angle", "inner"):
             if getattr(self, key) is not None:
                 kw[key] = getattr(self, key)
+        if self.aim is not None:
+            # aim only lands on a light that follows the node's facing
+            kw["aim"] = self.aim
+            kw["align"] = True
         self.beam = self.scene.add_light(self.pos, color=self.color,
                                          shape=self.shape, follow=self,
                                          **kw)
@@ -629,7 +799,8 @@ class LightNode2D(Sprite2D):
     kind = "2d"
     name = "light2d"
     clone_attrs = ("shape", "color", "radius", "energy", "angle", "cast",
-                   "outer", "enabled", "bake")
+                   "outer", "flicker", "flicker_rate", "pulse",
+                   "pulse_rate", "enabled", "bake")
     doc_knobs = clone_attrs
 
     shape = "radial"
@@ -640,6 +811,10 @@ class LightNode2D(Sprite2D):
     angle = None
     cast = True                  # walls in scene.blockers hide what is out
     outer = None
+    flicker = 0.0
+    flicker_rate = 9.0
+    pulse = 0.0
+    pulse_rate = 1.0
     enabled = True
     bake = False
 
@@ -655,7 +830,10 @@ class LightNode2D(Sprite2D):
 
     def build(self):
         kw = {"radius": float(self.radius), "energy": float(self.energy),
-              "cast": bool(self.cast)}
+              "cast": bool(self.cast), "flicker": float(self.flicker),
+              "flicker_rate": float(self.flicker_rate),
+              "pulse": float(self.pulse),
+              "pulse_rate": float(self.pulse_rate)}
         for key in ("angle", "outer"):
             if getattr(self, key) is not None:
                 kw[key] = getattr(self, key)
@@ -956,6 +1134,280 @@ class Text2D(Object2D):
         return super().dispose()
 
 
+class _Particle:
+    """Shared behaviour of the two particle emitters.
+
+    The points live in a `particles.Sim` pool of `amount` slots, and one
+    mesh of exactly that many quads is rewritten every frame: a spent
+    slot is a nothing-sized point the fragment shader drops, so the
+    emitter's cost never depends on how full it is.
+    """
+
+    doc_knobs = ("texture", "amount", "rate", "lifetime", "speed", "spread",
+                 "dir", "gravity", "drag", "size", "end_size", "color",
+                 "end_color", "blend", "emitting", "one_shot",
+                 "local_space", "preprocess")
+    clone_attrs = doc_knobs
+
+    dims = 3                   # axes the pool lives in; flat worlds have 2
+    texture = "spark"          # one whole sheet per point
+    amount = 256               # the pool: the most points at once
+    rate = 24.0                # points a second while emitting
+    lifetime = 1.8
+    speed = 2.0                # world units a second along `dir`
+    spread = 0.6               # radians of cone, or of arc when flat
+    dir = (0.0, 1.0, 0.0)
+    gravity = (0.0, -1.6, 0.0)
+    drag = 0.35
+    size = 0.12                # a point's width: metres, or pixels flat
+    end_size = 0.0
+    color = (1.0, 0.66, 0.28)
+    end_color = (0.35, 0.06, 0.02)
+    blend = "add"
+    emitting = True
+    one_shot = False           # burst the pool once, then hold
+    local_space = False        # points ride the node, not the world
+    preprocess = 0.0           # seconds run before the first frame
+
+    # -- the pool --------------------------------------------------------
+    def _particle_init(self):
+        """After set_knobs, so the pool is born at the document's size."""
+        self.sim = particles.Sim(self.amount)
+        self._drip = 0.0
+        self._fired = False
+        self.mesh = None
+        self._warm()
+
+    def _warm(self):
+        """Run the pool forward, so an emitter starts full instead of empty."""
+        left = max(0.0, float(self.preprocess or 0.0))
+        if not left or not self.emitting:
+            return self
+        while left > 0.0:
+            nap = min(1.0 / 60.0, left)
+            self._feed(nap)
+            self.sim.step(nap, self.gravity, self.drag, self.dims == 2)
+            left -= nap
+        return self
+
+    def _follow(self, name):
+        """What turning one knob costs beyond setting the attribute."""
+        if name == "amount":
+            sim = getattr(self, "sim", None)
+            if sim is not None:
+                sim.grow(self.amount)
+        elif name == "texture":
+            mesh = getattr(self, "mesh", None)
+            if mesh is not None:
+                mesh.texture = self._wear(colors.key(self.texture))[0]
+        return self
+
+    def set_knobs(self, knobs):
+        """A document's knobs, with the pool re-sized to the file's own."""
+        # a scene's `spawn()` sets knobs after the node was built, so the
+        # pool would otherwise keep the class's size, not the document's
+        super().set_knobs(knobs)
+        for name in ("amount", "texture"):
+            if knobs and name in knobs:
+                self._follow(name)
+        return self
+
+    def _spawn_args(self):
+        """(spot, aim) in whichever space the pool lives in."""
+        aim = _as_vec(self.dir, self.dims, (0.0, 1.0, 0.0))
+        if self.local_space:
+            return ((0.0,) * self.dims, aim)
+        spot = [float(c) for c in self.pos[:self.dims]]
+        far = [float(c) for c in self.child_world(aim)[:self.dims]]
+        return (spot, [far[i] - spot[i] for i in range(self.dims)])
+
+    # -- what a script calls -------------------------------------------------
+    def emit_particles(self, n=1):
+        """Put `n` points in the air from here, however `emitting` reads."""
+        count = int(n or 0)
+        if count <= 0:
+            return 0
+        spot, aim = self._spawn_args()
+        return self.sim.spawn(count, spot, aim, self.spread, self.speed,
+                             self.lifetime, flat=self.dims == 2)
+
+    def burst_particles(self, n=None):
+        """All at once: `n` points, or the whole pool when unnamed."""
+        return self.emit_particles(self.amount if n is None else n)
+
+    def stop_particles(self):
+        """Stop dripping; what is already in the air finishes its life."""
+        self.emitting = False
+        return self
+
+    def start(self):
+        """Drip again, and arm a one-shot burst for the next frame."""
+        self.emitting = True
+        self._fired = False
+        return self
+
+    def stop(self):
+        """`stop_particles()`, spelled the short way."""
+        return self.stop_particles()
+
+    def clear(self):
+        """Drop every point in the air right now."""
+        self.sim.reset()
+        return self
+
+    def playing(self):
+        """Am I dripping, or is anything still in the air?"""
+        return bool(self.emitting) or self.sim.playing()
+
+    def count(self):
+        """How many points are alive."""
+        return self.sim.n
+
+    def set_particles(self, knob, value):
+        """Turn one of my knobs at run time; `amount` and `texture` follow.
+
+        `blend` is a build-time knob: it picks the draw layer, so a live
+        change needs the mesh rebuilt. Say it in the document instead.
+        """
+        name = str(knob or "")
+        if name not in type(self).doc_knobs:
+            raise TypeError(f"{type(self).__name__} has no knob '{name}'")
+        setattr(self, name, value)
+        self._follow(name)
+        return self
+
+    # -- the frame -----------------------------------------------------------
+    def _feed(self, dt):
+        """Drip `rate` points a second, or fire the one allowed burst."""
+        if not self.emitting:
+            return 0
+        if self.one_shot:
+            if self._fired:
+                return 0
+            self._fired = True
+            return self.burst_particles(self.amount)
+        self._drip += max(0.0, float(self.rate or 0.0)) * max(0.0, dt)
+        want = int(self._drip)
+        if want <= 0:
+            return 0
+        self._drip -= want
+        return self.emit_particles(want)
+
+    def _draw(self):
+        """Every pool slot as a quad. The dimension's own file of it."""
+        raise NotImplementedError
+
+    def build(self):
+        super().build()
+        if self.mesh is None:
+            self.mesh = self.dynamic(self._draw(), texture=self.texture,
+                                     blend=self.blend)
+        return self
+
+    def update(self, dt):
+        super().update(dt)
+        self._feed(dt)
+        self.sim.step(dt, self.gravity, self.drag, self.dims == 2)
+        if self.mesh is not None:
+            self.mesh.update(self._draw())
+            self.dirty = False        # a sprite's sync has nothing to do
+        return self
+
+    def dispose(self):
+        self.sim.reset()
+        self.mesh = None
+        return super().dispose()
+
+
+class Particle3D(_Particle, Object3D):
+    """Sparks, embers, dust or rain standing in the 3D world."""
+
+    kind = "3d"
+    name = "particle3d"
+
+    def __init__(self, scene, pos=(0.0, 0.0, 0.0), yaw=0.0, scale=1.0,
+                 tag=None, **knobs):
+        super().__init__(scene, pos=pos, yaw=yaw, scale=scale, tag=tag)
+        self.set_knobs(knobs)
+        self._particle_init()
+
+    def _view_yaw(self):
+        """The yaw each quad is turned to: the camera's, not mine."""
+        cam = getattr(self.scene, "view", None)
+        if cam is None:
+            return self.yaw
+        look = cam.view_yaw() if hasattr(cam, "view_yaw") else cam.yaw
+        return look + math.pi
+
+    def _draw(self):
+        return particles.pool3d(self.sim, size=self.size,
+                                end_size=self.end_size, color=self.color,
+                                end_color=self.end_color,
+                                view_yaw=self._view_yaw(), origin=self.pos,
+                                yaw=self.yaw, node_scale=self.scale,
+                                local=self.local_space)
+
+
+class Particle2D(_Particle, Object2D):
+    """The flat twin: one emitter drawing in the scene's world pixels."""
+
+    kind = "2d"
+    name = "particle2d"
+    dims = 2
+    size = 6.0
+    dir = (0.0, -1.0, 0.0)     # up the screen, as a flat world counts it
+    speed = 120.0
+    spread = 0.5
+    lifetime = 1.2
+    gravity = (0.0, 40.0, 0.0)
+    color = (1.0, 0.72, 0.35)
+    end_color = (0.30, 0.06, 0.02)
+    rate = 18.0
+    # `add` still works, but the additive pass runs before the flat one,
+    # so a spark here would hide behind any sprite the scene made earlier
+    blend = "alpha"
+
+    def __init__(self, scene, pos=(0.0, 0.0), rot=0.0, tag=None, **knobs):
+        super().__init__(scene, pos=pos, size=(1.0, 1.0), texture="white",
+                         tag=tag, rot=rot, blend="alpha")
+        cls = type(self)
+        # my defaults, not the sprite's: `size` is a point's width here
+        self.texture = cls.texture
+        self.blend = cls.blend
+        self.size = cls.size
+        self.set_knobs(knobs)
+        self._particle_init()
+
+    def quad(self):
+        """The pool, in place of the one quad a sprite owns."""
+        return self._draw()
+
+    def rect(self):
+        """The box the live points fill, a point's slack each way.
+
+        A spark flies, so the node's own place says nothing about what is
+        on screen: the pool's bounds are what a cull or a click needs.
+        """
+        w = max(float(self.size), float(self.end_size or 0.0))
+        live = self.sim.pos[:self.sim.n, :2]
+        if self.local_space and len(live):
+            c, s = math.cos(self.rot), math.sin(self.rot)
+            x, y = live[:, 0], live[:, 1]
+            live = np.stack([x * c - y * s + self.pos[0],
+                             x * s + y * c + self.pos[1]], axis=1)
+        if not len(live):
+            return (self.pos[0] - w, self.pos[1] - w, 2.0 * w, 2.0 * w)
+        lo, hi = live.min(axis=0) - w, live.max(axis=0) + w
+        return (float(lo[0]), float(lo[1]), float(hi[0] - lo[0]),
+                float(hi[1] - lo[1]))
+
+    def _draw(self):
+        return particles.pool2d(self.sim, size=self.size,
+                               end_size=self.end_size, color=self.color,
+                               end_color=self.end_color, origin=self.pos,
+                               rot=self.rot, local=self.local_space)
+
+
 class _Emitter:
     """Shared behaviour of the two audio emitters."""
 
@@ -1190,7 +1642,7 @@ class Timer2D(_Timer, Object2D):
 
 
 class _TriggerBus:
-    """Knobs that let a volume broadcast a trigger with no script."""
+    """Knobs letting a volume broadcast a trigger without a script."""
 
     enter = ""                   # the trigger a body arriving fires
     exit = ""                    # ... and one leaving
@@ -1203,7 +1655,7 @@ class _TriggerBus:
 
 
 class Trigger3D(_TriggerBus, Hitbox3D):
-    """A volume that reports who walked in, and broadcasts to the scene."""
+    """A volume that reports who walked in, and broadcasts it."""
 
     kind = "3d"
     name = "trigger3d"
@@ -1279,6 +1731,8 @@ ENGINE_NODES = {
     "Text2D": Text2D,
     "Timer3D": Timer3D,
     "Timer2D": Timer2D,
+    "Particle3D": Particle3D,
+    "Particle2D": Particle2D,
     "Trigger3D": Trigger3D,
     "Trigger2D": Trigger2D,
     "Marker3D": Marker3D,

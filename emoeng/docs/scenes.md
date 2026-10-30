@@ -18,6 +18,7 @@ of that screen. Three kinds exist; they share one lifecycle and one API.
 | --- | --- | --- |
 | 1 | `__init__(game, seed=7)` | By `Project.scene()`; sets up subsystem handles |
 | 2 | `setup()` | Once, before the first frame - build the world here |
+| - | `on_map_loaded(level)` / `on_map_unloaded(level)` | Around each `load_map()` / `change_map()` / `unload_map()`; a declared map is built before `setup()`, so the first `on_map_loaded` comes first ([Maps](maps.md)) |
 | 3 | `finish_build()` | Merges queued geometry into GPU batches (`renderer.build()`) |
 | 4 | `on_enter()` | Every time play (re)starts this scene |
 | 5 | `update(dt)` | Every frame, unless paused |
@@ -38,6 +39,7 @@ Set these as class attributes on your subclass.
 | `uses` | `()` | Object stems this scene spawns, checked at load |
 | `actions` | `{}` | `{action: [binding, ...]}` this scene adds to the keymap |
 | `controls` | `()` | Extra action names to list in the F1 help panel |
+| `map_name` | `None` | The `maps/` stem this scene opens on; the level is loaded before `setup()` and `self.map_name` follows the live one ([Maps](maps.md)) |
 | `clear_color` | `(0.02, 0.02, 0.03)` | Linear RGB background, or any colour spelling |
 | `post` | `()` | Names of the scene's `screen` shader chain; empty falls back to the project's ([Shaders](shaders.md)) |
 | `viewport` | `None` | `(x, y, w, h)` - pixels or 0..1 - to limit the view |
@@ -63,6 +65,7 @@ Set in `Scene.__init__`, readable from any hook.
 | `self.lights` | The `Light3D` / `Light2D` in the scene; an old-style `{"pos":, "color":}` dict is adopted as a real light the first time it is read |
 | `self.sun` | The one directional light, or `None` (`set_sun()` makes it) |
 | `self.player` | The object that claimed the view, or `None` |
+| `self.map` | The live `MapLevel`, or `None`; `load_map` / `change_map` / `unload_map` swap it ([Maps](maps.md)) |
 | `self.camera_rig` | The object that called `set_camera()` |
 | `self.cameras` | `{name: Camera}` registered extra views |
 | `self.active` | Name of the rendering camera; `None` = the scene's default view |
@@ -190,7 +193,7 @@ without spelling tuples.
 | Member | Notes |
 | --- | --- |
 | `ground_height(x, z)` | Override for terrain; used to keep the camera on the floor |
-| `spawn_point()` | `((x, y, z), yaw)` where the player starts |
+| `spawn_point()` | `((x, y, z), yaw)` where the player starts - the live map's `spawn` when there is one, else the origin |
 | `attach_player(ent, pos=None, yaw=None, pitch=None)` | Hand the camera to an object |
 | `eye` | Live camera position; with a Player this reads the player |
 | `shake(amount=1.0, duration=0.35, freq=None, scale=None, roll=None)` | Rattle the view |
@@ -239,6 +242,7 @@ class Grove(fe.Scene3D):
 | `to_world(screen_pixel)` | | Window mouse position to world pixel |
 | `route_mouse(e)` | | Feed mouse events to the objects above them, topmost first |
 | `_cams2d()` | | The default rig plus every registered `Camera2D` |
+| `spawn_point()` | | `((x, y, z), yaw)` - the live map's spawn in world pixels, else the middle of `world_size`; a flat caller takes `start[:2]` |
 
 ```python
 class Play(fe.Scene2D):
@@ -253,6 +257,11 @@ class Play(fe.Scene2D):
                                  size=(120.0, 16.0), col=(0.9, 0.9, 1.0))
         self.add_camera(name="wide", center=(480.0, 270.0), zoom=0.5)
 ```
+
+A flat scene can skip the backdrop entirely and name a level instead -
+`map_name = "arena"` loads `maps/arena.map2d` before `setup()` and draws it
+behind every sprite the scene spawns, its floor and its border bands being
+parts of one file rather than calls in code ([Maps](maps.md)).
 
 ## SceneUI
 
@@ -356,11 +365,14 @@ things.
 }
 ```
 
+Add `"map": "hall"` to name the level this scene opens on.
+
 | Field | Holds |
 | --- | --- |
 | `kind` | `scene3d`, `scene2d` or `sceneui` - the class built when there is no script |
 | `script` | The project-relative `.py` the scene runs; optional |
-| `maps` | Stems in `maps/` to walk around - `"keep"`, or `{"map": "keep", "pos":, "yaw":, "scale":}`; each spawns a `Map3D` before `objects`, and builds its own triangle collider |
+| `map` | The `maps/` stem whose level this scene opens on, loaded before `setup()`; `scene.change_map(...)` swaps it mid play ([Maps](maps.md)) |
+| `maps` | Stems in `maps/` to walk around - `"keep"`, or `{"map": "keep", "pos":, "yaw":, "scale":}`; the older placement route, each entry spawning its own `Map3D` node after `setup()` |
 | `objects` | A tree: the top-level entries the document places, in spawn order, each with an `id` |
 | `children` | An entry's own nodes, filed under it - a Model3D, a Collision3D, a lamp |
 | `object` / `scene` | Make an entry an *instance*: it names another object or scene document, carries only a place (and per-instance overrides), and grafts that document's own branch under the placement |
@@ -368,12 +380,18 @@ things.
 | `knobs` | What that node owns beyond a transform, set before `build()` |
 | `overrides` | Fields for objects the *script* spawned, keyed `Walker#0` |
 
-`Project.scene(name, game, plan=None)` builds in one order: the script's
-`setup()`, then `_place_maps()` and `_place_objects()` for the document's
-`maps` and `objects`, then `finish_build()`. A document with no script still
+`Project.scene(name, game, plan=None)` builds in one order: the document's
+`map` (or the class's `map_name`) is loaded, then the script's `setup()`, then
+`_place_maps()` and `_place_objects()` for the document's `maps` and `objects`,
+then `finish_build()`. A document with no script still
 builds - it gets the base class for its `kind`, with that kind's camera,
 lighting and input. A project with no documents at all runs exactly as it
 always did.
+
+Because the declared level goes down first, `setup()` can read the world it is
+standing in - `self.spawn_point()`, `self.map.parts()` - and `on_map_loaded`
+fires before `setup()` on that first load, so a hook there has to guard against
+state that does not exist yet. [Maps](maps.md) walks the whole swap.
 
 Every spawn merges placement the same way and hands it to the object as
 `self.look` before `build()` runs:

@@ -3,7 +3,7 @@
 from . import config
 from . import input as inputmod
 
-# an action is polled every frame; a trigger's press is an event of its own
+# an action is polled; a trigger's press is an event
 ACTION = "action"
 TRIGGER = "trigger"
 
@@ -12,7 +12,7 @@ SECTION = "input"
 
 
 def clean_keys(value):
-    """One binding cell: `"w"`, `"w, up"`, `["w"]` into a tidy list."""
+    """One binding cell as a tidy list of lower-case keys."""
     if value is None:
         return []
     if isinstance(value, str):
@@ -37,7 +37,7 @@ def _table(mapping):
 
 
 def config_table():
-    """The user's keymap as `{action: keys}`, read off the config schema."""
+    """The user's keymap as `{action: keys}`, from the config."""
     cfg = config.load()
     out = {}
     for key in config.keys("input"):
@@ -46,19 +46,19 @@ def config_table():
 
 
 def engine_table():
-    """The engine's own keymap, before a player's config is laid over it."""
+    """The engine's own keymap, before the player's config."""
     return {key.split(".", 1)[1]: clean_keys(config.DEFAULTS.get(key))
             for key in config.keys("input")}
 
 
 def config_label(name):
-    """What an action does, in the words the settings tab uses."""
+    """What an action does, in the settings tab's words."""
     entry_ = config.BY_KEY.get(f"{SECTION}.{name}")
     return entry_.label if entry_ is not None else \
         str(name).replace("_", " ").title()
 
 
-# per-name numbers a project may tune, with the type each one takes
+# per-name numbers a project may tune, and their types
 TUNING = {"deadzone": float}
 
 
@@ -88,7 +88,7 @@ class InputMap:
 
     @classmethod
     def defaults(cls):
-        """The engine's own keymap, with nothing of the project's in it."""
+        """The engine's own keymap, with nothing of the project."""
         return cls(config_table())
 
     @classmethod
@@ -117,11 +117,11 @@ class InputMap:
 
     @property
     def deadzone(self):
-        """How far a stick travels before an axis counts as pressed."""
+        """How far a stick travels before an axis counts."""
         return self.tuning.get("deadzone", inputmod.DEADZONE)
 
     def set_tuning(self, key, value):
-        """Store one tuning number, or drop it back to the engine's own."""
+        """Store one tuning number, or drop it to the engine's."""
         if value is None:
             self.tuning.pop(str(key), None)
             return None
@@ -156,11 +156,11 @@ class InputMap:
         return list(table.get(str(name), ()))
 
     def resolved(self, name):
-        """The keys a name ends up with: the project's, else the default's."""
+        """The keys a name ends up with: project's, else default's."""
         return self.keys_of(name) or InputMap.defaults().keys_of(name)
 
     def labels(self, trigger=None):
-        """Every name this map can show, with its keys and its purpose."""
+        """Every name this map can show, with keys and purpose."""
         defaults = config_table()
         listed = self.names(trigger)
         if trigger is None:
@@ -185,7 +185,7 @@ class InputMap:
         return keys
 
     def add(self, name, keys=(), trigger=False):
-        """Name a new input; a trigger's press broadcasts its own name."""
+        """Name a new input; a trigger's press broadcasts it."""
         name = str(name).strip().replace(" ", "_")
         if not name:
             return None
@@ -210,11 +210,7 @@ class InputMap:
         return True
 
     def conflicts(self):
-        """Bindings two names share: [(token, [names, ...])].
-
-        What the engine binds by default counts, so a trigger given `w` is
-        reported against `forward` even in a project that binds nothing.
-        """
+        """Bindings two names share: [(token, [names, ...])]."""
         defaults = config_table()
         seen = {}
         for name in sorted(set(self.actions) | set(self.triggers)
@@ -263,7 +259,7 @@ def current():
 
 
 def save(project, mapping):
-    """Write a map into the project's manifest; False with no project."""
+    """Write a map into the manifest; False with no project."""
     if project is None or not hasattr(project, "set"):
         return False
     sections = mapping.as_sections() if isinstance(mapping, InputMap) \

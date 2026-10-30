@@ -1,19 +1,21 @@
 """Engine modules: rendering, scenes, objects, models, audio, input and"""
 
 from . import (anim, audio, camera, collision, colors, components, config,
-               input, inputmap, lights, loader, meshes, model, objects,
-               paths, player, proctex, renderer, save, scene, scenedoc,
-               sfx, shaders, templates, theme, timers, ui, winchrome, xp)
+               input, inputmap, level, lights, loader, mapdoc, meshes, model,
+               objects, particles, paths, placement, player, proctex,
+               renderer, save, scene, scenedoc, sfx, shaders, templates,
+               theme, timers, ui, winchrome, xp)
 from .camera import Camera, Camera2D, OrbitCamera
 from .components import (AudioEmitter2D, AudioEmitter3D, Collision2D,
                          Collision3D, ConeLight2D, DirectionalLight3D,
                          Hitbox2D, Hitbox3D, LightNode2D, LightNode3D,
-                         Marker2D, Marker3D, Model3D, OmniLight3D,
-                         PointLight2D, RectLight2D, Sprite2D, SpotLight3D,
-                         Text2D, Text3D, Timer2D, Timer3D, Trigger2D,
-                         Trigger3D)
+                         Map2D, Map3D, Marker2D, Marker3D, Model3D,
+                         OmniLight3D, Particle2D, Particle3D, PointLight2D,
+                         RectLight2D, Sprite2D, SpotLight3D, Text2D, Text3D,
+                         Timer2D, Timer3D, Trigger2D, Trigger3D)
 from .input import Input
 from .inputmap import InputMap
+from .level import MapLevel
 from .lights import Light, Light2D, Light3D
 from .loader import Project
 from .model import Model, new_model
@@ -31,9 +33,9 @@ _TOOL_OF = {name: module for module, name in _TOOLS.items() if name}
 
 __all__ = [
     "anim", "audio", "build", "camera", "collision", "colors", "components",
-    "config",
-    "input", "inputmap", "lights", "loader", "meshes", "model", "objects",
-    "paths",
+    "config", "particles",
+    "input", "inputmap", "level", "lights", "loader", "mapdoc", "meshes",
+    "model", "objects", "paths", "placement",
     "player",
     "prune", "proctex", "renderer", "save", "scene", "scenedoc", "sfx",
     "shaders", "templates", "theme", "timers",
@@ -43,10 +45,11 @@ __all__ = [
     "GameObject", "Object2D", "Object3D", "Entity2D", "Entity3D",
     "UIObject", "ModelObject",
     "Collision2D", "Collision3D", "Hitbox2D", "Hitbox3D", "LightNode2D",
-    "LightNode3D", "Model3D", "Sprite2D",
+    "LightNode3D", "Map2D", "Map3D", "MapLevel", "Model3D", "Sprite2D",
     "OmniLight3D", "SpotLight3D", "DirectionalLight3D", "PointLight2D",
     "ConeLight2D", "RectLight2D", "AudioEmitter3D", "AudioEmitter2D",
     "Text3D", "Text2D", "Timer3D", "Timer2D", "Trigger3D", "Trigger2D",
+    "Particle3D", "Particle2D",
     "Marker3D", "Marker2D",
     "Light", "Light2D", "Light3D",
     "Player", "Player2D", "Player3D", "Scene", "Scene2D", "Scene3D",

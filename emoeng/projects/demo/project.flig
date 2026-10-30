@@ -5,7 +5,7 @@
   "start": "main",
   "seed": 13,
   "version": "1.0.0",
-  "description": "Two rooms that start plain and are re-dressed by nine switches: a lectern screen you click in the 3D hall, floor plates you walk onto in the flat one.",
+  "description": "Two rooms, each a map file, that start plain and are re-dressed by nine switches: a lectern screen you click in the 3D hall, floor plates you walk onto in the flat one. M swaps each room for its second map while you stand in it.",
   "window": {
     "size": [
       1152,
@@ -49,7 +49,7 @@
   "input": {
     "actions": {},
     "triggers": {
-      "_note": "the nine switches both demo rooms wear, keys 1 to 9",
+      "_note": "the nine switches both demo rooms wear, keys 1 to 9, and m to swap the map",
       "look_floor": [
         "1"
       ],
@@ -76,6 +76,9 @@
       ],
       "look_clear": [
         "9"
+      ],
+      "swap_map": [
+        "m"
       ]
     }
   },

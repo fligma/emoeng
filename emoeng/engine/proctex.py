@@ -10,7 +10,7 @@ def _smooth(t):
 
 
 def noise2d(h, w, cells, seed):
-    """Smooth value noise on an h x w grid, wrapping at its edges."""
+    """Smooth value noise on an h x w grid, edge-wrapping."""
     rng = np.random.default_rng(seed)
     g = rng.random((cells, cells))
     ys = np.linspace(0.0, cells, h, endpoint=False)
@@ -164,6 +164,50 @@ def flame(size=128, seed=707):
     return _bytes(rgba)
 
 
+def spark(size=64, color=(1.0, 0.78, 0.42), seed=1010, soft=0.55):
+    """RGBA mote for particles: a hot core with a faint four-point flare.
+
+    Small and square, because one particle is one whole sheet: the quad's
+    own size is what the emitter's `size` knob turns.
+    """
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
+    u = (xx + 0.5) / size * 2.0 - 1.0
+    v = (yy + 0.5) / size * 2.0 - 1.0
+    r = np.clip(np.sqrt(u * u + v * v), 0.0, 1.4)
+    s = max(0.02, min(0.98, float(soft)))
+    body = np.clip(1.0 - r / s, 0.0, 1.0) ** 1.8
+    # the flare is a thin cross, so the mote reads as a glint, not a dot
+    arms = np.clip(1.0 - np.abs(u) * 9.0, 0.0, 1.0) + \
+        np.clip(1.0 - np.abs(v) * 9.0, 0.0, 1.0)
+    body = np.clip(body + 0.28 * arms * np.clip(1.0 - r, 0.0, 1.0), 0.0, 1.0)
+    grain = noise2d(size, size, 14, seed) * 0.25 + 0.85
+    hot = np.asarray(color, np.float64)
+    tint = np.ones(3) * 0.9 + hot * 0.1
+    rgba = np.zeros((size, size, 4))
+    rgba[..., :3] = _mix(tint[None, None, :], hot[None, None, :],
+                         np.clip(body * 1.6, 0.0, 1.0)[..., None])
+    rgba[..., 3] = body * grain
+    return _bytes(rgba)
+
+
+def smoke(size=64, seed=1111, wisp=0.5, color=(0.62, 0.60, 0.58)):
+    """RGBA puff for dust and smoke: soft noise clipped to a disc."""
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
+    u = (xx + 0.5) / size * 2.0 - 1.0
+    v = (yy + 0.5) / size * 2.0 - 1.0
+    r = np.clip(np.sqrt(u * u + v * v), 0.0, 1.0)
+    fine = noise2d(size, size, 7, seed) * 0.6 + \
+        noise2d(size, size, 19, seed + 1) * 0.4
+    k = max(0.02, min(0.95, float(wisp)))
+    edge = np.clip((r - (1.0 - k)) / max(1e-3, k), 0.0, 1.0)
+    body = np.clip((1.0 - edge) * (0.45 + 0.9 * fine), 0.0, 1.0)
+    rgba = np.zeros((size, size, 4))
+    rgba[..., :3] = np.asarray(color, np.float64) * \
+        (0.75 + 0.45 * fine[..., None])
+    rgba[..., 3] = body
+    return _bytes(rgba)
+
+
 def noise_rgb(size=128, seed=808, tint=(1.0, 1.0, 1.0)):
     """Coloured grain for dirt overlays and UI fills."""
     n = noise2d(size, size, 30, seed)
@@ -173,15 +217,7 @@ def noise_rgb(size=128, seed=808, tint=(1.0, 1.0, 1.0)):
 
 def noise(size=128, cells=6, octaves=4, seed=909, gain=0.5,
           contrast=1.0, tint=(0.62, 0.60, 0.56), base=0.0, alpha=False):
-    """Fractal value noise: the generator every other surface leans on.
-
-    Filed as a sheet in its own right, so a project can name `noise` where
-    it would name `stone`. `cells` counts the lumps across one repeat and
-    every octave halves their size at `gain` strength, which is what keeps
-    detail at any `uv_tile`; `contrast` pushes the pattern away from grey,
-    `base` lifts it, and `alpha` carries the pattern as transparency so the
-    sheet cuts a hole instead of painting a colour.
-    """
+    """Fractal value noise: the generator every surface leans on."""
     size = int(max(4, size))
     total = np.zeros((size, size))
     weight = 0.0
@@ -213,12 +249,8 @@ def solid(color=(1.0, 1.0, 1.0), size=2):
     return _bytes(out) if a < 0.999 else _bytes(out[..., :3])
 
 
-# The sheets a game can name without a file: the factory, the knobs it is
-# drawn with, and how the renderer registers the result. `tile` is metres one
-# repeat covers, which is what makes each of these a picture laid over the uv
-# rather than over one object: a 2 m floor and a 20 m wall then wear the same
-# grain per metre, the way a shader would. `repeat: False` marks a sprite,
-# which is stretched to its quad and never tiled.
+# File-less sheets: (name, factory, knobs, register options).
+# `tile` is metres per repeat; `repeat: False` marks a sprite.
 SHEETS = (
     ("checker", checker, {"size": 64, "cells": 8}, {"tile": 0.5}),
     ("grid", grid, {"size": 128, "cells": 8}, {"tile": 1.0}),
@@ -230,6 +262,8 @@ SHEETS = (
     ("noise", noise, {"size": 128, "cells": 6}, {"tile": 1.0}),
     ("flame", flame, {"size": 128}, {"rgba": True, "repeat": False}),
     ("glow", glow, {"size": 128}, {"rgba": True, "repeat": False}),
+    ("spark", spark, {"size": 64}, {"rgba": True, "repeat": False}),
+    ("smoke", smoke, {"size": 64}, {"rgba": True, "repeat": False}),
 )
 
 # what a renderer registers: (name, build it, options)
@@ -246,12 +280,7 @@ def _entry(name):
 
 
 def knobs(name):
-    """Every knob one built-in sheet turns, with the value it starts on.
-
-    The factory's own defaults first, then the values this table files it
-    under, so a caller can lay the whole set out as fields and `build` will
-    take any of them back.
-    """
+    """Every knob one built-in sheet turns, and its starting value."""
     make, over, _opts = _entry(name)
     if make is None:
         return {}
@@ -269,11 +298,7 @@ def accepts(name):
 
 
 def build(name, **over):
-    """One built-in sheet as an array, its knobs turned; None if unnamed.
-
-    A knob the factory does not take is dropped rather than raising, so a
-    caller can offer one row of fields for every sheet.
-    """
+    """One built-in sheet as an array; None if unnamed."""
     make, base, _opts = _entry(name)
     if make is None:
         return None

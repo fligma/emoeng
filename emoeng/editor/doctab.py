@@ -514,8 +514,12 @@ class DocTab:
                          ("doc", "kind"), "enum", list(SCENE_KINDS)))
             rows.append(("script", str(doc.get("script") or ""),
                          ("doc", "script"), "text", None))
-            if str(doc.get("kind") or "scene3d") != "scene2d":
-                rows.append(("maps", ", ".join(self._maps_of(doc)) or "-",
+            rows.append(("map", str(doc.get("map") or "-"),
+                         ("doc", "map"), "pick", self._map_options()))
+            # one map is the blessed way; the list is for multi-level play
+            extra = self._maps_of(doc)
+            if extra and str(doc.get("kind") or "scene3d") != "scene2d":
+                rows.append(("maps (advanced)", ", ".join(extra),
                              ("doc", "maps"), "maps",
                              self._map_options()))
             rows.append(("placed", str(len(scenedoc.roots(doc))), None))

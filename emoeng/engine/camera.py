@@ -63,13 +63,12 @@ class Camera:
         self.viewport = viewport
         self.damping = 0.0            # follow()/aim() rate, 1/s
         self.wanted = None            # (yaw, pitch) the look eases toward
-        # the rate `wanted` asked for, so damping persists
         self.wanted_rate = None
         self.follow_target = None     # (x, y, z) the eye eases toward
         self.follow_offset = (0.0, 0.0, 0.0)
         self.shake_scale = 0.09       # metres of travel per unit of amount
         self.shake_roll = 0.05        # radians of tilt per unit of amount
-        self.shake_freq = 14.0        # wobbles per second
+        self.shake_freq = 14.0
         self.shake_amount = 0.0       # current strength, 0 when still
         self.shake_duration = 0.0
         self.shake_time = 0.0

@@ -12,9 +12,10 @@ from PIL import Image
 
 from .. import const
 from . import components
+from . import mapdoc
 from . import model as models
 from . import objects as objmod
-from . import paths, scenedoc, sfx, templates
+from . import paths, placement, scenedoc, sfx, templates
 from . import shaders as shadermod
 from .objects import GameObject, Object3D, first_object_class
 from .scene import Scene, Scene2D, Scene3D, SceneUI, first_scene_class
@@ -28,6 +29,17 @@ META_NAME = const.MANIFEST_NAME
 KINDS = const.KINDS
 DEFAULT_PROJECT = const.DEFAULT_PROJECT
 PACKAGES = const.PACKAGES
+
+
+def map_field(doc):
+    """The map a scene document declares: a stem, `{"map": ...}` or None."""
+    raw = (doc or {}).get("map")
+    if isinstance(raw, dict):
+        raw = raw.get("map") or raw.get("name")
+    if not raw:
+        return None
+    return str(raw).strip() or None
+
 
 # project file-format version, written as `format` in the manifest
 FORMAT = const.PROJECT_FORMAT
@@ -47,7 +59,7 @@ SECTIONS = {
     "assets": {"textures": "textures", "audio": "audio"},
 }
 
-# the `defaults` section: one scene attribute each, and the shape it wants
+# the `defaults` section: one scene attribute and its shape
 DEFAULT_KINDS = {
     "ambient": "list", "sun_dir": "list", "sun_col": "list",
     "fog_color": "list", "move_speed": "list", "post": "names",
@@ -60,7 +72,7 @@ DEFAULT_ORDER = tuple(DEFAULT_KINDS)
 
 
 def number_list(value):
-    """`"0.2, 0.2, 0.3"` or a list, as floats; None when it cannot read."""
+    """`"0.2, 0.3"` or a list, as floats or None."""
     if value is None:
         return None
     parts = value if isinstance(value, (list, tuple)) else str(value)
@@ -85,7 +97,7 @@ def name_list(value):
 
 
 def int_pair(value, default):
-    """A size as two ints: `[1152, 700]`, `"1152, 700"`, or `default`."""
+    """A size as two ints; falls back to `default`."""
     got = number_list(value)
     if not got or len(got) < 2:
         return tuple(default)
@@ -182,8 +194,9 @@ class Project:
     # the manifest shape this class writes
     FORMAT = FORMAT
 
-    # what a hot reload watches: code the player needs
-    WATCHED = ("scenes", "objects", "entities", "scripts", "shaders")
+    # what a hot reload watches: code the player needs, and the levels
+    WATCHED = ("scenes", "objects", "entities", "scripts", "shaders",
+               "maps")
 
     # import defaults, overridable per project in assets.json
     ASSET_DEFAULTS = {
@@ -221,11 +234,7 @@ class Project:
         self.start = self.meta.get("start") or (scenes[0] if scenes else None)
 
     def apply_meta(self):
-        """Read every manifest field back into this project.
-
-        `__init__` calls it once; the Project tab calls it after writing, so
-        a value edited in the form reaches the engine without a re-open.
-        """
+        """Read every manifest field back into this project."""
         meta = self.meta
         self.name = meta.get("name") or self.path.name
         self.title = meta.get("title") or self.name
@@ -574,9 +583,13 @@ class Project:
                 if p.suffix == ".model2d"]
 
     def map_names(self):
-        """The maps this project carries: one `maps/<stem>.map3d` each."""
-        return self._stems("maps", (scenedoc.MAP3D_EXT,
-                                    scenedoc.MODEL3D_EXT))
+        """The maps this project carries: one `.map3d` or `.map2d` each."""
+        return self._stems("maps", mapdoc.MAP_EXTS +
+                           (scenedoc.MODEL3D_EXT,))
+
+    def map2d_names(self):
+        """The flat maps only, for the 2D halves of the editor."""
+        return self._stems("maps", (mapdoc.MAP2D_EXT,))
 
     def texture_files(self):
         return [p for p in self.files("textures")
@@ -776,31 +789,77 @@ class Project:
         self._models2d.clear()
         self._maps.clear()
 
-    def map_path(self, name):
-        """Where a map lives, preferring the `.map3d` spelling."""
+    def map_path(self, name, kind=None):
+        """Where a map lives: the spelling its kind means comes first."""
         stem = Path(str(name)).stem
-        for ext in (scenedoc.MAP3D_EXT, scenedoc.MODEL3D_EXT):
+        order = (mapdoc.MAP2D_EXT, mapdoc.MAP3D_EXT) \
+            if mapdoc.kind_name(kind) == "map2d" else mapdoc.MAP_EXTS
+        for ext in order + (scenedoc.MODEL3D_EXT,):
             p = self.maps_dir / f"{stem}{ext}"
             if p.is_file():
                 return p
-        return self.maps_dir / f"{stem}{scenedoc.MAP3D_EXT}"
+        return self.maps_dir / f"{stem}{mapdoc.ext_of(kind)}"
+
+    def map_doc(self, name, kind=None):
+        """A map's document, or None when the project has no such map."""
+        path = self.map_path(name, kind)
+        if not path.is_file():
+            return None
+        return mapdoc.load(path, kind)
+
+    def save_map_doc(self, name, doc):
+        """Write a map document under the extension its kind means."""
+        kind = mapdoc.kind_name((doc or {}).get("kind"))
+        stem = Path(str(name)).stem
+        path = mapdoc.save(self.maps_dir / f"{stem}{mapdoc.ext_of(kind)}",
+                           doc)
+        self._maps.pop(str(path), None)     # its geometry may have changed
+        return path
+
+    def new_map(self, name, kind="map3d"):
+        """Start an empty map document and hand its path back."""
+        stem = Path(str(name)).stem
+        return self.save_map_doc(stem, mapdoc.blank(stem, kind))
 
     def map(self, name):
-        """Load and cache a map by stem."""
-        key = Path(name).stem
+        """Load and cache a map's carved geometry, `.map3d` first."""
+        return self._map_model(self.map_path(name, "map3d"))
+
+    def map2d(self, name):
+        """Load and cache a flat map's carved geometry, `.map2d` first."""
+        return self._map_model(self.map_path(name, "map2d"))
+
+    def _map_model(self, path):
+        """One map file as an engine Model, cached by path."""
+        key = str(path)
         if key in self._maps:
             return self._maps[key]
-        m = models.Model.load(self.map_path(key))
+        doc = mapdoc.load(path)
+        m = mapdoc.model_of(doc, Path(path).stem)
+        m.path = key
         self._maps[key] = m
         return m
 
-    def store_map(self, model, name=None):
-        """Save a map into the project and refresh the cache."""
+    def store_map(self, model, name=None, doc=None, kind=None):
+        """Save a map's geometry, keeping the nodes its file placed.
+
+        `kind` picks the extension a brand new map is written under; an
+        existing file follows the kind the caller asks for.
+        """
         stem = Path(name or model.name).stem
-        path = model.save(self.maps_dir
-                          / f"{stem}{scenedoc.MAP3D_EXT}")
-        self._maps[stem] = model
-        return path
+        if doc is None:
+            doc = self.map_doc(stem)
+        if doc is None:
+            doc = mapdoc.blank(stem, kind or "map3d")
+        elif kind:
+            doc["kind"] = mapdoc.kind_name(kind)
+        made = mapdoc.save(self.maps_dir
+                           / f"{stem}{mapdoc.ext_of(doc.get('kind'))}",
+                           mapdoc.with_model(doc, model))
+        model.path = str(made)
+        model.name = stem
+        self._maps[str(made)] = model
+        return made
 
     def model2d_path(self, name):
         p = Path(name)
@@ -900,11 +959,7 @@ class Project:
         return out
 
     def sheet_overrides(self, name):
-        """Only what this project files about one sheet, globals aside.
-
-        A built-in sheet reads this: the shared defaults would drown its own
-        settings, and a sheet with no file behind it has nothing to inherit.
-        """
+        """Only what this project files about one sheet, globals aside."""
         sheets = self.asset_settings()["textures"].get("sheets") or {}
         entry = sheets.get(Path(str(name).replace("\\", "/")).stem)
         if not isinstance(entry, dict):
@@ -912,12 +967,7 @@ class Project:
         return {k: v for k, v in entry.items() if not str(k).startswith("_")}
 
     def set_texture_settings(self, name, keep_all=False, **opts):
-        """File one sheet's import settings and write the sidecar.
-
-        A value matching the shared default is normally dropped, since a
-        file reads it anyway; `keep_all` files it regardless, which a
-        built-in sheet needs because it inherits nothing.
-        """
+        """File one sheet's import settings and write the sidecar."""
         stem = Path(str(name).replace("\\", "/")).stem
         settings = self.asset_settings()
         textures = settings["textures"]
@@ -1008,17 +1058,16 @@ class Project:
             return None
         cls = getattr(components, name, None) or \
             getattr(objmod, name, None)
-        if cls is None or not (isinstance(cls, type) and
-                               issubclass(cls, base)):
+        if not isinstance(cls, type):
+            return None
+        # a caller with no scene still resolves classes, it just can't
+        # narrow them to one family
+        if base is not None and not issubclass(cls, base):
             return None
         return cls
 
     def module_name(self, path, package):
-        """The dotted import name of a project script's path.
-
-        A document may name its script anywhere in the project, so the
-        import follows the file rather than the folder it was guessed from.
-        """
+        """The dotted import name of a project script's path."""
         name = Path(path).stem
         try:
             rel = Path(path).resolve().relative_to(self.path)
@@ -1091,12 +1140,7 @@ class Project:
         return self.object_file(key)
 
     def spawnable(self, name, base=GameObject):
-        """The class a `spawn(<name>)` or a `uses` entry means.
-
-        An entity document wins: a scripted thing lives in `entities/`
-        whatever its node type is called, and only the entity route reads
-        `scripts/entities/`.
-        """
+        """The class a `spawn(<name>)` or a `uses` entry means."""
         key = Path(name).stem
         doc, path = self.entity_file(key)
         if doc is not None or path is not None:
@@ -1123,7 +1167,7 @@ class Project:
                 sys.modules.pop(name, None)
 
     def check_uses(self, cls, seen=None, base=GameObject):
-        """Scripts a scene needs but the project lacks, in either folder."""
+        """Scripts a scene needs but the project lacks."""
         seen = set() if seen is None else seen
         missing = []
         for name in getattr(cls, "uses", ()):
@@ -1146,7 +1190,7 @@ class Project:
         return missing
 
     def scene(self, name, game, plan=None):
-        """Build a scene: the script's objects, then the document's."""
+        """Build a scene: its map, the script's objects, then the document's."""
         doc = self.scene_doc(name)
         path = self.scene_script(name)
         if path is None and doc is None:
@@ -1163,6 +1207,9 @@ class Project:
         if plan:
             scene.plan.update(plan)
         self._apply_defaults(scene)
+        # the level goes down first, so flat scenes (drawn in creation
+        # order) put it behind everything, and the spawn is known early
+        self._load_declared_map(scene, name, doc)
         scene.setup()
         if doc is not None:
             self._place_maps(scene, doc)
@@ -1170,6 +1217,37 @@ class Project:
         scene.finish_build()
         if self.bake_on_run:
             scene.bake_lights(size=self.bake_size)
+        return scene
+
+    def _load_declared_map(self, scene, name, doc):
+        """Build the map a scene asks for, by document or by class."""
+        declared = map_field(doc) or getattr(scene, "map_name", None)
+        if not declared:
+            return None
+        level_doc = self.map_doc(declared)
+        if level_doc is None:
+            shadermod.report(f"scene '{name}' loads map {declared!r}, which "
+                             f"{self.relative(self.maps_dir)} lacks", "warn")
+        return scene.load_map(declared, doc=level_doc)
+
+    def map_scene(self, name, game):
+        """A bare scene around one map, for the editor's view."""
+        doc = self.map_doc(name)
+        if doc is None:
+            raise FileNotFoundError(
+                f"map '{name}' not found in {self.maps_dir}")
+        stem = Path(str(name)).stem
+        flat = mapdoc.kind_name(doc.get("kind")) == "map2d"
+        cls = type("MapDocScene", (Scene2D if flat else Scene3D,),
+                   {"name": stem, "map_name": stem})
+        game.renderer.reset()
+        scene = cls(game)
+        scene.doc = None
+        scene.plan = {}
+        self._apply_defaults(scene)
+        scene.load_map(stem, doc=doc)
+        scene.setup()
+        scene.finish_build()
         return scene
 
     def _apply_defaults(self, scene):
@@ -1359,70 +1437,9 @@ class Project:
 
     def _place_objects(self, scene, doc):
         """Spawn the objects a document places, parents before their nodes."""
-        made = {}
-        for entry, parent_entry, _depth in scenedoc.walk(doc):
-            if not isinstance(entry, dict):
-                continue
-            parent = made.get(str(parent_entry.get("id"))) \
-                if isinstance(parent_entry, dict) else None
-            inst = self._place_one(scene, entry, parent, made,
-                                   str(entry.get("id")))
-            if inst is not None:
-                made[str(entry.get("id"))] = inst
-        # a node is only useful once its parent has settled
-        scene.sync_tree()
+        placer = placement.Placer(self)
+        placer.place(scene, scenedoc.roots(doc))
         return scene
-
-    def _place_one(self, scene, entry, parent, made, this_id):
-        """Build one placed entry, following an instance to its source."""
-        what, how, source = self._entry_build(scene, entry)
-        if what is None:
-            return None
-        how = dict(how)
-        how.update(scene.plan.get(this_id) or {})
-        pos = how.pop("pos", None)
-        if pos is not None and parent is not None:
-            # a node's `pos` is parent-relative; convert to world first
-            pos = parent.child_world(pos)
-        inst = scene.spawn(what, pos=pos, parent=parent, look=how)
-        inst.placed_id = this_id
-        made[this_id] = inst
-        if source is not None:
-            # names the instance's children so prefab copies never collide
-            for child, child_parent, _d in scenedoc.walk(source):
-                if not isinstance(child, dict):
-                    continue
-                pid = str(child_parent.get("id")) if \
-                    isinstance(child_parent, dict) else None
-                real_parent = made.get(f"{this_id}/{pid}") \
-                    if pid else inst
-                cid = f"{this_id}/{child.get('id')}"
-                self._place_one(scene, child, real_parent, made, cid)
-        return inst
-
-    def _entry_build(self, scene, entry):
-        """Resolve an entry to (class, look, source_doc_or_None)."""
-        base = getattr(scene, "object_base", GameObject)
-        if not scenedoc.is_instance(entry):
-            target = scenedoc.script_stem(entry.get("script"))
-            what = target or self.node_class(entry.get("type"), base)
-            return what, scenedoc.look(entry), None
-        value, is_scene = scenedoc.instance_source(entry)
-        path = scenedoc.resolve_instance(self, value)
-        if path is None:
-            return None, {}, None
-        src = scenedoc.load(path, "scene" if is_scene else "object")
-        if is_scene:
-            kind = str(src.get("kind") or "scene3d").lower()
-            flat = "2d" if kind in ("scene2d", "sceneui") else "3d"
-            what = self.node_class("object2d" if flat == "2d"
-                                   else "object3d", base)
-            return what, scenedoc.look(entry), src
-        target = scenedoc.script_stem(src.get("script"))
-        what = target or self.node_class(src.get("type"), base)
-        how = scenedoc.look(src)
-        how.update(scenedoc.look(entry))
-        return what, how, src
 
     def save_meta(self):
         """Write the manifest in the current sectioned shape, atomically."""
@@ -1480,7 +1497,7 @@ class Project:
 
     @classmethod
     def create(cls, path, title=None, start_scene=None,
-               template=templates.DEFAULT_TEMPLATE):
+               template=templates.DEFAULT_TEMPLATE, options=None):
         """Scaffold a new project from a starter template."""
         path = Path(path).expanduser().resolve()
         for folder in ("scenes", "objects", "entities", "shaders", "models",
@@ -1492,7 +1509,7 @@ class Project:
         stem = str(start_scene or templates.spec(template)["start"])
         meta = templates.manifest(
             template, name,
-            title or name.replace("_", " ").title(), stem)
+            title or name.replace("_", " ").title(), stem, options=options)
         (path / META_NAME).write_text(json.dumps(meta, indent=1),
                                      encoding="utf-8")
         scripts, documents, model_stems, map_stems = \
@@ -1513,8 +1530,11 @@ class Project:
         for map_stem in map_stems:
             made = templates.make_map(map_stem)
             if made is not None:
-                made.save(path / "maps"
-                          / f"{map_stem}{scenedoc.MAP3D_EXT}")
+                # a starter map is a document, not a bare mesh: it carries
+                # its parts, its placed nodes and where a player starts
+                mapdoc.save(path / "maps"
+                            / f"{map_stem}{mapdoc.ext_of(made.get('kind'))}",
+                            made)
         project = cls(path)
         project.ensure_templates()
         return project

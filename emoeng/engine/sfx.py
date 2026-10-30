@@ -1,14 +1,4 @@
-"""`.sfxproject` sound documents: chiptune patterns rendered on demand.
-
-A sound project is the editable half of an audio asset: a short JSON
-document listing a few tone tracks on a step grid, the imported wavs mixed
-under them and the knobs the chips are stuck at. Nothing plays it directly:
-a game renders it while loading, the Audio tab previews the same render,
-and a build collapses it to a plain `.wav` in the bundled copy.
-
-Rendering is pure numpy, so a project renders the same in the editor and in
-a frozen build, and only WAV is written - no codec to carry along.
-"""
+"""`.sfxproject` sound documents: chiptune patterns rendered on demand."""
 
 from __future__ import annotations
 
@@ -27,6 +17,12 @@ VERSION = 1
 
 WAVES = ("square", "pulse", "tri", "saw", "sine", "noise")
 BITS = (8, 16)
+RATES = (22050, 32000, 44100, 48000)
+# what Save collapses a project into: (key, label, bits)
+FORMATS = (("wav16", "WAV 16-bit", 16), ("wav8", "WAV 8-bit", 8))
+DEFAULT_FORMAT = "wav16"
+# suffixes the mixer decodes into a wav
+IMPORTS = (".wav", ".ogg", ".mp3", ".flac")
 STEPS = 16                      # one pattern: sixteen sixteenths, four beats
 DEFAULT_BPM = 120
 MAX_BPM = 300
@@ -34,7 +30,7 @@ MIN_BPM = 30
 MAX_SECONDS = 30.0              # a longer project is asking for a wav file
 TAIL = 0.2                      # room for the last note to fall away
 
-# a track is one instrument: a wave, a gain, an octave and its notes
+# one instrument: a wave, a gain and notes
 TRACK = {
     "name": "track",
     "wave": "square",
@@ -58,11 +54,11 @@ SAMPLE_CACHE = {}
 # -- documents ---------------------------------------------------------
 
 def blank(title="sound", kind="sfx"):
-    """A new project: one lead line, or a bass and a lead to write over."""
+    """A new project: one lead line, or bass and lead."""
     tracks = [dict(TRACK, name="lead", wave="square", gain=0.45,
                    notes=[[0, 2, 72, 1.0], [2, 1, 76, 0.9], [3, 1, 72, 0.8]])]
     if str(kind) == "music":
-        # four on the floor: the bass is what the lead pumps against
+        # four on the floor; the lead pumps against it
         tracks.insert(0, dict(TRACK, name="bass", wave="tri", gain=0.5,
                               octave=-2,
                               notes=[[0, 2, 72, 1.0], [4, 2, 72, 1.0],
@@ -103,7 +99,7 @@ def _integer(value, fallback=0, low=None, high=None):
 
 
 def normalise(raw, title=None):
-    """A document with every field filled in and every value in range."""
+    """A document with every field filled and in range."""
     doc = blank(title or (raw.get("title") if isinstance(raw, dict) else ""))
     if not isinstance(raw, dict):
         return doc
@@ -176,7 +172,7 @@ def load(path):
 
 
 def save(path, doc):
-    """Write the document as JSON, the way every other document is filed."""
+    """Write the document as JSON, like every other one."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = normalise(doc, title=doc.get("title") if isinstance(doc, dict)
@@ -203,7 +199,7 @@ def note_count(doc):
 
 
 def length(doc):
-    """Seconds the render lasts: the grid, or the last sound, plus a tail."""
+    """Render length: the grid or last sound, plus tail."""
     step = step_seconds(doc)
     steps = _integer(doc.get("steps"), STEPS, 4, 256)
     seconds = steps * step
@@ -238,7 +234,7 @@ def note_name(note):
 
 
 def note_from_name(text, octave=4):
-    """A MIDI number from `C4`, `F#3` or a bare `A`; None when unreadable."""
+    """A MIDI number from `C4` or `F#3`; None if unreadable."""
     text = str(text or "").strip()
     if not text:
         return None
@@ -257,14 +253,14 @@ def note_from_name(text, octave=4):
 
 
 def _quantise(wave, bits):
-    """Chip depth: 8-bit tones snap to 256 steps, 16-bit to 65536."""
+    """Chip depth: 8-bit tones snap to 256 steps, 16-bit further."""
     levels = 128.0 if int(bits) <= 8 else 32768.0
     return np.clip(np.round(np.asarray(wave, np.float32) * levels) / levels,
                    -1.0, 1.0)
 
 
 def wave_shape(kind, freq, count, rate=SAMPLE_RATE, bits=16):
-    """`count` samples of one tone; the chip shapes come straight out."""
+    """`count` samples of one tone, in its chip shape."""
     count = max(1, int(count))
     freq = max(0.0, float(freq))
     t = np.arange(count, dtype=np.float32) / float(rate)
@@ -291,7 +287,7 @@ def wave_shape(kind, freq, count, rate=SAMPLE_RATE, bits=16):
 
 
 def _envelope(count, rate=SAMPLE_RATE, decay=3.0):
-    """Attack, a fall through the note and a short release, never a click."""
+    """Attack, a fall through the note and a short release."""
     count = max(1, int(count))
     t = np.arange(count, dtype=np.float32) / max(1, count - 1)
     env = np.exp(-float(decay) * t).astype(np.float32)
@@ -304,8 +300,33 @@ def _envelope(count, rate=SAMPLE_RATE, decay=3.0):
 
 # -- imported wavs -----------------------------------------------------
 
+def format_bits(key):
+    """Chip depth behind a Save format key; 16 if unknown."""
+    for name, _label, bits in FORMATS:
+        if name == str(key):
+            return bits
+    return 16
+
+
+def format_label(key):
+    """A Save format key as the dialog spells it."""
+    for name, label, _bits in FORMATS:
+        if name == str(key):
+            return label
+    return FORMATS[0][1]
+
+
+def format_of(label):
+    """A dialog label or a key, back to its key."""
+    text = str(label or "")
+    for name, shown, _bits in FORMATS:
+        if text in (name, shown):
+            return name
+    return DEFAULT_FORMAT
+
+
 def read_wav(path):
-    """Mono float samples and their rate from a 16-bit wav, or (None, 0)."""
+    """Mono floats and rate from a wav of any depth."""
     try:
         with wave.open(str(path), "rb") as w:
             rate = w.getframerate()
@@ -314,16 +335,83 @@ def read_wav(path):
             raw = w.readframes(w.getnframes())
     except (wave.Error, OSError, EOFError):
         return None, 0
-    if width != 2 or not raw:
+    if not raw:
         return None, rate
-    data = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+    if width == 1:
+        # an 8-bit wav is unsigned, centred on 128
+        data = (np.frombuffer(raw, np.uint8).astype(np.float32)
+                - 128.0) / 127.0
+    elif width == 2:
+        data = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+    elif width == 3:
+        block = np.frombuffer(raw, np.uint8).reshape(-1, 3).astype(np.int32)
+        packed = block[:, 0] | (block[:, 1] << 8) | (block[:, 2] << 16)
+        data = ((packed << 8) >> 8).astype(np.float32) / 8388608.0
+    elif width == 4:
+        data = np.frombuffer(raw, np.int32).astype(np.float32) / 2147483648.0
+    else:
+        return None, rate
     if channels > 1:
         data = data.reshape(-1, channels).mean(axis=1)
     return np.ascontiguousarray(data, np.float32), rate
 
 
+def read_audio(path):
+    """Mono floats and rate from any file the mixer decodes;
+    a wav reads straight and ogg goes through pygame."""
+    data, rate = read_wav(path)
+    if data is not None:
+        return data, rate
+    try:
+        import pygame
+    except ImportError:
+        return None, 0
+    started = False
+    if not pygame.mixer.get_init():
+        try:
+            pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=2)
+            started = True
+        except pygame.error:
+            return None, 0
+    try:
+        sound = pygame.mixer.Sound(str(path))
+        raw = pygame.sndarray.array(sound)
+        rate = int(pygame.mixer.get_init()[0])
+        channels = int(pygame.mixer.get_init()[2])
+    except (pygame.error, ValueError):
+        return None, 0
+    finally:
+        if started:
+            pygame.mixer.quit()
+    if raw is None or not len(raw):
+        return None, 0
+    flat = raw.astype(np.float32) / 32768.0
+    if channels > 1 and flat.ndim > 1:
+        flat = flat.reshape(-1, channels).mean(axis=1)
+    else:
+        flat = flat.reshape(-1)
+    return np.ascontiguousarray(flat, np.float32), rate
+
+
+def import_audio(source, folder):
+    """Copy an audio file into `folder` as a wav.
+    A wav keeps its bits; the rest is 16-bit wav."""
+    source = Path(source)
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{source.stem}.wav"
+    if source.suffix.lower() == ".wav":
+        if source.resolve() != target.resolve():
+            target.write_bytes(source.read_bytes())
+        return target
+    data, rate = read_audio(source)
+    if data is None:
+        raise ValueError(f"{source.name} cannot be decoded")
+    return _write_wav(target, data, rate or SAMPLE_RATE)
+
+
 def sample_data(sample, audio_dir=None, rate=SAMPLE_RATE):
-    """One imported wav as mono float at `rate`, pitched, and cached."""
+    """One imported wav as mono float at `rate`, pitched, cached."""
     name = Path(str(sample.get("file") or "").replace("\\", "/")).name
     if not name:
         return None
@@ -339,7 +427,7 @@ def sample_data(sample, audio_dir=None, rate=SAMPLE_RATE):
     raw, source = read_wav(path)
     out = None
     if raw is not None and source:
-        # pitch is a resample: the same samples, played faster or slower
+        # pitch is a resample: the same samples, sped or slowed
         span = max(1, int(len(raw) * (float(source) / rate) / pitch))
         out = np.interp(np.linspace(0.0, len(raw) - 1.0, span),
                         np.arange(len(raw)), raw).astype(np.float32)
@@ -370,7 +458,7 @@ def _render_track(track, doc, rate, total, bits):
 
 
 def _ducking(track, doc, rate, total, depth, release):
-    """1 where the source is quiet, 1 - depth while its notes sound."""
+    """1 where quiet, 1 - depth where the source sounds."""
     env = np.ones(total, np.float32)
     step = step_seconds(doc)
     for note in track.get("notes") or ():
@@ -381,7 +469,7 @@ def _ducking(track, doc, rate, total, depth, release):
         env[begin:end] = np.minimum(env[begin:end], 1.0 - depth)
         tail = min(total, end + max(1, int(release * rate)))
         if tail > end:
-            # the way back up is the pump; without it a note only drops
+            # the way back up is the pump
             ramp = np.linspace(1.0 - depth, 1.0, tail - end, dtype=np.float32)
             env[end:tail] = np.minimum(env[end:tail], ramp)
     return env
@@ -422,27 +510,34 @@ def render(doc, rate=None, audio_dir=None):
     return mix
 
 
-def _write_wav(path, data, rate):
+def _write_wav(path, data, rate, bits=16):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pcm = (np.clip(np.asarray(data, np.float32), -1.0, 1.0)
-           * 32767.0).astype(np.int16)
+    clip = np.clip(np.asarray(data, np.float32), -1.0, 1.0)
+    if int(bits) <= 8:
+        pcm = (clip * 127.0 + 128.0).astype(np.uint8).tobytes()
+        width = 1
+    else:
+        pcm = (clip * 32767.0).astype(np.int16).tobytes()
+        width = 2
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
-        w.setsampwidth(2)
+        w.setsampwidth(width)
         w.setframerate(int(rate))
-        w.writeframes(np.ascontiguousarray(pcm).tobytes())
+        w.writeframes(pcm)
     return path
 
 
-def write_wav(path, doc, audio_dir=None):
-    """Render the document into a mono 16-bit wav; returns the path."""
+def write_wav(path, doc, audio_dir=None, bits=None):
+    """Render a document to a mono wav; returns the path."""
     doc = normalise(doc)
     rate = int(doc.get("rate") or SAMPLE_RATE)
-    return _write_wav(path, render(doc, rate=rate, audio_dir=audio_dir), rate)
+    depth = int(bits or doc.get("bits") or 16)
+    return _write_wav(path, render(doc, rate=rate, audio_dir=audio_dir),
+                      rate, depth)
 
 
-def flatten(path, out=None, audio_dir=None):
+def flatten(path, out=None, audio_dir=None, bits=None):
     """Render one project beside itself; returns (wav path, seconds)."""
     path = Path(path)
     doc = load(path)
@@ -451,24 +546,19 @@ def flatten(path, out=None, audio_dir=None):
                   audio_dir=Path(audio_dir) if audio_dir is not None
                   else path.parent)
     target = Path(out) if out is not None else path.with_suffix(".wav")
-    _write_wav(target, data, rate)
+    _write_wav(target, data, rate, int(bits or doc.get("bits") or 16))
     return target, len(data) / float(rate)
 
 
 def sound(path_or_doc, audio_dir=None, settings=None):
-    """A mixer Sound from a project path or a document, for previewing."""
+    """A mixer Sound from a path or document, to preview."""
     doc = load(path_or_doc) if isinstance(path_or_doc, (str, Path)) \
         else path_or_doc
     return make_sound(render(doc, audio_dir=audio_dir), settings)
 
 
 def flatten_folder(folder):
-    """Collapse every project in one `audio/` folder to a wav beside it.
-
-    A build calls this on its staged copy, never on the project folder: the
-    `.sfxproject` is the source and stays there until the editor's Save
-    replaces it too. Returns one report line per project.
-    """
+    """Collapse one `audio/` folder's projects to wav beside them."""
     folder = Path(folder)
     lines = []
     if not folder.is_dir():

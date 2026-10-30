@@ -6,7 +6,8 @@ only blocks a body once something has been filed as solid. Every box shape is
 axis-aligned - a box is `(centre, half-size)` - because rooms, crates and slabs
 already are. A triangle-mesh collider is the one exception: it stores the real
 triangles and sweeps a body against them, which is what a `.map3d` file builds
-out of its own outline.
+out of its own outline - when its `collision` key asks for a `"mesh"`, and not
+the per-part boxes or `"none"` it may ask for instead ([Maps](maps.md)).
 
 ```python
 from emoeng.engine import collision
@@ -56,8 +57,9 @@ inside a box can walk back out.
 `Scene.move_body()` is this function with the scene's filed shapes already
 gathered, which is what a `Player3D` calls; write your own only to add gravity,
 a step-up or a knock on a wall. When the scene also holds triangle-mesh
-colliders - a placed `.map3d` files one - `move_body` calls
-`move_slide_mesh` instead, and the boxes and the triangles sweep together.
+colliders - a placed `.map3d` files one, under `collision: "mesh"` -
+`move_body` calls `move_slide_mesh` instead, and the boxes and the triangles
+sweep together.
 Nothing else changes: the same `(new_pos, hits)` answer, the same `group`
 filter, the same `half` body.
 
@@ -118,13 +120,25 @@ floor raises the walker instead of the slope head-butting them. Faces that
 steep are skipped when blocking a horizontal move - you do not bump into a
 ramp - and every other triangle still stops you dead.
 
-A `Map3D` node owns one of these. `build()` draws `project.map(stem)` and
-files a `TriMesh` over exactly the triangles that were drawn, transformed
-by the node's `pos`/`yaw`/`scale`; `dispose()` takes the filing off, and
-moving the node rebuilds it. The node is itself the collider: `solid`,
-`group`, `box()` (the mesh's overall AABB) and `contains(point)` all answer
-through it, so `Player3D` and every script mover that calls `move_body` keep
-working untouched - no `Collision3D` arranged anywhere.
+A `Map3D` node owns one of these when its `collision` mode says `"mesh"`.
+`build()` draws `project.map(stem)` and files a `TriMesh` over exactly the
+triangles that were drawn, transformed by the node's `pos`/`yaw`/`scale`;
+`dispose()` takes the filing off, and moving the node rebuilds it. The node is
+itself the collider: `solid`, `group`, `box()` (the mesh's overall AABB) and
+`contains(point)` all answer through it, so `Player3D` and every script mover
+that calls `move_body` keep working untouched - no `Collision3D` arranged
+anywhere.
+
+The other two modes trade that exactness for something cheaper. With
+`"boxes"` the node files no mesh at all; `shape_nodes` holds one `Collision3D`
+per carved part, as that part's world AABB, so a level of rectangular rooms
+sweeps a handful of boxes instead of every face - and a gap inside one part
+becomes walkable. With `"none"` it files neither, and the level is scenery:
+only the `collision3d` nodes its document places stop a body.
+`solid: false` is the same answer from the other side - the shape stays filed,
+and `move_body`'s `colliders_of(group, solid=True)` simply never looks at it.
+A `.map2d` has no triangles to sweep, so its `"mesh"` settles to `"boxes"`:
+`Map2D` files one solid rect per carved part, at the map's own `solid`.
 
 What stays box-shaped, on purpose: `sphere_push`, every 2D rect, the
 collider broadphase and a trigger's `contains()` still read the overall
@@ -227,7 +241,7 @@ Colliders are data you place. Four ordinary ways to get them:
 | Source | How |
 | --- | --- |
 | The scene's filed nodes | `scene.collider_boxes(group="", solid=True)` for 3D, `collider_rects(...)` for 2D - what every `Collision3D` in the documents adds up to |
-| A placed `.map3d` | `scene.colliders` holds a `Map3D` whose `mesh` is a `TriMesh`; `move_body` picks it up itself, and `mesh.bounds` gives the box around the whole map |
+| A placed `.map3d` | `scene.colliders` holds a `Map3D`; under `collision: "mesh"` its `mesh` is a `TriMesh` and `move_body` picks it up itself, `mesh.bounds` giving the box around the whole map. `"boxes"` puts the shapes in `node.shape_nodes` instead, and `"none"` in neither ([Maps](maps.md)) |
 | Authored in the scene | A plain list of `(centre, half)` pairs, converted with `aabb()` |
 | From a `.model3d` file | `m.bounds()` gives `(min, max)` corners - or `None` for an empty model; `m.centre()` gives the middle |
 | From generated geometry | `MeshData.bounds()` returns the same `(min, max)` pair |

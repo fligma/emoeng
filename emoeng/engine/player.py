@@ -18,10 +18,10 @@ class Player3D(Object3D):
 
     move_speed = (6.0, 12.0)           # (walk, run) m/s
     eye_height = 2.0                   # above ground in walk mode
-    movement = "walk"                  # "walk" | "fly"
+    movement = "walk"
     world_radius = 128.0               # hard clamp from origin; 0 = off
     sensitivity = 0.0022               # radians per pixel of mouse_rel
-    pitch_limit = 1.45                 # radians (~83 degrees)
+    pitch_limit = 1.45
     aim_damping = 0.0                  # >0 eases the look (head smoothing)
     fov = None                         # None keeps the scene's field of view
     lock_input = False
@@ -225,7 +225,7 @@ class Player2D(Object2D):
     clone_attrs = ()
 
     move_speed = 320.0                 # world pixels per second
-    run_multiplier = 1.8               # with the `run` action held
+    run_multiplier = 1.8
     bounds = None                      # (w, h) box from the origin, or 0
     wheel_zoom = True
     follows_view = True

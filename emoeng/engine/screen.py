@@ -19,14 +19,26 @@ SHAPES = ("rect", "round", "circle", "soft")
 AUDIO_MODES = ("global", "emitter")
 
 
-class _SubSurface:
-    """What the nested scene sees as `game.screen`."""
+class _SubSurface(pygame.Surface):
+    """What a nested scene paints its HUD on.
+    `pygame.draw` refuses anything else."""
 
     def __init__(self, size):
-        self.size = tuple(size)
+        super().__init__((max(1, int(size[0])), max(1, int(size[1]))),
+                         pygame.SRCALPHA)
+        self.fill((0, 0, 0, 0))
 
-    def get_size(self):
-        return self.size
+    def fit(self, size):
+        """Take a size, and clear the last frame."""
+        size = (max(1, int(size[0])), max(1, int(size[1])))
+        if size != self.get_size():
+            pygame.Surface.__init__(self, size, pygame.SRCALPHA)
+        self.fill((0, 0, 0, 0))
+        return self
+
+    def set_target(self, surface):
+        """An overlay aimed at a frame: match it, then clear."""
+        return self.fit(surface.get_size())
 
 
 class _SubAudio:
@@ -77,7 +89,7 @@ class _SubHost(CameraHost):
         return getattr(self.parent, name)
 
     def play_area(self):
-        return pygame.Rect(0, 0, *self.surface.size)
+        return pygame.Rect(0, 0, *self.surface.get_size())
 
     def set_player(self, pos, yaw=None, pitch=None):
         scene = self.owner.nested
@@ -137,7 +149,7 @@ class ScreenMixin:
     gain = 1.0
     reach = 20.0                 # metres before an emitter falls silent
     refresh = 30.0               # pictures per second; 0 means every frame
-    cull_dist = 60.0             # metres past which the picture rests
+    cull_dist = 60.0
     showing = None
 
     # `pixels` and `tint` stay out: rounding breaks frame buffers

@@ -10,11 +10,13 @@ A model's extension is its dimension, the same way an object document's is:
 cutout parts. The old `.model` spelling is still read, and
 `Project.upgrade_documents()` renames it to `.model3d` when the project opens.
 
-A **map** is the same document in a different folder: `maps/<name>.map3d`
-carries exactly the schema below - one file, its named objects, its sheets -
-and placing it through a scene's `maps` field or a `Map3D` node builds its
-collision out of its own triangles as well as its picture. See
-[Collision](collision.md) and [Scenes](scenes.md).
+A **map** reuses exactly the schema below, in `maps/`, and adds six keys: a
+`kind`, a `collision` mode, a `spawn` point and a `nodes` list of things the
+level places. `maps/<name>.map3d` is a walked level, `maps/<name>.map2d` its
+flat twin; a legacy map file that is only geometry still loads. The full
+format, the parts a level is carved into and swapping a level mid play are
+[Maps](maps.md); here the geometry half is what matters, since it is spelled
+the same way and carved the same way in the Model tab.
 
 ## The `.model3d` format
 
@@ -234,7 +236,8 @@ neighbour and welding the survivors' coincident vertices.
 `model.PRIMITIVES = ('box', 'wedge', 'cylinder', 'cone', 'plane', 'sphere')` -
 the same list the Model tab's toolbar offers. `new_model()` is what the editor's
 New Model and New Map dialogs call; the first writes
-`models/<stem>.model3d`, the second `maps/<stem>.map3d`.
+`models/<stem>.model3d`, the second `maps/<stem>.map2d` or `.map3d` depending
+on the kind picked - see [Maps](maps.md).
 
 Each factory unwraps its own shape in metres per repeat, so a cube side, a
 drum and a ramp all wear the same grain at the same size. That is why
@@ -303,7 +306,8 @@ still the simplest way to animate a sprite: `Object2D(grid=(cols, rows))` with
 | Node | Reads | Does |
 | --- | --- | --- |
 | `Model3D` | `models/<name>.model3d` | Draws it at the node's transform, movable, or stamped into the static batch with `knobs: {"stamp": true}` |
-| `Map3D` | `maps/<name>.map3d` | Draws it **and** files a `TriMesh` collider built from its own triangles - see [Collision](collision.md) |
+| `Map3D` | `maps/<name>.map3d` | Draws it **and** files a `TriMesh` built from its own triangles - what `collision` in the file does with that shape (`"mesh"` / `"boxes"` / `"none"`) and `solid` decide whether a body is stopped by it - see [Collision](collision.md) and [Maps](maps.md) |
+| `Map2D` | `maps/<name>.map2d` | Draws the same file flat, one quad per part, and files one `Collision2D` **per carved part** at the map's `solid` |
 | `Sprite2D` | `models/<name>.model2d` | One quad per part, with the rig's tracks playing |
 | `Object3D.place_model()` | the same files | The script-side stamp; `model_object()` is the movable one |
 

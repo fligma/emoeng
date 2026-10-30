@@ -1,22 +1,20 @@
-"""The flat companion room: walk it, and stand on a switch to pull it.
+"""The flat twin: walk it, and stand on a switch to pull it.
 
-Everything the hall wears, this room wears too, and from the same table of
-parts and looks. What differs is how it is asked for. A picture in 2D takes
-no mouse, so the switches are plates on the floor: walk up to one and a
-dialog opens over it saying what it activates, what the room answered last,
-and which key does the same thing. Press E, or click the plate.
-
-The lectern in the middle holds a screen that lists what every part is
-currently wearing, so the room can be read as well as dressed.
+The room is a map file - `maps/echo.map2d` - carved into the same parts the
+hall is, so this script spawns only what rides on it: the floor plates,
+their dialogs, the readout, the walker and one sparkler. What differs from
+the hall is how a switch is asked for. A picture in 2D takes no mouse, so
+the switches are plates on the floor: walk up to one and a dialog opens over
+it saying what it activates, what the room answered last, and which key does
+the same thing. Press E, or click the plate - and the room's one emitter
+bursts sparks over the plate that answered. M swaps the room for the court
+next door, and the plates stay where they were.
 """
 
 import emoeng as fe
-from emoeng.engine import meshes
-from scripts.scenes.dressing import Dresser, by_sheet, merge, pull
+from scripts.scenes.dressing import Dresser, pull
 
 WORLD = (1280.0, 720.0)
-WALL = 64.0                # pixels the room's four bands are thick
-TILE = 128.0               # pixels one sheet repeat covers
 PAD = (150.0, 52.0)        # a floor plate, and its button
 CARD = (392.0, 46.0)       # the dialog that names what a plate does
 CARD_GAP = 52.0            # how far a dialog floats above its plate
@@ -36,20 +34,9 @@ SWITCHES = (
      ("clear", "look_clear", "clear", "everything, back to plain", 845.0)),
 )
 ROW_Y = (500.0, 612.0)    # the two rows of plates
-SPAWN = (640.0, 556.0)    # the walker starts between them, on no plate
 
-
-def flat(pos, size, col, tile=TILE, rot=0.0):
-    """One flat piece, its sheet repeats baked into its own uv.
-
-    An unlit layer never gets a metre sheet handed to it, so a 2D part has
-    to carry the repeats it wants in its corners rather than as a uv fit.
-    """
-    w, h = float(size[0]), float(size[1])
-    if tile:
-        return meshes.quad2d(pos, size, col=col, rot=rot,
-                             uv=(0.0, 0.0, w / float(tile), h / float(tile)))
-    return meshes.rect2d(pos, size, col=col, rot=rot)
+# the flat maps this scene swaps between, in the order M walks them
+MAPS = ("echo", "court")
 
 
 class Pad(fe.Hitbox2D):
@@ -119,6 +106,7 @@ class Pad(fe.Hitbox2D):
     # -- what it does -----------------------------------------------------
     def press(self):
         """Ask the room for this switch, exactly as its key would."""
+        self.scene.spark_at(self.pos)
         return self.broadcast(self.trigger)
 
     def update(self, dt):
@@ -135,6 +123,7 @@ class Arcade(fe.Scene2D):
     """Walk the flat room; every switch is a plate underfoot."""
 
     name = "arcade"
+    map_name = "echo"            # the level this scene opens on
     world_size = WORLD
     scale_mode = "fit"
     post = ()                    # the room starts undressed
@@ -150,102 +139,49 @@ class Arcade(fe.Scene2D):
         self.state = {}          # trigger -> the one word it shows
         self.note = ""           # what the room last said over the bus
         self.pads = []
-        self._room()
-        self._lectern()
+        self._readout()
+        self._sparkler()
         self._pads()
-        self._lights()
+        start, yaw = self.spawn_point()
         self.player = self.spawn(
-            fe.Player2D, pos=SPAWN, size=(44.0, 44.0),
+            fe.Player2D, pos=start[:2], size=(44.0, 44.0),
             texture="glow", col=(1.0, 0.92, 0.72), move_speed=300.0,
             body_radius=18.0, follows_view=False, wheel_zoom=False,
             tag="walker")
+        # the map is already loaded: read its parts, dress them as it was
+        self.dress.set_level(self.map)
 
-    # -- the room, as parts -----------------------------------------------
-    def _room(self):
-        # the floor first: alpha has no depth, so what is laid is what shows
-        self.dress.add("floor", flat((640.0, 360.0), (1152.0, 592.0),
-                                     (0.30, 0.25, 0.38)),
-                       texture="stone", blend="alpha")
-        self.dress.add("floor", flat((640.0, 420.0), (300.0, 440.0),
-                                     (0.34, 0.24, 0.42)),
-                       texture="cloth", blend="alpha")
+    def _sparkler(self):
+        """One emitter for the whole room, moved to whichever plate answered.
 
-        shell = [flat((640.0, WALL / 2.0), WORLD[:1] + (WALL,),
-                      (0.56, 0.58, 0.68)),
-                 flat((640.0, WORLD[1] - WALL / 2.0), WORLD[:1] + (WALL,),
-                      (0.56, 0.58, 0.68)),
-                 flat((WALL / 2.0, 360.0), (WALL, WORLD[1]),
-                      (0.60, 0.62, 0.70)),
-                 flat((WORLD[0] - WALL / 2.0, 360.0), (WALL, WORLD[1]),
-                      (0.60, 0.62, 0.70))]
-        self.dress.add("walls", merge(*shell), texture="stone",
-                       blend="alpha")
+        A `Particle2D` draws in the scene's world pixels, so `size` here is
+        pixels and `gravity` pulls down the screen: the same node, told in
+        the flat world's own units.
+        """
+        self.sparks = self.spawn(
+            fe.Particle2D, pos=(640.0, ROW_Y[0]), tag="sparks",
+            texture="spark", amount=48, rate=0.0, lifetime=0.7,
+            speed=180.0, spread=1.05, dir=(0.0, -1.0, 0.0),
+            gravity=(0.0, 240.0, 0.0), drag=1.2, size=5.0, end_size=1.0,
+            color=(1.0, 0.82, 0.45), end_color=(0.4, 0.1, 0.05),
+            emitting=False)
+        return self.sparks
 
-        # the back of the room: a cornice, and three block-built arches
-        stones = []
-        for cx in (340.0, 640.0, 940.0):
-            for side in (-1, 1):
-                stones.append(flat((cx + side * 96.0, 150.0), (26.0, 140.0),
-                                   (0.66, 0.67, 0.71)))
-            stones.append(flat((cx, 92.0), (218.0, 24.0),
-                               (0.72, 0.70, 0.65)))
-        arches = [(flat((640.0, 222.0), (1152.0, 22.0), (0.57, 0.35, 0.23)),
-                   "bark")]
-        arches += [(piece, "stone") for piece in stones]
-        self.dress.add_part("arches", by_sheet(arches), blend="alpha")
+    def spark_at(self, spot):
+        """Burst the sparkler over a plate; returns how many sparks flew."""
+        self.sparks.pos = [float(spot[0]), float(spot[1])]
+        self.sparks.burst_particles(36)
+        return self.sparks.count()
 
-        # the energy in the arches is its own part, so it can be re-dressed
-        portals = [(flat((cx, 158.0), (164.0, 108.0), (0.86, 0.96, 1.0),
-                         tile=0.0), "glow")
-                   for cx in (340.0, 640.0, 940.0)]
-        self.dress.add_part("portals", by_sheet(portals), blend="alpha")
-
-        props = [(flat((x, y), (92.0, 92.0), (0.45, 0.48, 0.53)), "stone")
-                 for x, y in ((250.0, 300.0), (1030.0, 300.0),
-                              (250.0, 610.0), (1030.0, 610.0))]
-        props += [(flat((x, y - 6.0), (44.0, 44.0), (1.0, 0.86, 0.62),
-                        tile=0.0), "glow")
-                  for x, y in ((250.0, 300.0), (1030.0, 300.0))]
-        self.dress.add_part("props", by_sheet(props), blend="alpha")
-
-        self._colliders()
-
-    def _colliders(self):
-        """The flat room stops you where its picture says it would."""
-        for pos, size in (((640.0, WALL / 2.0), (WORLD[0], WALL)),
-                          ((640.0, WORLD[1] - WALL / 2.0),
-                            (WORLD[0], WALL)),
-                          ((WALL / 2.0, 360.0), (WALL, WORLD[1])),
-                          ((WORLD[0] - WALL / 2.0, 360.0), (WALL, WORLD[1]))):
-            self.spawn(fe.Collision2D, pos=pos, size=size, tag="wall")
-        # the arches are windows, not doors: the walk stops at the cornice
-        self.spawn(fe.Collision2D, pos=(640.0, 135.0), size=(1152.0, 142.0),
-                   tag="back")
-        for pos in ((250.0, 300.0), (1030.0, 300.0),
-                    (250.0, 610.0), (1030.0, 610.0)):
-            self.spawn(fe.Collision2D, pos=pos, size=(92.0, 92.0),
-                       tag="plinth")
-
-    # -- the lectern, and the screen standing on it ----------------------
-    def _lectern(self):
-        """A stand in the room's middle, holding the readout."""
-        body = [flat((640.0, 438.0), (240.0, 30.0), (0.45, 0.42, 0.52)),
-                flat((640.0, 410.0), (110.0, 28.0), (0.50, 0.47, 0.58))]
-        self.dress.add("lectern", merge(*body), texture="stone",
-                       blend="alpha")
-        # the bezel behind the glass, and the glass itself, one part
-        self.dress.add("lectern",
-                       flat((640.0, 292.0), (352.0, 212.0),
-                            (0.28, 0.30, 0.37)),
-                       texture=None, blend="alpha")
-        self.readout = self.spawn(
+    def _readout(self):
+        """The screen standing on the map's lectern."""
+        panel = self.spawn(
             fe.Screen2D, pos=(640.0, 292.0), size=(320.0, 180.0),
             name="readout", pixels=(480, 270), brightness=1.05,
             tag="lectern_screen")
-        self.dress.set_panel(self.readout)
-        # one stop for the whole stand, so no plate sits behind it
-        self.spawn(fe.Collision2D, pos=(640.0, 312.0), size=(352.0, 252.0),
-                   tag="lectern")
+        self.dress.set_panel(panel)
+        self.readout = panel
+        return panel
 
     # -- the switches ----------------------------------------------------
     def _pads(self):
@@ -257,22 +193,41 @@ class Arcade(fe.Scene2D):
                                trigger=trigger, part=part, says=says,
                                card_at=card, tag=f"pad_{trigger}"))
 
-    def _lights(self):
-        for cx in (340.0, 640.0, 940.0):
-            self.add_light(pos=(cx, 170.0), color="#66dfff", energy=1.25,
-                           radius=230.0, shape="radial", pulse=0.14,
-                           pulse_rate=0.4)
-        self.add_light(pos=(640.0, 330.0), color="#ed7cff", energy=1.1,
-                       radius=320.0, shape="radial", pulse=0.1,
-                       pulse_rate=0.28)
-        for x, color in ((250.0, "#ffaf76"), (1030.0, "#69dbff")):
-            self.add_light(pos=(x, 300.0), color=color, energy=0.85,
-                           radius=260.0, shape="radial", flicker=0.05,
-                           flicker_rate=1.9)
+    # -- the map behind the room ------------------------------------------
+    def map_index(self):
+        """Which of this scene's maps is loaded, as an index."""
+        name = getattr(self.map, "name", None) or self.map_name
+        return MAPS.index(name) if name in MAPS else 0
 
-    # -- the bus ---------------------------------------------------------
+    def next_map(self):
+        """Swap to the next map, and stand where it says to start."""
+        name = MAPS[(self.map_index() + 1) % len(MAPS)]
+        self.change_map(name)
+        self.note = f"the room is now {name}"
+        return name
+
+    def on_map_loaded(self, level):
+        """A map arrived: dress its parts, then stand at its own start."""
+        dress = getattr(self, "dress", None)
+        if dress is None:
+            return               # the first load runs before setup()
+        dress.set_level(level)
+        start, yaw = self.spawn_point()
+        if self.player is not None and start is not None:
+            self.player.teleport(start[:2], yaw)
+
+    def on_map_unloaded(self, level):
+        """The map is gone, so nothing may go on dressing it."""
+        dress = getattr(self, "dress", None)
+        if dress is not None and dress.level is level:
+            dress.set_level(None)
+
+    # -- the bus -----------------------------------------------------------
     def on_trigger(self, name, value=None):
-        """One plate, or its key: re-dress one part of the room."""
+        """One plate, or its key: re-dress a part, or swap the room."""
+        if str(name) == "swap_map":
+            self.next_map()
+            return self.note
         got = pull(self.dress, name)
         if got is None:
             return super().on_trigger(name, value)
@@ -287,17 +242,18 @@ class Arcade(fe.Scene2D):
 
     def overlay(self, screen):
         area = self.hud.area
-        self.hud.panel((area.x + 14, area.y + 12, 380, 66),
+        self.hud.panel((area.x + 14, area.y + 12, 430, 66),
                        color=(13, 17, 29), alpha=195)
         self.hud.text("DEMO  /  THE ECHO ROOM",
                       (area.x + 26, area.y + 20),
                       color=(0.84, 0.7, 1.0))
-        self.hud.text("WASD to walk  -  E for a switch  -  Tab for the hall",
+        self.hud.text("WASD to walk  -  E for a switch  -  M swaps  -  Tab",
                       (area.x + 26, area.y + 45))
         if self.note:
             self.hud.text(self.note, (area.x + 14, area.y + area.h - 34),
                           color=(0.85, 0.9, 1.0))
 
     def status(self):
-        return [self.name, "Echo Room", f"{len(self.lights)} lights",
-                f"{len(self.pads)} switches"]
+        name = getattr(self.map, "name", self.map_name)
+        return [self.name, f"Echo Room / {name}", f"{len(self.lights)} lights",
+                f"{len(self.pads)} switches", f"{self.sparks.count()} sparks"]

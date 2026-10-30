@@ -430,12 +430,7 @@ class BuildConfig:
         return plan.lines() + report
 
     def _collapse_audio(self, plan):
-        """Render staged sound projects to wav and drop the documents.
-
-        Only the staged mirror is touched: `audio/<name>.sfxproject` is the
-        editable source and stays in the project folder, so the bundle gets
-        the finished sound and the editor keeps the pattern.
-        """
+        """Render staged sound projects to wav and drop the documents."""
         staged = getattr(plan, "staged", None)
         if staged is None:
             return []

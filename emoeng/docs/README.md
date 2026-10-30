@@ -21,6 +21,7 @@ Version documented here: `const.VERSION` (see [Constants](#constants)).
 | [Shaders](shaders.md) | `Shader` modes (`screen`/`uv`/`texture`), the `g` builder, `.shader` documents, stock templates |
 | [Lighting](lighting.md) | `Light`, `Light3D`, `Light2D`, shapes, occlusion, presets, animation, colour as a texture |
 | [Models and Meshes](models-and-meshes.md) | `.model3d` / `.model2d` formats, `Model` API, `meshes` builders, `proctex` |
+| [Maps](maps.md) | `.map3d` / `.map2d` level documents: parts, placed nodes, spawn point, `load_map` / `change_map`, swapping mid play |
 | [Animation and Timing](animation-and-timing.md) | `anim` easing, `Smoothed`, `Shake`, `Tween`, `FrameAnim`, `Timer`/`Timers` |
 | [Collision](collision.md) | AABB helpers, swept movement, sphere depenetration, ground clamping |
 | [UI and HUD](ui-and-hud.md) | `engine.ui` HUD drawing, the `self.hud` facade, `UIObject` widgets, `xp` widget primitives, `theme` |
@@ -50,10 +51,13 @@ engine` gives you the modules themselves.
 | `fe.input` | `Input`: named actions bound to keys, mouse, wheel and gamepad |
 | `fe.lights` | `Light`, `Light3D`, `Light2D`, shapes, falloff, presets, 2D occlusion maths |
 | `fe.loader` | `Project`: manifest, sidecars, asset loading, hot reload, scaffolding |
+| `fe.level` | `MapLevel` - one map document, built into a live scene |
+| `fe.mapdoc` | `.map3d` / `.map2d` documents: geometry, placed nodes, spawn point, collision mode |
 | `fe.meshes` | Geometry builders returning `MeshData`; 2D quads and billboards |
 | `fe.model` | `Model`, `Model2D`, primitive factories, `.model3d` / `.model2d` IO |
 | `fe.objects` | `GameObject`, `Object3D`, `Object2D`, `UIObject`, `ModelObject` |
 | `fe.paths` | File locations in source and in a frozen build |
+| `fe.placement` | `Placer`: the one router a scene's and a map's entries share |
 | `fe.player` | `Player3D`, `Player2D` (`Player` is an alias of `Player3D`) |
 | `fe.proctex` | Runtime texture synthesis from numpy noise |
 | `fe.prune` | Bundle planning: what one project needs, what to leave out |
@@ -64,7 +68,7 @@ engine` gives you the modules themselves.
 | `fe.screen` | `Screen3D`, `Screen2D` - one scene shown inside another |
 | `fe.shaders` | `Shader`, the `g` `Builder`, GLSL compile, `ShaderPass`, the project's shader registry |
 | `fe.sfx` | `.sfxproject` patterns: `render`, `write_wav`, `flatten`, sidechained tone tracks and wav samples |
-| `fe.templates` | Starter projects, stock shaders and colour-only assets a new project is built from |
+| `fe.templates` | Starter projects, stock shaders, starter maps and the colour-only assets a new project is built from |
 | `fe.theme` | Dark/light palettes for editor and runtime chrome |
 | `fe.timers` | `Timer`, `Timers`: delayed and repeating calls |
 | `fe.ui` | HUD drawing: text, panels, bars, crosshair, prompts, menus, subtitles |
@@ -82,6 +86,8 @@ them.
 | `Scene`, `Scene3D`, `Scene2D`, `SceneUI` | `engine.scene` | Playable screens |
 | `GameObject`, `Object3D`, `Object2D`, `Entity3D`, `Entity2D`, `UIObject`, `ModelObject` | `engine.objects` | Things a scene spawns |
 | `Model3D`, `Sprite2D`, `Collision3D`, `Hitbox3D`, `Collision2D`, `Hitbox2D`, `LightNode3D`, `LightNode2D` | `engine.components` | Nodes a document places with no script |
+| `Map3D`, `Map2D` | `engine.components` | A whole `.map3d` / `.map2d` level, drawn and collided |
+| `MapLevel` | `engine.level` | One live map inside a scene |
 | `Player`, `Player3D`, `Player2D` | `engine.player` | Controllable objects |
 | `Screen3D`, `Screen2D` | `engine.screen` | A scene shown inside another scene |
 | `Light`, `Light2D`, `Light3D` | `engine.lights` | Lights in either world |
@@ -130,20 +136,29 @@ import emoeng as fe
 
 class Main(fe.Scene3D):                 # scripts/scenes/main.py
     name = "main"
+    map_name = "keep"                   # maps/keep.map3d is the level
     uses = ("crate",)                   # objects/crate.obj3d, or its script
 
     def setup(self):                    # once, before the first frame
-        self.renderer.texture("ground", fe.proctex.ground(256))
-        self.add(fe.meshes.plane(size=(60, 60)), texture="ground")
-        self.player = self.spawn(fe.Player3D, pos=(0.0, 0.0, 9.0))
+        start, yaw = self.spawn_point()  # where the map says to stand
+        self.player = self.spawn(fe.Player3D, pos=start, yaw=yaw)
         self.spawn("crate", (2.0, 0.0, 4.0))
 
     def update(self, dt):               # every frame
         super().update(dt)
 
+    def on_map_loaded(self, level):     # a map arrived: dress it, move
+        self.map.set_part_texture("floor", "stone")
+        if self.player is not None:
+            self.player.teleport(*self.spawn_point())
+
 game = fe.Game("emoeng/projects/mygame")
 game.run()
 ```
+
+The level is a file, not a pile of `self.add(...)` calls: `maps/keep.map3d`
+carries its carved parts, the nodes it places and its spawn point, and
+`self.change_map("other")` swaps it mid play. See [Maps](maps.md).
 
 The usual way to run that is the editor or `python -m emoeng run <path>`, not a
 hand-written `Game(...)` call - see [Game Loop](game-loop.md).

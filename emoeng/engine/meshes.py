@@ -20,7 +20,7 @@ def rgba(col):
 
 
 def _reuv(data, uv):
-    """A twin of `data` sharing its geometry but carrying new uv."""
+    """A twin sharing `data`'s geometry with new uv."""
     out = MeshData()
     out.pos, out.nrm, out.col, out.idx, out.tex = (data.pos, data.nrm,
                                                    data.col, data.idx,
@@ -32,7 +32,7 @@ def _reuv(data, uv):
 
 
 def _wraps(nrm):
-    """True when the sides turn all the way round, so a box map smears."""
+    """True when the sides close round: a box map smears."""
     nrm = np.asarray(nrm, np.float64)
     sides = nrm[np.abs(nrm[:, 1]) < 0.7] if len(nrm) else nrm
     if len(sides) < 12:
@@ -42,7 +42,7 @@ def _wraps(nrm):
 
 
 def mesh_anchor(data):
-    """The point a metre sheet should be pinned to for this mesh."""
+    """Where this mesh's metre sheet should be pinned."""
     if not data.pos:
         return None
     pos = np.asarray(data.pos, np.float64)
@@ -50,7 +50,7 @@ def mesh_anchor(data):
 
 
 def _turn(vec, angle):
-    """Points or normals spun about Y, the way a body spins its surface."""
+    """Points or normals spun about Y, as a body turns."""
     vec = np.asarray(vec, np.float64)
     if not len(vec) or abs(angle) < 1e-9:
         return vec
@@ -63,14 +63,14 @@ def _turn(vec, angle):
 
 
 def _unpin(anchor):
-    """An anchor as ((x, y, z), yaw): a sheet's zero and its turn."""
+    """An anchor: ((x, y, z), yaw), the sheet's origin."""
     row = list(anchor or ())
     yaw = float(row[3]) if len(row) > 3 else 0.0
     return (row[0], row[1], row[2]), yaw
 
 
 def frame_pin(pos, yaw=0.0):
-    """A body's sheet pin: where it stands and which way it faces."""
+    """A body's sheet pin: where it stands, and its facing."""
     point = [float(c) for c in pos][:3]
     while len(point) < 3:
         point.append(0.0)
@@ -78,7 +78,7 @@ def frame_pin(pos, yaw=0.0):
 
 
 def slide_pin(pin, off):
-    """A sheet pin moved with its body; its turn is kept."""
+    """A sheet pin moved with its body, turn kept."""
     point, yaw = _unpin(pin)
     step = list(off) + [0.0] * (3 - len(off))
     return tuple(point[k] + float(step[k]) for k in range(3)) + (yaw,)
@@ -86,15 +86,7 @@ def slide_pin(pin, off):
 
 def tile_world(data, metres, anchor=None):
     """Re-unwrap a mesh so its sheet repeats every `metres`.
-
-    `anchor` is the metre zero of the sheet, optionally its turn: `(x, y,
-    z, yaw)`. Left unset it is the mesh's own middle, which is right for
-    one still mesh and wrong for a moving one - a fresh middle per pose
-    slides the picture under the geometry. A caller that reshapes or
-    drags a mesh keeps the pin it first had, and a body that turns
-    measures its sheet in its own axes, so the picture rides the surface
-    instead of swimming across it.
-    """
+    `anchor` pins the metre zero, else the mesh's middle."""
     metres = float(metres or 0.0)
     if metres <= 0.0 or not data.pos:
         return data
@@ -105,8 +97,8 @@ def tile_world(data, metres, anchor=None):
     point, yaw = _unpin(anchor)
     pos = pos - np.asarray(point, np.float64)
     if yaw:
-        # undo the body's turn about its own pin: the unwrap is written in
-        # the body's axes, so a turning body carries its picture round
+        # undo the body's turn about its pin: the unwrap is
+        # written in the body's axes
         pos = _turn(pos, -yaw)
         nrm = _turn(nrm, -yaw)
     round_side = _wraps(nrm)     # read on the signed normals: which way
@@ -117,7 +109,7 @@ def tile_world(data, metres, anchor=None):
     u = np.where(flat, pos[:, 0], np.where(wide, pos[:, 2], pos[:, 0]))
     v = np.where(flat, pos[:, 2], pos[:, 1])
     if round_side:
-        # a round side keeps its own seam: run u along the arc it covers
+        # a round side keeps its seam; u runs round it
         side = np.abs(nrm[:, 1]) < 0.7
         arc = np.asarray(data.uv, np.float64)[:, 0] * 2.0 * math.pi * \
             np.hypot(pos[:, 0], pos[:, 2])
@@ -127,7 +119,7 @@ def tile_world(data, metres, anchor=None):
 
 def uv_fit(data, tile=0.0, scale=(1.0, 1.0), offset=(0.0, 0.0),
            spin=0.0, anchor=None):
-    """Tile a mesh by the metre, then scale, turn and slide its uv."""
+    """Tile by the metre, then scale, turn and slide uv."""
     metres = float(tile or 0.0)
     if metres > 0.0:
         data = tile_world(data, metres, anchor)
@@ -140,7 +132,7 @@ def uv_fit(data, tile=0.0, scale=(1.0, 1.0), offset=(0.0, 0.0),
         return data
     uv = np.asarray(data.uv, np.float64)
     if turn:
-        # tiled sheets turn about the origin, so repeats stay lined up
+        # tiled sheets turn about the origin, keeping repeats lined
         mid = (np.zeros(2) if metres > 0.0
                else (uv.min(axis=0) + uv.max(axis=0)) * 0.5)
         c, s = math.cos(turn), math.sin(turn)
@@ -156,14 +148,11 @@ class MeshData:
         self.pos = []      # (x, y, z)
         self.nrm = []
         self.uv = []
-        self.uv2 = []      # a second uv per corner, for the lightmap and a
-                           # painted atlas; empty means "reuse `uv`"
-        self.col = []      # rgba 0..1, modulates the texture; a string is
-                           # parsed as a colour spelling ("#rrggbb", "gold")
+        self.uv2 = []      # a second uv per corner; empty reuses `uv`
+        self.col = []      # rgba 0..1, or a colour spelling like "gold"
         self.idx = []
-        self.tex = []      # one texture key per triangle, None = default
-        self.lms = []      # one lightmap key per triangle, parallel to
-                           # None inherits `lightmap`; an empty list inherits everywhere
+        self.tex = []      # one texture key per triangle
+        self.lms = []
         self.lightmap = None    # a baked-light texture key, or None
 
     @property
@@ -322,15 +311,16 @@ def box(centre=(0, 0, 0), size=(1, 1, 1), yaw=0.0, col=(1, 1, 1),
     v = [_xf(p, lean, yaw, centre, (1, 1, 1)) for p in v]
     m = MeshData()
     uvs = ((0, 0), (uv[0], 0), (uv[0], uv[1]), (0, uv[1]))
-    faces = [((4, 5, 6, 7), (0, 0, 1)),    # +z
-             ((1, 0, 3, 2), (0, 0, -1)),   # -z
-             ((5, 1, 2, 6), (1, 0, 0)),    # +x
-             ((0, 4, 7, 3), (-1, 0, 0)),   # -x
-             ((7, 6, 2, 3), (0, 1, 0)),    # +y
-             ((0, 1, 5, 4), (0, -1, 0))]   # -y
+    # faces in order: +z, -z, +x, -x, +y, -y
+    faces = [((4, 5, 6, 7), (0, 0, 1)),
+             ((1, 0, 3, 2), (0, 0, -1)),
+             ((5, 1, 2, 6), (1, 0, 0)),
+             ((0, 4, 7, 3), (-1, 0, 0)),
+             ((7, 6, 2, 3), (0, 1, 0)),
+             ((0, 1, 5, 4), (0, -1, 0))]
     for (a, b, c, d), n in faces:
-        # the face normal is written in the body's axes, so it turns too -
-        # a lit box that did not turn its normals would shade as it lay
+        # normals are written in the body's axes, so they turn;
+        # unturned ones would shade as the box lay
         m.quad(v[a], v[b], v[c], v[d], _rot_y(_rot_lean(n, lean), yaw),
                col, uvs)
     return m
@@ -364,8 +354,8 @@ def cylinder(centre=(0, 0, 0), r=0.5, h=1.0, seg=10, col=(1, 1, 1),
         a0, a1 = ring_lo[-1], ring_lo[0]
         b0, b1 = ring_hi[-1], ring_hi[0]
         nrm = _rot_y(_rot_lean((math.cos(0), 0, math.sin(0)), lean), yaw)
-        # the closing quad runs on to u = uv[0], never back to 0: a repeat
-        # sheet would otherwise squeeze a whole tile into one segment
+        # the closing quad runs to uv[0], not back to 0:
+        # a repeat sheet would squeeze a tile into one segment
         u_lo = uv[0] * (seg - 1) / seg
         m.quad(a0, b0, b1, a1, col=col, n=nrm,
                uvs=((u_lo, 0), (u_lo, uv[1]), (uv[0], uv[1]), (uv[0], 0)))
@@ -517,10 +507,10 @@ def quad2d(pos, size, col=(1, 1, 1), uv=(0.0, 0.0, 1.0, 1.0), rot=0.0,
     u0, v0, u1, v1 = uv
     tu0, tu1 = u0, u1
     tv0, tv1 = 1.0 - v0, 1.0 - v1          # image top -> texture v = 1
-    pts = [(lx[0], ly[0], (tu0, tv0)),     # top-left
-           (lx[1], ly[0], (tu1, tv0)),     # top-right
-           (lx[1], ly[1], (tu1, tv1)),     # bottom-right
-           (lx[0], ly[1], (tu0, tv1))]     # bottom-left
+    pts = [(lx[0], ly[0], (tu0, tv0)),
+           (lx[1], ly[0], (tu1, tv0)),
+           (lx[1], ly[1], (tu1, tv1)),
+           (lx[0], ly[1], (tu0, tv1))]
     if rot:
         c, s = math.cos(rot), math.sin(rot)
         pts = [(x * c - y * s, x * s + y * c, t) for x, y, t in pts]

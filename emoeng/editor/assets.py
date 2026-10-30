@@ -40,9 +40,23 @@ FOLDER_ICONS = {
 # cards key on the dimensioned spellings; `.model` is solid
 MODEL3D_EXTS = (scenedoc.MODEL3D_EXT, scenedoc.MODEL_EXT)
 MAP3D_EXTS = (scenedoc.MAP3D_EXT,)
+MAP2D_EXTS = (scenedoc.MAP2D_EXT,)
+MAP_EXTS = MAP3D_EXTS + MAP2D_EXTS
 IMAGE_EXT = (".png", ".jpg", ".jpeg")
 # optional manifest files: a keymap and import settings
 SIDECAR_EXT = (".json",)
+# the folder rail's New button, worded for what the folder holds
+NEW_LABELS = {
+    "all": "New...",
+    "scenes": "New Scene...",
+    "objects": "New Object...",
+    "entities": "New Entity...",
+    "scripts": "New Script...",
+    "models": "New Model...",
+    "maps": "New Map...",
+    "textures": "New Image...",
+    "audio": "New Sound...",
+}
 CARD_W = 116
 CARD_H = 100
 THUMB_H = 58
@@ -75,6 +89,7 @@ class AssetBrowser:
         self.grid = pygame.Rect(0, 0, 0, 0)
         self.folder_rows = []
         self.cards = []
+        self.new_row = pygame.Rect(0, 0, 0, 0)
         self.import_row = pygame.Rect(0, 0, 0, 0)
         self._thumbs = {}
         self._last_click = (None, 0.0)
@@ -172,11 +187,30 @@ class AssetBrowser:
             surface.blit(img, (row.right - 8 - img.get_width(),
                                row.centery - img.get_height() // 2))
             y = row.bottom + 1
+        y = self._draw_new_row(surface, y + 4, mouse)
         self._draw_import_row(surface, y + 4, mouse)
         hint = widgets.cached_text(self.fonts["small"],
                                    "double-click to open", xp.TEXT_MUTED)
         surface.blit(hint, (self.side.x + 6,
                             self.side.bottom - hint.get_height() - 4))
+
+    def _draw_new_row(self, surface, y, mouse):
+        """The rail's *New*: makes the kind this folder holds."""
+        rect = pygame.Rect(self.side.x, y, self.side.width - 2, 22)
+        self.new_row = rect
+        if self.project is None:
+            return y                # no project, no button to press
+        if rect.collidepoint(mouse):
+            surface.fill(xp.BTN_HOVER_BG, rect)
+        pygame.draw.rect(surface, xp.OUTLINE, rect, 1)
+        tx = rect.x + 8
+        if widgets.draw_icon(surface, "new-file-sym",
+                             pygame.Rect(tx, rect.centery - 7, 14, 14)):
+            tx += 18
+        label = NEW_LABELS.get(self.folder, "New...")
+        img = widgets.cached_text(self.fonts["small"], label, xp.TEXT)
+        surface.blit(img, (tx, rect.centery - img.get_height() // 2))
+        return rect.bottom
 
     def _draw_import_row(self, surface, y, mouse):
         """The folder rail's *Import...* button; copies files into the project."""
@@ -201,7 +235,8 @@ class AssetBrowser:
         inner = self.grid.inflate(-3, -3)
         self.cards = []
         if not files:
-            msg = "open a project" if self.project is None else "empty folder"
+            msg = "open a project" if self.project is None else \
+                "empty - New or Import makes one"
             img = widgets.cached_text(self.fonts["normal"], msg,
                                       xp.TEXT_MUTED)
             surface.blit(img, (inner.x + 12, inner.y + 10))
@@ -279,7 +314,7 @@ class AssetBrowser:
             thumb = waveform_image(path, size)
         elif suffix in MODEL3D_EXTS:
             thumb = self._model_thumb(path, size)
-        elif suffix in MAP3D_EXTS:
+        elif suffix in MAP_EXTS:
             thumb = self._map_thumb(path, size)
         elif suffix == scenedoc.MODEL2D_EXT:
             thumb = self._model2d_thumb(path, size)
@@ -336,17 +371,20 @@ class AssetBrowser:
         return surf
 
     def _map_thumb(self, path, size):
-        """A map card: the solid cube in cooler stone."""
+        """A map card: the solid cube, or a flat map's one plane."""
         surf = pygame.Surface(size)
         surf.fill(xp.THUMB_BG)
-        tris = objs = 0
+        tris = objs = nodes = 0
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             tris = len(data.get("tris", ()))
             objs = len(data.get("objects", ()))
+            nodes = len(data.get("nodes", ()))
         except Exception:
             pass
         w, h = size
+        if path.suffix.lower() in MAP2D_EXTS:
+            return self._flat_map_thumb(surf, size, objs, nodes)
         cx, cy = w // 2, int(h * 0.44)
         s = max(6, min(w, h) * 0.24)
         top = [(cx, cy - s * 1.25), (cx + s, cy - s * 0.6), (cx, cy),
@@ -361,9 +399,28 @@ class AssetBrowser:
             pygame.draw.polygon(surf, color, poly)
             pygame.draw.lines(surf, (60, 76, 92), True, poly, 1)
         img = widgets.cached_text(self.fonts["small"],
-                                  f"{tris} tris  {objs} objs",
+                                  f"{tris} tris  {objs} parts",
                                   (70, 90, 108))
         surf.blit(img, (surf.get_width() // 2 - img.get_width() // 2,
+                        h - img.get_height() - 2))
+        return surf
+
+    def _flat_map_thumb(self, surf, size, parts, nodes):
+        """A flat map card: the same stone seen as one plane."""
+        w, h = size
+        box = pygame.Rect(int(w * 0.3), int(h * 0.16), int(w * 0.4),
+                          int(h * 0.56))
+        pygame.draw.rect(surf, (128, 150, 168), box)
+        pygame.draw.rect(surf, (60, 76, 92), box, 2)
+        for t in (1, 2):
+            x = box.x + box.width * t // 3
+            y = box.y + box.height * t // 3
+            pygame.draw.line(surf, (94, 112, 128), (x, box.y), (x, box.bottom))
+            pygame.draw.line(surf, (94, 112, 128), (box.x, y), (box.right, y))
+        img = widgets.cached_text(self.fonts["small"],
+                                  f"{parts} parts  {nodes} nodes",
+                                  (70, 90, 108))
+        surf.blit(img, (w // 2 - img.get_width() // 2,
                         h - img.get_height() - 2))
         return surf
 
@@ -464,13 +521,18 @@ class AssetBrowser:
                          ("Texture", str(data.get("texture", "-")))]
             except Exception:
                 pass
-        elif suffix in MAP3D_EXTS:
+        elif suffix in MAP_EXTS:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                rows += [("Vertices", str(len(data.get("verts", ())))),
+                spawn = data.get("spawn")
+                rows += [("Kind", "2D" if suffix in MAP2D_EXTS else "3D"),
+                         ("Vertices", str(len(data.get("verts", ())))),
                          ("Faces", str(len(data.get("tris", ())))),
-                         ("Objects", str(len(data.get("objects", ()))))
-                         or "(one part)"]
+                         ("Parts", str(len(data.get("objects", ())))
+                          or "(one part)"),
+                         ("Nodes", str(len(data.get("nodes", ())))),
+                         ("Spawn", ", ".join(f"{v:g}" for v in spawn)
+                          if spawn else "-")]
             except Exception:
                 pass
         elif suffix == scenedoc.MODEL2D_EXT:
@@ -566,6 +628,9 @@ class AssetBrowser:
             return self._right_click(e.pos)
         if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
             pos = e.pos
+            if self.new_row.collidepoint(pos):
+                self.app.create_in_folder(self.app.create_row(self.folder))
+                return True
             if self.import_row.collidepoint(pos):
                 self.app.import_dialog()
                 return True

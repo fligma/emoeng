@@ -97,7 +97,7 @@ class ProjectManager:
 
     ROW_H = 58
     RAIL_H = 21
-    RAIL_W = 152
+    RAIL_W = 168
     CARD_GAP = 11
 
     def __init__(self, app):
@@ -255,9 +255,17 @@ class ProjectManager:
             return str(entry["path"]) in self.recent
         if active == "broken":
             return self.broken(entry)
+        if active.startswith("kind:"):
+            return self.kind_of(entry) == active[5:]
         if active.startswith("tpl:"):
             return entry["template"] == active[4:]
         return True
+
+    def kind_of(self, entry):
+        """The broad family a project belongs to: 3D, 2D, UI or Other."""
+        if entry["template"] in templates.PROJECTS:
+            return str(templates.spec(entry["template"])["group"])
+        return OTHER_LABEL
 
     def visible(self):
         """The rows on show: the rail's filter, then the typed words."""
@@ -277,12 +285,21 @@ class ProjectManager:
                     if str(e["path"]) in self.recent)),
                ("filter", "broken", "Broken",
                 sum(1 for e in entries if self.broken(e)))]
+        kinds = {}
         counts = {}
         for entry in entries:
+            family = self.kind_of(entry)
+            kinds[family] = kinds.get(family, 0) + 1
             key = entry["template"]
             counts[key] = counts.get(key, 0) + 1
+        if kinds:
+            out.append(("group", "", "By kind", len(entries)))
+            for family in ("3D", "2D", "UI", OTHER_LABEL):
+                if family in kinds:
+                    out.append(("filter", f"kind:{family}", family,
+                                kinds[family]))
         if counts:
-            out.append(("group", "", "Templates", len(entries)))
+            out.append(("group", "", "By template", len(entries)))
             for key in templates.template_names():
                 if key in counts:
                     out.append(("filter", f"tpl:{key}",
@@ -393,14 +410,26 @@ class ProjectManager:
         xp.sunken(surface, rect)
         mouse = pygame.mouse.get_pos()
         small = self.fonts["small"]
+        rows = self.filter_rows()
         y = rect.y + 6
         inner_w = rect.width - 8
-        for kind, key, label, count in self.filter_rows():
+        for index, (kind, key, label, count) in enumerate(rows):
             if kind == "group":
-                if y > rect.y + 6:
-                    y += 7
-                img = widgets.cached_text(small, label.upper(), xp.TEXT_MUTED)
+                if index:
+                    # a rule closes the section above, so the groups read
+                    # as separate blocks rather than one long list
+                    y += 6
+                    pygame.draw.line(surface, xp.DK_SHADOW,
+                                     (rect.x + 8, y),
+                                     (rect.right - 8, y))
+                    y += 6
+                img = widgets.cached_text(small, label.upper(),
+                                          xp.TEXT_MUTED)
                 surface.blit(img, (rect.x + 8, y))
+                # the caption's own count, faint, at the far edge
+                num = widgets.cached_text(small, str(count),
+                                          xp.DK_SHADOW)
+                surface.blit(num, (rect.right - 8 - num.get_width(), y))
                 y += img.get_height() + 3
                 continue
             row = pygame.Rect(rect.x + 4, y, inner_w, self.RAIL_H)
@@ -409,12 +438,14 @@ class ProjectManager:
             chosen = (self.filter or "all") == key
             if chosen:
                 surface.fill(xp.SELECTION, row)
+                pygame.draw.rect(surface, xp.LINK, (row.x, row.y, 2,
+                                                    row.height))
             elif row.collidepoint(mouse):
                 surface.fill(xp.BTN_HOVER_BG, row)
             img = widgets.cached_text(small, widgets.elide(
-                small, label, row.width - 30),
+                small, label, row.width - 42),
                 xp.SELECT_TEXT if chosen else xp.TEXT)
-            surface.blit(img, (row.x + 6, row.centery - img.get_height() // 2))
+            surface.blit(img, (row.x + 8, row.centery - img.get_height() // 2))
             num = widgets.cached_text(small, str(count),
                                       xp.SELECT_SUBTEXT if chosen
                                       else xp.TEXT_MUTED)

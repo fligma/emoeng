@@ -12,12 +12,12 @@ WHEEL_BUTTONS = {4: 1.0, 5: -1.0}         # pygame numbers -> wheel direction
 # how far a stick moves before an axis counts pressed
 DEADZONE = 0.35
 
-# SDL 2.0.14 tells a window the keyboard went away; pygame spells it two ways
+# SDL tells a window the keyboard went away, two ways
 WINDOWFOCUSLOST = getattr(pygame, "WINDOWFOCUSLOST", -1)
 
 
 def is_focus_lost(e):
-    """Did the window just lose the keyboard? No key-up is coming."""
+    """Did the window lose the keyboard? No key-up is coming."""
     if e.type == WINDOWFOCUSLOST:
         return True
     if e.type != pygame.ACTIVEEVENT or not getattr(e, "state", 0) & \
@@ -185,10 +185,10 @@ class Input:
         self.wheel = 0.0
         self.text = ""
         self.joystick = None            # the first pad found
-        self.joysticks = {}             # token index -> pygame Joystick
+        self.joysticks = {}
         self._joy_index = {}            # instance id -> token index
         self.grabbed = False
-        self.deadzone = DEADZONE      # a stick's travel before it counts
+        self.deadzone = DEADZONE
         self._notches = set()           # actions a wheel notch fired
         self._axes = {}                 # (pad, axis) -> current sign
         self.rescan()
@@ -498,7 +498,7 @@ class Input:
                 self._mouse_pos_known = False
 
     def poll_keys(self):
-        """Recover held action keys from SDL state as well as key events."""
+        """Recover held keys from SDL state as well as events."""
         try:
             pressed = pygame.key.get_pressed()
         except pygame.error:
@@ -525,13 +525,7 @@ class Input:
         self._axes.clear()
 
     def release_all(self):
-        """Let go of everything held, and report each one as released.
-
-        A window that loses the keyboard never sees the key-up for a key
-        it was held with, so the drop has to look like the release it was:
-        a silent `clear()` leaves a scene watching for one, and an editor
-        camera keeps flying.
-        """
+        """Let go of everything held, and report each as released."""
         self.released_actions |= self.down_actions
         self.buttons_released |= self.buttons
         self.clear()

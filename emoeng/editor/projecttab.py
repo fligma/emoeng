@@ -222,6 +222,7 @@ class ProjectTab:
         self.rail_rects = []
         self.minus_rects = []      # (name, rect) trigger removes
         self.keys_rects = []       # (band, name, rect) binding cells
+        self.pick_rects = []       # (band, name, rect) the cells' chevrons
         self.deadzone_rect = pygame.Rect(0, 0, 0, 0)   # the tuning row
         self.buttons = {}
         self.area = pygame.Rect(0, 0, 0, 0)
@@ -229,6 +230,9 @@ class ProjectTab:
         self.side_rect = pygame.Rect(0, 0, 0, 0)
         self.focus = None          # the row the help column describes
         self.capture = None        # (band, name) waiting for a control
+        self.pick = None           # the control list under a keys cell
+        self.pick_for = None       # (band, name) that list fills
+        self.pick_text = ""        # what has been typed to narrow it
         self.map = None            # the staged keybind table
         self.map_dirty = False
         self.dirty = False         # manifest values not yet written
@@ -264,6 +268,9 @@ class ProjectTab:
         self.map_dirty = False
         self.dirty = False
         self.capture = None
+        self.pick = None
+        self.pick_for = None
+        self.pick_text = ""
         self.focus = None
         self.scroll = 0
 
@@ -551,6 +558,8 @@ class ProjectTab:
     def handle_event(self, e):
         if self.capture is not None and e.type in settingstab.CAPTURE_EVENTS:
             return self._captured(e)
+        if self.pick is not None and self._pick_event(e):
+            return True
         if e.type == pygame.MOUSEWHEEL:
             if self.list_rect.collidepoint(pygame.mouse.get_pos()):
                 self.scroll = max(0, self.scroll - e.y * 2 * self.row_h)
@@ -563,6 +572,85 @@ class ProjectTab:
         if e.type == pygame.MOUSEBUTTONDOWN and e.button == 3:
             return self._right(e.pos)
         return False
+
+    def _pick_event(self, e):
+        """The open control list takes its own rows and arrows."""
+        pick = self.pick
+        if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+            if not pick.holds(e.pos):
+                self.pick = None
+                return False       # the click lands on what it aimed at
+            word = pick.click(e.pos)
+            return True if word is None else self._pick_token(word)
+        if e.type == pygame.MOUSEWHEEL:
+            pick.step(-1 if e.y > 0 else 1)
+            return True
+        if e.type != pygame.KEYDOWN:
+            return False
+        if e.key in (pygame.K_UP, pygame.K_DOWN):
+            pick.step(-1 if e.key == pygame.K_UP else 1)
+            return True
+        if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            word = pick.current()
+            return True if word is None else self._pick_token(word)
+        if e.key == pygame.K_ESCAPE:
+            self.pick = None
+            self.app.status = "control list closed"
+            return True
+        # any other letter narrows the list, so all of it is reachable
+        if e.key == pygame.K_BACKSPACE:
+            return self._narrow(self.pick_text[:-1])
+        if e.unicode and e.unicode.isprintable() and not e.unicode.isspace():
+            return self._narrow(self.pick_text + e.unicode)
+        return False
+
+    def _narrow(self, text):
+        """Keep the controls whose name holds what has been typed."""
+        self.pick_text = text
+        name = (self.pick_for or ("actions", ""))[1]
+        self.pick.filter(text)
+        self.app.status = (f"pick a control for {name}: {text}" if text
+                           else f"pick a control for {name}")
+        return True
+
+    def _open_tokens(self, band, name):
+        """The controls this cell may take, listed under it."""
+        anchor = next((rect for got_band, got_name, rect in self.keys_rects
+                       if (got_band, got_name) == (band, name)), None)
+        if anchor is None or not self.list_rect.width:
+            return False
+        self.pick_for = (band, name)
+        self.pick_text = ""
+        self.pick = widgets.Choices(settingstab.token_words(), anchor,
+                                    self.list_rect, add=True,
+                                    add_label="+ press a control...")
+        self.pick.filter("")
+        self.app.status = f"pick a control for {name}"
+        return True
+
+    def _pick_token(self, word):
+        """Take a control from the list, or arm a capture for a new one."""
+        band, name = self.pick_for or ("actions", "")
+        self.pick = None
+        self.pick_text = ""
+        if not name:
+            return False
+        if word == widgets.ADD_ROW:
+            self.capture = (band, name)
+            self.app.status = f"press a control for {name}"
+            return True
+        mapping = self.stage()
+        keys = list(mapping.keys_of(name))
+        if word in keys:
+            keys.remove(word)
+        else:
+            keys.append(word)
+        mapping.set_keys(name, keys, trigger=band == "triggers")
+        self.map_dirty = True
+        self.app.status = f"{name} -> {settingstab.binding_label(keys)}"
+        self.app.log(f"{name}: {settingstab.binding_label(keys)} "
+                     "- press Save to write it", "muted")
+        return True
 
     def _captured(self, e):
         """Store the pressed control against the waiting binding."""
@@ -615,7 +703,9 @@ class ProjectTab:
         return True
 
     def _press_bind(self, pos):
-        """A binding cell arms a capture; a minus sign drops a trigger."""
+        """A cell arms a capture, its chevron lists the controls."""
+        if self.pick is not None and self.pick.holds(pos):
+            return False        # the list's own press, handled above
         if self.deadzone_rect.collidepoint(pos):
             self.edit_deadzone()
             return True
@@ -623,6 +713,9 @@ class ProjectTab:
             if rect.collidepoint(pos):
                 self.drop_binding("triggers", name)
                 return True
+        for band, name, rect in self.pick_rects:
+            if rect.collidepoint(pos):
+                return self._open_tokens(band, name)
         for band, name, rect in self.keys_rects:
             if rect.collidepoint(pos):
                 self.capture = (band, name)
@@ -856,6 +949,7 @@ class ProjectTab:
         self.rows = []
         self.minus_rects = []
         self.keys_rects = []
+        self.pick_rects = []
         if project is None:
             self.list_rect = body
             self.side_rect = pygame.Rect(body.x, body.bottom, 0, 0)
@@ -1055,6 +1149,8 @@ class ProjectTab:
                                               11, panel.height - 4),
                          self.scroll / max(1, content),
                          inner.height / max(1, content))
+        if self.pick is not None:
+            self.pick.draw(surface, fonts["small"])
 
     def _band_head(self, surface, rect, band, count, fonts):
         pygame.draw.rect(surface, xp.FIELD_ALT, rect)
@@ -1088,7 +1184,8 @@ class ProjectTab:
                                     sign.centery - mark.get_height() // 2))
             self.minus_rects.append((name, sign))
         keys = pygame.Rect(cell.x + name_w + 4, cell.y + 3,
-                           max(40, keys_w), cell.height - 6)
+                           max(40, keys_w) - 16, cell.height - 6)
+        arrow = pygame.Rect(keys.right, keys.y, 16, keys.height)
         grabbing = self.capture == (info["band"], name)
         if grabbing or hovered:
             xp.field(surface, keys)
@@ -1107,6 +1204,7 @@ class ProjectTab:
                                   xp.LINK if grabbing else xp.TEXT),
                 (keys.x + 4, cy - img.get_height() // 2))
         self.keys_rects.append((info["band"], name, keys))
+        self._cell_arrow(surface, arrow, (info["band"], name), hovered)
         bits = [info["what"], info["source"]]
         if info["scene"]:
             bits.append(f"{info['scene']} rebinds it")
@@ -1123,6 +1221,18 @@ class ProjectTab:
             surface.blit(img, (keys.right + 8, cy - img.get_height() // 2))
         if hovered:
             pygame.draw.rect(surface, xp.SELECT_BORDER, cell, 1)
+
+    def _cell_arrow(self, surface, rect, cell, hovered):
+        """The chevron that lists every control the cell may take."""
+        hot = hovered or rect.collidepoint(pygame.mouse.get_pos()) \
+            or self.pick_for == cell
+        if hot:
+            pygame.draw.rect(surface, xp.BTN_HOVER_BG, rect)
+        cx, cy = rect.centerx, rect.centery
+        pygame.draw.polygon(surface, xp.TEXT if hot else xp.TEXT_MUTED,
+                            ((cx - 3, cy - 2), (cx + 4, cy - 2),
+                             (cx, cy + 2)))
+        self.pick_rects.append((cell[0], cell[1], rect))
 
     def _deadzone_row(self, surface, cell, fonts, mouse):
         """The one number the table shares, under both bands."""
@@ -1184,11 +1294,13 @@ class ProjectTab:
                 y += fonts["small"].get_height() + 2
             y += 8
         note = ("Click a keys cell, then press a key, mouse button, wheel "
-                "notch or pad control. Shift and a second control adds "
-                "another. Right-click a cell to clear it, and the minus "
-                "takes a trigger out. A shared control is noted, not "
-                "refused. The tail of a row says where its keys came from: "
-                "the project, the player's own config, or the engine."
+                "notch or pad control. Its chevron lists every control "
+                "instead: type to narrow it, then click a row. Shift and a "
+                "second control adds another. Right-click a cell to clear "
+                "it, and the minus takes a trigger out. A shared control is "
+                "noted, not refused. The tail of a row says where its keys "
+                "came from: the project, the player's own config, or the "
+                "engine."
                 if self.section == "input" else
                 "Click a switch to toggle it, a colour to pick it, a name "
                 "to choose it, a value to type it. Right-click puts a "

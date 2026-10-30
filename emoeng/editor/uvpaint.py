@@ -24,13 +24,22 @@ SPLIT = 0.64           # the canvas gets most of the paint workspace
 class Layer:
     """One RGBA sheet in the stack, with a placement offset."""
 
-    def __init__(self, name, size, arr=None, off=(0, 0), visible=True):
+    def __init__(self, name, size, arr=None, off=(0, 0), visible=True,
+                 opacity=1.0):
         self.name = name
         if arr is None:
             arr = np.zeros((size[1], size[0], 4), np.uint8)
         self.arr = arr
         self.off = (int(off[0]), int(off[1]))
         self.visible = visible
+        self.opacity = max(0.0, min(1.0, float(opacity)))
+
+
+def _copy(layer):
+    """A layer's own pixel data, so two rows never share one array."""
+    return Layer(layer.name, (layer.arr.shape[1], layer.arr.shape[0]),
+                 arr=layer.arr.copy(), off=layer.off, visible=layer.visible,
+                 opacity=layer.opacity)
 
 
 class LayerStack:
@@ -41,8 +50,9 @@ class LayerStack:
         self.layers = [Layer("Layer 1", self.size)]
         self.active = 0
 
-    def add(self, name, arr=None, off=(0, 0)):
-        self.layers.append(Layer(name, self.size, arr=arr, off=off))
+    def add(self, name, arr=None, off=(0, 0), opacity=1.0):
+        self.layers.append(Layer(name, self.size, arr=arr, off=off,
+                                 opacity=opacity))
         self.active = len(self.layers) - 1
         return self.layers[-1]
 
@@ -54,6 +64,41 @@ class LayerStack:
         if len(self.layers) > 1:
             self.layers.pop(self.active)
             self.active = max(0, self.active - 1)
+
+    def move(self, delta):
+        """Slide the active layer up or down the stack; True if it moved."""
+        to = self.active + int(delta)
+        if not 0 <= to < len(self.layers) or to == self.active:
+            return False
+        layer = self.layers.pop(self.active)
+        self.layers.insert(to, layer)
+        self.active = to
+        return True
+
+    def duplicate(self):
+        """Copy the active layer and select the copy."""
+        twin = _copy(self.current())
+        twin.name = f"{twin.name} copy"
+        self.layers.insert(self.active + 1, twin)
+        self.active += 1
+        return twin
+
+    def merge_down(self):
+        """Flatten the active layer into the one under it; True if merged."""
+        if self.active == 0:
+            return False
+        w, h = self.size
+        under = self.layers[self.active - 1]
+        top = self.layers[self.active]
+        under.arr = np.clip(
+            _over(_shifted(under, w, h),
+                  _shifted(top, w, h)), 0, 255).astype(np.uint8)
+        under.off = (0, 0)
+        under.visible = True
+        under.opacity = 1.0
+        self.layers.pop(self.active)
+        self.active -= 1
+        return True
 
     def composite(self, base=(255, 255, 255, 255)):
         """Flatten visible layers over an opaque base, as RGBA uint8.
@@ -67,14 +112,14 @@ class LayerStack:
             out[..., 0], out[..., 1], out[..., 2] = base[0], base[1], base[2]
             out[..., 3] = 255.0
         for layer in self.layers:
-            if not layer.visible:
+            if not layer.visible or layer.opacity <= 0.0:
                 continue
             out = _over(out, _shifted(layer, w, h))
         return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def _shifted(layer, w, h):
-    """A layer slid by its offset, cropped to canvas."""
+    """A layer slid by its offset, cropped to canvas, its opacity applied."""
     ox, oy = layer.off
     src = layer.arr
     out = np.zeros((h, w, 4), np.float32)
@@ -85,6 +130,8 @@ def _shifted(layer, w, h):
     if cw > 0 and ch > 0:
         out[dy0:dy0 + ch, dx0:dx0 + cw] = \
             src[sy0:sy0 + ch, sx0:sx0 + cw].astype(np.float32)
+    if layer.opacity < 1.0:
+        out[..., 3] *= layer.opacity
     return out
 
 
@@ -116,6 +163,7 @@ class UVPaint:
         self.size = (CANVAS, CANVAS)
         self.stack = LayerStack(self.size)
         self.tool = "brush"
+        self.filled = False         # Rect and Oval draw solid, not outline
         self.color = list(PALETTE[1])
         self.brush = 8
         self.view = {"zoom": 0.6, "x": 0.0, "y": 0.0}
@@ -358,6 +406,22 @@ class UVPaint:
             layer = self.stack.current()
             layer.visible = not layer.visible
             self._after_stroke()
+        elif kind == "layerup":
+            self.layer_move(1)
+        elif kind == "layerdown":
+            self.layer_move(-1)
+        elif kind == "layerdup":
+            self.layer_duplicate()
+        elif kind == "layermerge":
+            self.layer_merge()
+        elif kind == "layerrename":
+            self.prompt_rename()
+        elif kind == "layerop":
+            self.nudge_opacity(value)
+        elif kind == "fillshape":
+            self.filled = not self.filled
+            self.message = ("shapes filled" if self.filled
+                            else "shapes outlined")
         elif kind == "clip":
             self.paste_clipboard()
         elif kind == "sheet":
@@ -373,6 +437,91 @@ class UVPaint:
         pick = getattr(self.owner, "uv_pick_texture", None)
         if pick is not None:
             pick(self)
+
+    # -- the layer stack -----------------------------------------------
+
+    def layer_move(self, delta):
+        """Reorder the active layer; the picture does not change."""
+        layer = self.stack.current()
+        if not self.stack.move(delta):
+            self.message = "that layer is already at the end"
+            return False
+        self._after_stroke()
+        self.message = f"{layer.name} moved, layer {self.stack.active + 1}"
+        return True
+
+    def layer_duplicate(self):
+        twin = self.stack.duplicate()
+        self._after_stroke()
+        self.message = f"duplicated as {twin.name}"
+        return True
+
+    def layer_merge(self):
+        """Flatten the active layer into the one under it."""
+        if self.stack.active == 0:
+            self.message = "there is no layer under this one"
+            return False
+        gone = self.stack.current().name
+        self.stack.merge_down()
+        self.undo.clear()
+        self.redo.clear()
+        self._after_stroke()
+        self.message = f"{gone} merged down"
+        return True
+
+    def nudge_opacity(self, delta):
+        """Move the active layer's opacity by `delta`, kept in 0..1."""
+        layer = self.stack.current()
+        layer.opacity = round(max(0.0, min(1.0, layer.opacity + delta)), 2)
+        self._after_stroke()
+        self.message = f"{layer.name} {layer.opacity * 100:.0f}% opaque"
+        return True
+
+    def prompt_rename(self):
+        """Ask for a new name for the active layer."""
+        app = getattr(self.owner, "app", None)
+        if app is None:
+            return False
+        app.dialog_kind = "layer_rename"
+        app.dialog = widgets.PromptDialog(
+            "Rename Layer", "Layer name", self.stack.current().name,
+            hint="The name is only for this session: a flattened PNG keeps "
+                 "no layers.", width=380)
+        return True
+
+    def set_layer_name(self, text):
+        name = str(text or "").strip()
+        if not name:
+            return False
+        self.stack.current().name = name[:40]
+        self.message = f"layer {name[:40]}"
+        return True
+
+    def resize_canvas(self, size):
+        """Scale every layer to a new canvas, nearest so pixels stay hard."""
+        w = max(1, min(CANVAS * 4, int(size[0])))
+        h = max(1, min(CANVAS * 4, int(size[1])))
+        if (w, h) == tuple(self.size):
+            return False
+        for layer in self.stack.layers:
+            arr = layer.arr
+            ys = (np.arange(h) * arr.shape[0] // h).clip(0, arr.shape[0] - 1)
+            xs = (np.arange(w) * arr.shape[1] // w).clip(0, arr.shape[1] - 1)
+            layer.arr = arr[ys][:, xs]
+        self.size = (w, h)
+        self.stack.size = (w, h)
+        self.undo.clear()
+        self.redo.clear()
+        self._checkers_clear()
+        self._auto_fit = True
+        self._after_stroke()
+        self.message = f"canvas {w} x {h}"
+        return True
+
+    def _checkers_clear(self):
+        clear = getattr(self, "_checkers", None)
+        if clear is not None:
+            clear.clear()
 
     def _down(self, e):
         p = self._to_canvas(e.pos)
@@ -590,25 +739,41 @@ class UVPaint:
     def _draw_rect(self, arr, a, b, col):
         x0, x1 = sorted((int(a[0]), int(b[0])))
         y0, y1 = sorted((int(a[1]), int(b[1])))
+        if self.filled:
+            self._span(arr, x0, x1, y0, y1, col)
+            return
         w = max(1, self.brush // 3)
         self._draw_line(arr, (x0, y0), (x1, y0), col, w)
         self._draw_line(arr, (x1, y0), (x1, y1), col, w)
         self._draw_line(arr, (x1, y1), (x0, y1), col, w)
         self._draw_line(arr, (x0, y1), (x0, y0), col, w)
 
+    def _span(self, arr, x0, x1, y0, y1, col):
+        """Fill a pixel block, kept inside the canvas."""
+        h, wd = arr.shape[0], arr.shape[1]
+        x0, x1 = max(0, x0), min(wd - 1, x1)
+        y0, y1 = max(0, y0), min(h - 1, y1)
+        if x1 >= x0 and y1 >= y0:
+            arr[y0:y1 + 1, x0:x1 + 1] = col
+
     def _draw_ellipse(self, arr, a, b, col):
         cx = (a[0] + b[0]) / 2.0
         cy = (a[1] + b[1]) / 2.0
         rx = max(1.0, abs(b[0] - a[0]) / 2.0)
         ry = max(1.0, abs(b[1] - a[1]) / 2.0)
-        steps = int(max(rx, ry) * 4) + 16
-        pts = []
-        for k in range(steps + 1):
-            ang = 2 * math.pi * k / steps
-            pts.append((cx + rx * math.cos(ang), cy + ry * math.sin(ang)))
         w = max(1, self.brush // 3)
-        for p0, p1 in zip(pts, pts[1:]):
-            self._draw_line(arr, p0, p1, col, w)
+        # a row at a time: x = rx * sqrt(1 - (dy/ry)^2)
+        for y in range(int(cy - ry), int(cy + ry) + 1):
+            t = (y - cy) / ry
+            if abs(t) > 1.0:
+                continue
+            half = rx * math.sqrt(1.0 - t * t)
+            if self.filled:
+                self._span(arr, int(round(cx - half)),
+                           int(round(cx + half)), y, y, col)
+                continue
+            for x in (cx - half, cx + half):
+                self._dot(arr, int(round(x)), y, w, col)
 
     def _push_undo(self):
         self.undo.append((self.stack.current(), self._layer().copy()))
@@ -792,6 +957,22 @@ class UVPaint:
              "+ layer", ("newlayer", None), False),
             (self.owner.small.size("- layer")[0] + 12,
              "- layer", ("dellayer", None), False),
+            (self.owner.small.size("Up")[0] + 12,
+             "Up", ("layerup", None), False),
+            (self.owner.small.size("Dn")[0] + 12,
+             "Dn", ("layerdown", None), False),
+            (self.owner.small.size("Dup")[0] + 12,
+             "Dup", ("layerdup", None), False),
+            (self.owner.small.size("Merge")[0] + 12,
+             "Merge", ("layermerge", None), False),
+            (self.owner.small.size("Name")[0] + 12,
+             "Name", ("layerrename", None), False),
+            (self.owner.small.size("Op-")[0] + 12,
+             "Op-", ("layerop", -0.1), False),
+            (self.owner.small.size("Op+")[0] + 12,
+             "Op+", ("layerop", 0.1), False),
+            (self.owner.small.size("Solid")[0] + 12,
+             "Solid", ("fillshape", None), self.filled),
             (self.owner.small.size("Paste")[0] + 12,
              "Paste", ("clip", None), False),
             (self.owner.small.size("Sheet")[0] + 12,
@@ -875,6 +1056,20 @@ class UVPaint:
             return "Select the previous or next layer"
         if kind == "layervis":
             return "Show or hide the active layer"
+        if kind == "layerup":
+            return "Move the active layer up the stack"
+        if kind == "layerdown":
+            return "Move the active layer down the stack"
+        if kind == "layerdup":
+            return "Copy the active layer onto a new one"
+        if kind == "layermerge":
+            return "Flatten the active layer into the layer below"
+        if kind == "layerrename":
+            return "Rename the active layer"
+        if kind == "layerop":
+            return "Lower or raise the active layer's opacity by 10%"
+        if kind == "fillshape":
+            return "Rect and Oval draw solid instead of as an outline"
         if kind == "clip":
             return "Paste an image from the clipboard as a layer"
         if kind == "sheet":
@@ -1036,7 +1231,9 @@ class UVPaint:
                 self._layer_thumbs[stamp] = preview
             surface.blit(preview, thumb.topleft)
             pygame.draw.rect(surface, xp.OUTLINE, thumb, 1)
-            label = widgets.elide(self.owner.small, layer.name,
+            label = layer.name if layer.opacity >= 1.0 else \
+                f"{layer.name}  {layer.opacity * 100:.0f}%"
+            label = widgets.elide(self.owner.small, label,
                                   max(8, eye.x - thumb.right - 8))
             image = widgets.cached_text(
                 self.owner.small, label,

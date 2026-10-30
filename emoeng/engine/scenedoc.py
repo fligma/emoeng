@@ -15,7 +15,7 @@ OBJECT2D_EXT = ".obj2d"
 OBJECT_EXT = ".object"        # the old single spelling, still read
 OBJECT_EXTS = (OBJECT3D_EXT, OBJECT2D_EXT, OBJECT_EXT)
 
-# an entity is a scripted thing with behaviour: health, AI, a will of its own
+# an entity is scripted, with behaviour: health, AI, a will
 ENT3D_EXT = ".ent3d"
 ENT2D_EXT = ".ent2d"
 ENTITY_EXTS = (ENT3D_EXT, ENT2D_EXT)
@@ -27,6 +27,8 @@ MODEL_EXT = ".model"          # the old spelling of MODEL3D_EXT, still read
 
 # a model in `maps/`; it builds its collider
 MAP3D_EXT = ".map3d"
+MAP2D_EXT = ".map2d"
+MAP_EXTS = (MAP3D_EXT, MAP2D_EXT)
 
 # a shader document: mode and knobs plus its class
 SHADER_EXT = ".shader"
@@ -43,6 +45,7 @@ NODE_TYPES = (
     ("ui", "UIObject", "Objects", "ui", "2d", "UIObject"),
     ("model3d", "Model3D", "Pictures", "object3d", "3d", "Model3D"),
     ("map3d", "Map3D", "Pictures", "object3d", "3d", "Map3D"),
+    ("map2d", "Map2D", "Pictures", "object2d", "2d", "Map2D"),
     ("sprite2d", "Sprite2D", "Pictures", "object2d", "2d", "Sprite2D"),
     ("collision3d", "Collision3D", "Physics", "object3d", "3d",
      "Collision3D"),
@@ -80,6 +83,8 @@ NODE_TYPES = (
      "AudioEmitter2D"),
     ("text3d", "Text3D", "Text", "object3d", "3d", "Text3D"),
     ("text2d", "Text2D", "Text", "object2d", "2d", "Text2D"),
+    ("particle3d", "Particle3D", "Effects", "object3d", "3d", "Particle3D"),
+    ("particle2d", "Particle2D", "Effects", "object2d", "2d", "Particle2D"),
     ("timer3d", "Timer3D", "Utility", "object3d", "3d", "Timer3D"),
     ("timer2d", "Timer2D", "Utility", "object2d", "2d", "Timer2D"),
     ("marker3d", "Marker3D", "Utility", "object3d", "3d", "Marker3D"),
@@ -90,8 +95,8 @@ NODE_TYPES = (
 OBJECT_TYPES = tuple((t[0], t[1], t[3]) for t in NODE_TYPES)
 
 # the look fields a document applies before build()
-LOOK_KEYS = ("pos", "yaw", "scale", "rot", "size", "model", "texture",
-             "color", "showing", "shader", "knobs")
+LOOK_KEYS = ("pos", "yaw", "scale", "rot", "size", "model", "map",
+             "texture", "color", "showing", "shader", "knobs")
 
 # `object` and `scene` make an entry an instance
 INSTANCE_KEYS = ("object", "scene")
@@ -145,11 +150,7 @@ def entity_ext(kind):
 
 
 def doc_family(kind):
-    """'entity' for a scripted thing with behaviour, else 'object'.
-
-    The registry's document-kind column is the only answer: a player and an
-    enemy share the entity family, a lamp and a collider do not.
-    """
+    """'entity' for a scripted thing with behaviour, else 'object'."""
     row = node_type(kind)
     return "entity" if str(row[3] if row else "").startswith("entity") \
         else "object"
@@ -368,11 +369,7 @@ def blank_object(name, kind="object3d", script=None):
 
 
 def blank_entity(name, kind="entity3d", script=None):
-    """A fresh entity document: an object's shape, in the entity family.
-
-    A type the entity family does not claim becomes a plain entity, so a
-    document written into `entities/` always reads back as one.
-    """
+    """A fresh entity document: an object's shape, entity family."""
     if doc_family(kind) != "entity":
         kind = "entity2d" if type_family(kind) == "2d" else "entity3d"
     return blank_object(name, kind, script)
@@ -496,6 +493,13 @@ def roots(doc):
     items = []
     doc["objects"] = items
     return items
+
+
+def branch_of(doc):
+    """An object document's own nodes, read without writing anything.
+    `roots` files a missing list under `objects`; a branch reader must not."""
+    items = (doc or {}).get("nodes")
+    return items if isinstance(items, list) else []
 
 
 def children(entry):

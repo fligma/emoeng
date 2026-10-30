@@ -41,11 +41,7 @@ class Audio:
         return snd
 
     def load_folder(self, folder, gain=1.0):
-        """Load a folder's audio files, keyed by stem.
-
-        A `.sfxproject` is rendered here instead of read: the document is
-        the source the editor keeps, and a build turns it into a wav.
-        """
+        """Load a folder's audio files, keyed by stem."""
         out = []
         folder = Path(folder)
         if not folder.is_dir():

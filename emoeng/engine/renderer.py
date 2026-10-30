@@ -466,7 +466,7 @@ class DynamicMesh:
 
     @staticmethod
     def strip_uv(uv):
-        """A uv fit on its own; its pin, if it carried one, is not wanted."""
+        """A uv fit alone; any pin it carried is dropped."""
         if uv is None or len(uv) <= 4:
             return uv
         return tuple(uv[:4])
@@ -477,15 +477,13 @@ class DynamicMesh:
         self.r = renderer
         self._layer0 = blend       # the layer the caller asked for
         self.opacity = renderer.opacity_of(opacity)
-        # the sheet has a say too, so this picks the layer rather than copy it
+        # the sheet has a say too, so pick the layer
         self.texture = texture
         self.view_model = view_model
         self.on_top = on_top
         pin = anchor or (uv[4] if uv is not None and len(uv) > 4 else None)
         self.uv = self.strip_uv(uv)   # (tile, scale, offset, spin), or None
-        # where the metre sheet is pinned; latched, so a reshape cannot
-        # drift it. `frame` is a callable that says where the body stands
-        # now, so a body that moves or turns carries its picture with it
+        # where the metre sheet is pinned; `frame` keeps it there
         self.anchor = pin
         self.frame = frame
         # only a 2D light mesh uses these: energy and pattern
@@ -530,7 +528,7 @@ class DynamicMesh:
             self.relayer()
 
     def relayer(self):
-        """Re-pick the draw layer: what was asked, the fade, the picture."""
+        """Re-pick the draw layer: ask, fade and picture."""
         self.blend = self.r.layer_for(self._layer0, self.opacity,
                                       self._texture)
         return self
@@ -623,33 +621,33 @@ class Renderer:
         self.size = (max(2, int(width)), max(2, int(height)))
         self.render_scale = clamp_scale(render_scale)
         self._light_tex = {}        # gradient cache, keyed by falloff
-        self.tile = {}              # texture key -> metres per sheet repeat
+        self.tile = {}
         self.holes = {}             # texture key -> sheet shows through
         self._pending = {}
         self._live = {}             # claim -> DynamicMesh (editor drags)
         self.groups = []
         self.dynamics = []
         self.viewport = None          # last rect rendered, in target pixels
-        self.camera = None            # last camera, when one was passed
+        self.camera = None
         self.frame_array = None       # the pixels behind the last Surface
-        self._read_buf = None         # ... and the buffer they are read into
+        self._read_buf = None
         self._read_key = None
         self.lfbo = None              # the 2D light mask (made when needed)
         self.ltex = None
-        self.pbo = None               # the shader chain's two targets,
-        self.ptex = None              # written in turn so a chain of three
-        self.qbo = None               # still costs two buffers
+        self.pbo = None               # one of the shader chain's two targets
+        self.ptex = None
+        self.qbo = None
         self.qtex = None
-        self._post = ()               # the armed shader passes
-        self._post_frame = 0          # a shader's `g.seed` rolls on this
+        self._post = ()
+        self._post_frame = 0
         self.time = 0.0               # the clock a shader reads (`g.time`)
-        self._shader_progs = []       # programs built for project shaders
-        self._shader_quads = {}       # ... and the unit quad each one draws
-        self._panel = {}              # composites: key -> (texture, fbo)
-        self.gpu_only = False         # render() leaves the frame on the GPU
-        self.last_out = None          # ... and names the texture here
-        self._mvp = None              # the matrix the current pass uses,
-        self._eye = None              # so a mesh's own program can match it
+        self._shader_progs = []
+        self._shader_quads = {}
+        self._panel = {}
+        self.gpu_only = False         # render() leaves the frame on the GPU,
+        self.last_out = None          # named here
+        self._mvp = None
+        self._eye = None
         self.quad = self._make_quad()
         self.quad_panel = self.ctx.vertex_array(
             self.prog_panel,
@@ -687,13 +685,7 @@ class Renderer:
     def texture(self, key, arr=None, rgba=False, repeat=True,
                 filter="linear", mipmaps=True, tile=0.0):
         """Cache textures by name; accept uint8 (H, W, 3/4).
-
-        A sheet with see-through pixels is remembered as `holes`, which is
-        what lets a cut-out be drawn blended rather than as a solid slab.
-        Such a sheet still tiles: an alpha channel is not a reason to clamp
-        a floor to one picture, and only a non-square sheet without mipmaps
-        has to, since GL cannot wrap those.
-        """
+        See-through sheets are remembered as `holes` and still tile."""
         if arr is None:
             return self.textures[key]
         self._bind()
@@ -922,7 +914,7 @@ class Renderer:
         return float(self.tile.get(key, 0.0) or 0.0)
 
     def uv_for(self, key, blend="opaque", uv=None, anchor=None):
-        """The uv fit a mesh draws with: its own, else the sheet's tile."""
+        """The uv fit: the mesh's own, else the sheet's tile."""
         if uv:
             return uv if len(uv) == 5 else tuple(uv) + (anchor,)
         tile = self.tile_for(key, blend)
@@ -950,17 +942,12 @@ class Renderer:
         return bool(self.holes.get(key))
 
     def layer_for(self, blend, opacity=1.0, key=None):
-        """The layer a thing draws in, its picture asked as well as its own.
-
-        A cut-out is not solid however solid its opacity claims: the opaque
-        batch is drawn with blending off, so its blank pixels would paint
-        out whatever is behind them. Anything with holes joins the blended
-        `trans` layer, where its edges mix with the world instead.
-        """
+        """The layer a thing draws in: its picture counts too.
+        A cut-out joins blended `trans`, whatever its opacity claims."""
         return self.blend_for(blend, opacity, self.has_holes(key))
 
     def relayer_sheets(self, key):
-        """Every live mesh wearing one sheet, re-sorted by what it now shows."""
+        """Every live mesh on one sheet, re-sorted by what shows."""
         for d in self.dynamics:
             if d._texture == key:
                 d.relayer()
@@ -976,7 +963,7 @@ class Renderer:
         if tex is not None and tuple(tex.size) == (w, h) \
                 and tex.components == comp:
             tex.write(data.tobytes())
-            # a painted sheet can gain or lose its holes between frames
+            # a painted sheet may gain or lose its holes
             was = self.holes.get(key)
             self.holes[key] = rgba and bool(data[..., 3].min() < 250)
             if self.holes[key] != was:
@@ -1067,7 +1054,7 @@ class Renderer:
             self.dynamics.append(d)
             self._live[claim] = d
             return
-        # a reshape keeps the sheet pinned where the first one fixed it
+        # a reshape keeps the sheet pinned where it started
         if uv and len(uv) > 4:
             uv = uv[:4]
         d.opacity = self.opacity_of(opacity)
@@ -1127,8 +1114,8 @@ class Renderer:
             for tex in self.textures.values():
                 tex.release()
             self.textures.clear()
-        # the gradients themselves are cached in `textures`, under their
-        # `light:` keys, so whoever owns that cache already freed them
+        # the gradients are cached in `textures` under `light:` keys,
+        # so the cache owner already freed them
         self._light_tex.clear()
         self.tile.clear()      # a rig's own sheet sizes, however shared
         self.holes.clear()
@@ -1161,25 +1148,15 @@ class Renderer:
 
     def close(self):
         """Dispose this rig, then let nothing outlive the context.
-
-        `dispose()` deliberately spares a window's context, because the
-        window owns it - but a framebuffer wrapper stays alive inside the
-        context object and inside this rig, and the interpreter's final
-        garbage pass frees those once `pygame.quit()` has destroyed the GL
-        context they point at. A desktop driver shrugs that off, a
-        software one segfaults with no Python frame to blame. So the
-        framebuffers go too, and the context is released last, while a
-        driver is still listening to hear "nothing of mine is live".
-        """
+        Framebuffers go too: a software driver segfaults otherwise."""
         self.dispose()
         if self.shared is not None:
             return              # the parent's context is not ours to close
         ctx = self.ctx
         for own in (getattr(ctx, "fbo", None),
                     getattr(ctx, "_screen", None)):
-            # the last two are moderngl's own handles on the window's
-            # framebuffer; a driver may refuse to delete the default one,
-            # which is not our problem while the context is still there
+            # the last two are moderngl's handles on the window framebuffer;
+            # a driver may refuse to delete the default one
             try:
                 if own is not None:
                     own.release()

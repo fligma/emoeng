@@ -241,9 +241,9 @@ class TrimPlan:
         self.mode = mode
         self.name = project.path.name if project is not None else "game"
         self.imports = set()          # names the project's scripts import
-        self.engine = set()           # engine features reached by alias
+        self.engine = set()
         self.base_engine = set()      # names the engine's runtime imports
-        self.extra = set()            # engine features only the project uses
+        self.extra = set()
         self.uses = set()             # everything the bundle has to keep
         self.hidden = []
         self.excludes = []

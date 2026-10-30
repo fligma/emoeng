@@ -2,6 +2,7 @@
 
 import ast
 import inspect
+import re
 from pathlib import Path
 
 from emoeng.engine import audio as audiomod
@@ -9,6 +10,7 @@ from emoeng.engine import colors as colorsmod
 from emoeng.engine import components as compmod
 from emoeng.engine import game as gamemod
 from emoeng.engine import input as inputmod
+from emoeng.engine import inputmap as inputmapmod
 from emoeng.engine import model as modelmod
 from emoeng.engine import objects as objmod
 from emoeng.engine import proctex as proctexmod
@@ -17,6 +19,7 @@ from emoeng.engine import save as savemod
 from emoeng.engine import scene as scenemod
 from emoeng.engine import shaders as shadermod
 from emoeng.engine import templates as templatemod
+from emoeng.engine import ui as uimod
 
 
 # classes a signature reads: one per written name
@@ -42,6 +45,8 @@ OWNERS = {
     "AudioEmitter2D": compmod.AudioEmitter2D,
     "Timer3D": compmod.Timer3D,
     "Timer2D": compmod.Timer2D,
+    "Particle3D": compmod.Particle3D,
+    "Particle2D": compmod.Particle2D,
     # what `frag(self, g)` is handed: the drawer's blocks
     "Builder": shadermod.Builder,
 }
@@ -55,6 +60,7 @@ WORDS = {
     "lines": "it begins", "shape": "point", "light": "torch",
     "who": "self.player", "camera": "main", "dir": "(0.4, 0.8, 0.3)",
     "level": "1.0", "texture": "stone", "name": "main",
+    "map": "hall",
     "size": "(180.0, 44.0)", "action": "None", "tag": "prop",
     "yaw": "0.0", "scale": "1.0", "tint": "None", "fade": "0.35",
     "freq": "None", "duration": "0.35", "roll": "None", "damping": "None",
@@ -79,6 +85,8 @@ WORDS = {
     "x": "g.grey(g.color)", "h": "g.time", "lo": "0.0", "hi": "1.0",
     "scale": "1.0", "direction": "(1.0, 0.0)", "speed": "1.0",
     "shader": "scanlines", "knob": "amount", "value": "0.5",
+    # an emitter's rows: how many points, and which knob
+    "count": "12",
 }
 
 # a new block holds valid code for every required row
@@ -91,13 +99,14 @@ START = {
     "shape": "point", "light": '"torch"', "who": "self.player",
     "camera": '"main"', "dir": "(0.4, 0.8, 0.3)", "level": "1.0",
     "texture": '"stone"', "name": '"main"', "size": "(180.0, 44.0)",
+    "map": '"hall"',
     "action": "None", "target": "self.player", "s": '"ready"',
     "path": '"theme.ogg"', "sound": '"ui_click"',
     # dropping a block leaves the line compiled
     "uv": "g.uv", "a": "g.color", "b": "g.color", "t": "0.5",
     "x": "g.grey(g.color)", "h": "g.time",
     "direction": "(1.0, 0.0)", "shader": '"scanlines"',
-    "knob": '"amount"', "value": "0.5",
+    "knob": '"amount"', "value": "0.5", "count": "12",
     # an entity's own rows, quoted where the engine wants words
     "health": "100.0", "ai_type": '"follow"', "config": "{}",
     "team": '"enemy"', "distance": "15.0", "range": "2.0",
@@ -347,7 +356,52 @@ BUILTIN_TEXTURES = (("white", "grid") +
 BUILTIN_MODELS = tuple(modelmod.PRIMITIVES)
 BUILTIN_TONES = audiomod.starter_names()
 
-# folder plus built-ins, keyed by row name
+# the calls a project's own scripts make to name a camera
+_CAMERA_CALL = re.compile(r"(?:add_camera|set_active_camera)\(\s*"
+                          r"(?:name\s*=\s*)?[\"']([\w .#-]+)[\"']")
+
+
+def _scripts(project):
+    """The `.py` files a project keeps under `scripts/`."""
+    root = getattr(project, "path", None)
+    if root is None:
+        return ()
+    try:
+        return sorted((Path(root) / "scripts").rglob("*.py"))
+    except OSError:
+        return ()
+
+
+def action_words(project):
+    """Every action and trigger a row can name, the project's own first."""
+    out = []
+    for table in (getattr(project, "input_map", dict)(),
+                  getattr(project, "trigger_map", dict)(),
+                  inputmapmod.config_table()):
+        out += [str(name) for name in table]
+    return tuple(dict.fromkeys(out))
+
+
+def camera_words(project):
+    """Camera names a project's scripts write, then the engine's own."""
+    out = []
+    for path in _scripts(project):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out += _CAMERA_CALL.findall(text)
+    # `add_camera()` numbers what it builds: cam1, cam2, ...
+    out += [f"cam{i}" for i in range(1, 5)]
+    return tuple(dict.fromkeys(out))
+
+
+def font_words(_project=None):
+    """The faces this build ships, as a document stores them."""
+    return uimod.font_names()
+
+
+# folder plus built-ins, keyed by row name; built-ins may be a callable
 PICKERS = {
     "texture": ("textures", BUILTIN_TEXTURES),
     "model": ("models", BUILTIN_MODELS),
@@ -359,6 +413,11 @@ PICKERS = {
     # a spawned name is looked for in either folder
     "obj": ("objects", ()),
     "map": ("maps", ()),
+    # words only this project, or this build, can say
+    "action": ("", action_words),
+    "camera": ("", camera_words),
+    "font": ("", font_words),
+    "font_name": ("", font_words),
 }
 
 # words a row may only take from a fixed set, not from a folder
@@ -372,7 +431,7 @@ NAMERS = {
     "objects": ("object_names", "entity_names"),
     "shaders": ("shader_names",),
     "models": ("model_names", "model2d_names"),
-    "maps": ("map_names",),
+    "maps": ("map_names", "map2d_names"),
     "textures": ("texture_files",),
     "audio": ("audio_files",),
 }
@@ -399,6 +458,8 @@ def options(row, project):
     if not row:
         return ()
     folder, builtins = row
+    if callable(builtins):
+        builtins = builtins(project) or ()
     out = []
     for word in _folder(project, folder) + list(builtins):
         if word and word not in out:
@@ -470,6 +531,8 @@ _BODY3D = ("entity3d", "object3d", "player3d")
 _BODY2D = ("entity2d", "object2d", "player2d")
 # files whose `self` is a node in a tree: it can look around and leave
 _TREE = _SCENES + _OBJECTS + ("entity3d", "entity2d")
+# the two emitters, and any object that has one as a node
+_PARTICLES = ("particle3d", "particle2d")
 
 
 CALLS = (
@@ -485,6 +548,25 @@ CALLS = (
     Call("pop", "back to the scene below",
          "self.pop_scene", "Scene.pop_scene", kinds=_SCENES,
          doc="Unwind the last push_scene(); this scene is where you left it."),
+    Call("loadmap", "load the map %map%",
+         "self.load_map", "Scene.load_map", kinds=_SCENES,
+         names={"name": "map"}, skip=("doc",), quoted=("map",),
+         node="load %map%",
+         doc="Build one maps/ file into this scene - its carved geometry, "
+             "its nodes and its spawn - and keep whatever the scene "
+             "spawned itself."),
+    Call("changemap", "swap to the map %map%",
+         "self.change_map", "Scene.change_map", kinds=_SCENES,
+         names={"name": "map"}, skip=("doc",), quoted=("map",),
+         node="swap to %map%",
+         doc="The old level goes out, the new one comes in, mid play: the "
+             "player, the HUD and this scene's own objects stay put. "
+             "`on_map_loaded` runs once it stands."),
+    Call("unloadmap", "take the map out",
+         "self.unload_map", "Scene.unload_map", kinds=_SCENES,
+         node="unload the map",
+         doc="Every node the map placed leaves with it, so an empty "
+             "stage can be redraw by the next load_map()."),
     Call("ambient", "set the ambient light to %color% at %level%",
          "self.set_ambient", "Scene.set_ambient", kinds=("scene3d",),
          seeds=("level",),
@@ -764,6 +846,28 @@ CALLS = (
     Call("timerstop", "stop the timer", "self.stop", "Timer3D.stop",
          category="functions", kinds=("timer3d", "timer2d"),
          doc="Stop counting; a later start begins from the top again."),
+
+    # particles: `emit` is the signal block's, so these keep their own names
+    Call("particlemit", "drip %count% points", "self.emit_particles",
+         "Particle3D.emit_particles", category="object",
+         names={"n": "count"}, kinds=_PARTICLES, node="drip %count% points",
+         doc="Put points in the air from here, whether or not the emitter "
+             "is dripping: one, or as many as you ask for."),
+    Call("particleburst", "burst %count% points", "self.burst_particles",
+         "Particle3D.burst_particles", category="object",
+         names={"n": "count"}, kinds=_PARTICLES, node="burst %count% points",
+         doc="All at once, from one point: an impact, a torch lit, a door "
+             "forced. Leave the row empty for the emitter's whole pool."),
+    Call("particlestop", "stop the particles", "self.stop_particles",
+         "Particle3D.stop_particles", category="object", kinds=_PARTICLES,
+         node="stop the particles",
+         doc="Stop dripping. What is already in the air still lives out "
+             "its life; `self.clear()` drops that too."),
+    Call("particleset", "set the knob %knob% to %value%",
+         "self.set_particles", "Particle3D.set_particles", category="object",
+         quoted=("knob",), kinds=_PARTICLES, node="set %knob%",
+         doc="One of the emitter's own knobs at run time: `rate`, `color`, "
+             "`gravity`, `lifetime`. `blend` is decided at build() instead."),
 
     # shader: each block owns its written line; reads need none
     Call("paint", "paint the sheet as it is seen at %uv%", "g.tex",

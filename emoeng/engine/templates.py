@@ -1,9 +1,12 @@
 """Every file the engine writes when a project is made."""
 
+import math
 import re
 
 from .. import const
+from . import mapdoc
 from . import model as models
+from . import meshes
 from . import scenedoc
 
 GITIGNORE_TEMPLATE = '''# Motion Engine: what a project generates, and never commits
@@ -285,6 +288,80 @@ class Widget(fe.UIObject):
     def on_click(self):
         # a widget is a button: scene switch, toggle, sound
         pass
+'''
+
+
+PARTICLE3D_TEMPLATE = '''"""Particle3D: an emitter standing in the 3D world.
+
+Scene side:
+
+    from scripts.objects.ember import Ember
+    self.spawn(Ember, (0.0, 1.2, 0.0), rate=40.0)
+
+Every knob is a class attribute, so a subclass restates the ones it
+wants and the document may override them again:
+
+    class Ember(fe.Particle3D):
+        texture = "spark"
+        rate = 40.0
+        gravity = (0.0, -1.2, 0.0)
+
+`size` is metres and `speed` metres a second; `spread` is the cone's
+half-angle in radians. `local_space=True` lets the points ride the node
+instead of being left behind in the world. From a script, drip or burst
+with `self.emit_particles(n)` / `self.burst_particles(n)`, and stop with
+`self.stop_particles()`.
+"""
+
+import emoeng as fe
+
+
+class Ember(fe.Particle3D):
+    name = "particle3d"
+    texture = "spark"
+    rate = 40.0
+    lifetime = 1.4
+    speed = 1.6
+    spread = 0.5
+    gravity = (0.0, -1.2, 0.0)
+    color = (1.0, 0.66, 0.28)
+    end_color = (0.35, 0.06, 0.02)
+
+    def build(self):
+        super().build()
+        # start with a little already in the air
+        self.emit_particles(24)
+'''
+
+PARTICLE2D_TEMPLATE = '''"""Particle2D: an emitter in a flat world, sized in world pixels.
+
+Scene side (2D classes are imported directly, not spawned by stem):
+
+    from scripts.objects.sparks import Sparks
+    self.spawn(Sparks, (480.0, 260.0), rate=30.0)
+
+The knobs are the same as the 3D emitter's, measured in pixels: `size` is
+a point's width, `speed` pixels a second, and `gravity` pulls down the
+screen at positive y. `blend` defaults to "alpha" here because the
+additive pass draws before the flat one.
+"""
+
+import emoeng as fe
+
+
+class Sparks(fe.Particle2D):
+    name = "particle2d"
+    texture = "spark"
+    rate = 30.0
+    lifetime = 0.8
+    size = 5.0
+    speed = 160.0
+    spread = 0.7
+    dir = (0.0, -1.0, 0.0)
+    gravity = (0.0, 220.0, 0.0)
+
+    def hit(self, other=None):
+        self.burst_particles(40)       # call this from a trigger or a script
 '''
 
 
@@ -769,6 +846,14 @@ OBJECT_PRESETS = {
     "new_ui_object": ("ui", UI_OBJECT_TEMPLATE, "button", "New UI Object",
                       "Adds scripts/objects/<name>.py and <name>.obj2d - "
                       "a widget a UI scene places"),
+    "new_particle_3d": ("object3d", PARTICLE3D_TEMPLATE, "ember",
+                        "New Particle Emitter 3D",
+                        "Adds scripts/objects/<name>.py and <name>.obj3d - "
+                        "a Particle3D that sparks, smokes or rains in 3D"),
+    "new_particle_2d": ("object2d", PARTICLE2D_TEMPLATE, "sparks",
+                        "New Particle Emitter 2D",
+                        "Adds scripts/objects/<name>.py and <name>.obj2d - "
+                        "a Particle2D drawing points in world pixels"),
     "new_player_3d": ("player3d", PLAYER3D_TEMPLATE, "player",
                       "New Player 3D",
                       "Adds scripts/entities/<name>.py and <name>.ent3d - "
@@ -1089,69 +1174,155 @@ def make_model(stem):
     return models.new_model(kind, size, name=stem, tint=tint)
 
 
-# file-free maps, so a new project has one to open in the map editor.
-# Each row is (floor across, wall up); a wall is a box of that same size.
+# file-free maps, so a new project has a level to open. A map is a whole
+# room, not a mesh: the parts its geometry is carved into, the nodes it
+# places and the shape each one stops you on, and where a player starts.
+# rows are (kind, floor across, wall up) - metres for a room, world
+# pixels for a flat arena
 MAPS = {
-    "room": (8.0, 3.0),
+    "room": ("map3d", 8.0, 3.0),
+    "arena": ("map2d", 960.0, 540.0),
 }
 
+# one sheet repeat per this many world pixels, since a flat map is drawn
+# at its own scale and nothing tiles it for you
+FLAT_TILE = 128.0
 
-def make_map(stem):
-    """One stock map: a floor and two walls, each its own object.
 
-    A map is drawn and lit one object at a time, so the starter is split
-    that way rather than being one merged shell.
+def _faces(m, data, key):
+    """Append one piece of geometry wearing `key`; return its faces."""
+    before = len(m.tris)
+    m.add_meshdata(data)
+    for face in range(before, len(m.tris)):
+        m.tex[face] = key
+    return list(range(before, len(m.tris)))
+
+
+def _box_room(m, wide, high):
+    """A floor, four thin walls, and the lamp hung over them."""
+    parts, nodes = [], []
+    half, thick = wide / 2.0, 0.3
+    stop = half - thick / 2.0
+    parts.append(("floor", _faces(m, meshes.plane(size=(wide, wide), seg=4),
+                                  "ground")))
+    for name, cx, cz, hx, hz in (("wall_n", 0.0, -stop, half, thick / 2.0),
+                                 ("wall_s", 0.0, stop, half, thick / 2.0),
+                                 ("wall_w", -stop, 0.0, thick / 2.0, half),
+                                 ("wall_e", stop, 0.0, thick / 2.0, half)):
+        parts.append((name, _faces(
+            m, meshes.box(centre=(cx, high / 2.0, cz),
+                          size=(hx * 2.0, high, hz * 2.0)), "grid")))
+        # the drawn wall and the shape that stops you are one pair, and
+        # the map keeps them in step when either is moved
+        nodes.append({"id": name, "type": "collision3d",
+                      "pos": [cx, high / 2.0, cz],
+                      "knobs": {"shape": "box",
+                                "half": [hx, high / 2.0, hz]}})
+    nodes.append({"id": "lamp", "type": "omnilight3d",
+                  "pos": [0.0, high - 0.4, 0.0],
+                  "knobs": {"color": "#ffad68", "radius": wide,
+                            "energy": 1.6}})
+    return parts, nodes, ((0.0, 0.0, half - 1.0), math.pi)
+
+
+def _flat_arena(m, wide, high):
+    """One floor sheet and a border, with a solid rect on each edge."""
+    parts, nodes = [], []
+    edge = 24.0
+
+    def flat(cx, cy, w, h, key):
+        """A rect whose own uv repeats the sheet this many pixels."""
+        uv = (0.0, 0.0, w / FLAT_TILE, h / FLAT_TILE)
+        return _faces(m, meshes.quad2d((cx, cy), (w, h), uv=uv), key)
+
+    parts.append(("floor", flat(wide / 2.0, high / 2.0, wide, high, "grid")))
+    for name, cx, cy, w, h in (("wall_n", wide / 2.0, edge / 2.0, wide, edge),
+                               ("wall_s", wide / 2.0, high - edge / 2.0,
+                                wide, edge),
+                               ("wall_w", edge / 2.0, high / 2.0, edge, high),
+                               ("wall_e", wide - edge / 2.0, high / 2.0,
+                                edge, high)):
+        parts.append((name, flat(cx, cy, w, h, "#33507a")))
+        nodes.append({"id": name, "type": "collision2d",
+                      "pos": [cx, cy], "size": [w, h]})
+    return parts, nodes, ((wide / 2.0, high - 90.0), 0.0)
+
+
+def make_map(stem, starter=None):
+    """One starter map document: its parts, its nodes, where you start.
+
+    `starter` names the row in `MAPS`; left out, the stem must be one.
+    The geometry stops nobody by itself - `solid` is off and the walls are
+    placed shapes - so what a player walks into is exactly what the map
+    document lists, and the editor can move one without a rebuild.
     """
-    row = MAPS.get(str(stem))
+    row = MAPS.get(str(starter if starter in MAPS else stem))
     if row is None:
         return None
-    wide, high = float(row[0]), float(row[1])
+    kind, wide, high = str(row[0]), float(row[1]), float(row[2])
     m = models.Model(str(stem))
-    m.texture = "ground"
-    parts = []
-    m.append(models.plane_model(wide))
-    parts.append(("floor", list(range(len(m.tris)))))
-    for name, off in (("wall_w", (-(wide - high) / 2.0, 0.0, 0.0)),
-                      ("wall_n", (0.0, 0.0, -(wide - high) / 2.0))):
-        before = len(m.tris)
-        m.append(models.box_model(high), offset=off)
-        parts.append((name, list(range(before, len(m.tris)))))
+    if kind == "map2d":
+        parts, nodes, start = _flat_arena(m, wide, high)
+    else:
+        parts, nodes, start = _box_room(m, wide, high)
     m.objects = [{"name": name, "faces": faces, "texture": None,
                   "painted": False, "lightmap": None}
                  for name, faces in parts]
     m.align_objects()
-    return m
+    doc = mapdoc.with_model(mapdoc.blank(stem, kind), m)
+    doc["nodes"] = nodes
+    doc["collision"] = "none"
+    doc["solid"] = False
+    mapdoc.set_spawn(doc, *start)
+    return doc
+
+
+# which starter map a scene of each kind loads, so `layout()` can name one
+SCENE_KINDS = {"scene3d": "map3d", "scene2d": "map2d", "sceneui": None}
+
+
+def map_for(kind, ships=()):
+    """The map this template ships that a scene of `kind` should load."""
+    want = SCENE_KINDS.get(str(kind))
+    if want is None:
+        return None
+    for stem in ships:
+        if MAPS.get(stem, (None,))[0] == want:
+            return str(stem)
+    return None
 
 
 # the three starting scenes and the objects they place
-START3D_SCENE = '''"""Main: a floor, one prop and a first-person player.
+START3D_SCENE = '''"""Main: one map file, one prop and a first-person player.
 
-This is a starting point, not a level. The floor is one sheet the engine
-paints, the prop is `objects/prop.obj3d` - which this scene's document
-places, so the Project View shows it under the scene - and the player
-walks and looks with the bound actions, which a player can rebind.
+The room is not built here. `maps/room.map3d` is: a floor and four walls
+as the parts its geometry is carved into, four collision boxes and a lamp
+as the nodes it places, and the corner you start in as its spawn point.
+`scenes/main.scene` names the file, so this script spawns only what rides
+on top of a level - the player, and nothing else.
 
-The player starts at +Z facing back down the floor (`yaw=math.pi`), so
-the prop and the fire are in front of the camera on the first frame;
-`spawn_point()` is what play mode and the editor's Edit view both obey.
+That split is what makes a swap cheap: `self.change_map("other")` drops
+the room and everything its document places, and keeps whatever this
+scene spawned itself. A second map therefore needs no second script.
 
-F5 plays it. Drag the prop in Edit mode and the collision box its own
-document files under it moves along, because it was placed as its child.
+The prop is `objects/prop.obj3d`, placed by this scene's document, so the
+Project View shows it under the scene; dragging it drags the collision box
+filed under it too. F5 plays it.
 
-Add a game from here: `self.spawn(...)` more objects, `self.add_light`
-a lamp, `self.add(meshes...)` walls, `self.place_model(...)` a mesh from
-`models/`, or a look of your own in `shaders/` named in `post`.
+Add a game from here: `self.map.set_part_texture("wall_n", "stone")`
+re-dresses one part of the room, `self.spawn(...)` adds objects, and a
+list of maps plus one trigger is all a key needs to walk between them.
 """
 
-import math
-
 import emoeng as fe
-from emoeng.engine import meshes
 
 
 class Main(fe.Scene3D):
     name = "main"
     uses = ("prop",)
+
+    map_name = "room"           # the level this scene opens on
+    world_radius = 0.0          # the room's own walls are the stop
 
     clear_color = (0.05, 0.06, 0.09)
     fog_color = (0.06, 0.07, 0.11)
@@ -1162,16 +1333,10 @@ class Main(fe.Scene3D):
     sun_col = (0.50, 0.48, 0.46)
 
     def setup(self):
-        # `grid` is built in; a new project has a floor
-        self.renderer.texture("grid", fe.proctex.grid(128, 8))
-        self.add(meshes.plane(size=(40, 40), seg=8), texture="grid")
-        self.add_light((0.0, 2.6, -4.0), "fire", radius=9.0)
-        self.player = self.spawn(fe.Player3D, pos=(0.0, 0.0, 6.0),
-                                 yaw=math.pi, move_speed=(5.0, 9.0),
-                                 world_radius=19.0)
-
-    def spawn_point(self):
-        return (0.0, 0.0, 6.0), math.pi
+        # the map is already loaded, so it says where to stand
+        start, yaw = self.spawn_point()
+        self.player = self.spawn(fe.Player3D, pos=start, yaw=yaw,
+                                 move_speed=(5.0, 9.0), world_radius=0.0)
 
     def status(self):
         return [self.name, "emoeng project"]
@@ -1219,36 +1384,39 @@ _PROP3D_NODES = (
      "knobs": {"shape": "box", "half": [0.55, 0.55, 0.55]}},
 )
 
-START2D_SCENE = '''"""Main: a flat arena, one sprite, one steered player.
+START2D_SCENE = '''"""Main: one flat map, one sprite and a steered player.
+
+`maps/arena.map2d` is the world: a floor and four border bands as the
+parts its geometry is carved into, four solid rects as the nodes it
+places, and its own start position. `scenes/main.scene` names the file,
+so this script spawns only the player and leaves the arena to the map.
 
 World pixels: origin top-left, x right, y down. `world_size` is the
-design resolution the camera scales to the window. The player steers
-with arrows or WASD (`run` sprints), keeps the view centred on itself
-and wheel-zooms it; the sprite is placed by this scene's document, which
-files its Collision2D under it.
+design resolution the camera scales to the window, and it is the map's
+own size. The player steers with arrows or WASD (`run` sprints), keeps
+the view centred on itself and wheel-zooms it; the sprite is placed by
+this scene's document, which files its Collision2D under it.
 
-Add a game from here: `self.spawn(Sprite, (x, y))` more flat objects,
-`self.add(meshes.rect2d(...), blend="alpha")` backdrops, a second angle
-with `self.add_camera(name=...)` and `self.set_active_camera(name)`.
+Add a game from here: `self.spawn(Sprite, (x, y))` more flat objects, a
+second angle with `self.add_camera(name=...)` and
+`self.set_active_camera(name)`.
 """
 
 import emoeng as fe
-from emoeng.engine import meshes
 
 
 class Main(fe.Scene2D):
     name = "main"
     uses = ("sprite",)
 
+    map_name = "arena"          # the level this scene opens on
     world_size = (960.0, 540.0)
     clear_color = (0.05, 0.06, 0.10)
 
     def setup(self):
-        # a flat backdrop, queued into the static alpha batch
-        self.add(meshes.rect2d((480, 270), (960, 540),
-                               col=(0.10, 0.14, 0.22)),
-                 texture="white", blend="alpha")
-        self.player = self.spawn(fe.Player2D, (480.0, 450.0),
+        # the map is already loaded, so it says where to stand
+        start, _yaw = self.spawn_point()
+        self.player = self.spawn(fe.Player2D, start[:2],
                                  size=(96.0, 20.0), col=(0.9, 0.9, 1.0))
 
     def status(self):
@@ -1524,18 +1692,18 @@ class Main(fe.Scene2D):
 '''
 
 
-# every starting point, in the order the dialog lists: `group` is the
-# caption the picker puts above a run of starters
+# every starting point, in dialog order; `group` is the caption
+# the picker puts above a run of them
 PROJECTS = {
     "game3d": {
         "title": "Game 3D",
         "group": "3D",
-        "hint": "a first-person world: a floor, one prop, a player",
+        "hint": "a first-person world: a map, one prop, a player",
         "size": [1152, 700],
         "scale": 0.75,
         "start": "main",
         "scenes": (("main", "scene3d", START3D_SCENE,
-                    (("prop", [0.0, 0.0, -4.0]),)),),
+                    (("prop", [0.0, 0.0, -1.0]),)),),
         "objects": (("prop", "object3d", START3D_PROP, _PROP3D_NODES),),
         "models": ("box", "crate", "pillar"),
         "maps": ("room",),
@@ -1558,7 +1726,7 @@ PROJECTS = {
     "game2d": {
         "title": "Game 2D",
         "group": "2D",
-        "hint": "a flat arena: a backdrop, one sprite, a steered player",
+        "hint": "a flat arena: a map, one sprite, a steered player",
         "size": [960, 540],
         "scale": 1.0,
         "start": "main",
@@ -1567,7 +1735,7 @@ PROJECTS = {
         "objects": (("sprite", "object2d", START2D_SPRITE,
                      _SPRITE2D_NODES),),
         "models": ("sprite",),
-        "maps": (),
+        "maps": ("arena",),
     },
     "platformer": {
         "title": "Platformer 2D",
@@ -1630,9 +1798,8 @@ def spec(key):
                         PROJECTS[DEFAULT_TEMPLATE])
 
 
-# what a 3D scene already starts with, so the Project tab has rows to show:
-# every `defaults` key, set to the value the engine itself holds, so a new
-# project looks exactly as it did before the manifest said anything
+# a 3D scene's defaults, so the Project tab has rows:
+# every `defaults` key at the engine's own value
 SEED_DEFAULTS = {
     "ambient": [0.22, 0.22, 0.26], "sun_dir": [0.35, 0.75, 0.5],
     "sun_col": [0.22, 0.20, 0.18], "fog_color": [0.06, 0.06, 0.09],
@@ -1640,8 +1807,8 @@ SEED_DEFAULTS = {
     "lock_input": False, "master": 1.0, "fog_near": 40.0,
     "fog_far": 220.0, "fov": 68.0, "near": 0.05, "far": 800.0,
     "eye_height": 2.0, "world_radius": 128.0,
-    # the engine's walk camera is glued to the ground, so these stay off
-    # until a scene wants falling: they are here to be switched on
+    # the walk camera is glued down, so these stay off
+    # until a scene wants falling
     "gravity": 0.0, "jump_speed": 0.0,
 }
 
@@ -1651,13 +1818,16 @@ def template_names():
     return TEMPLATE_ORDER
 
 
-def manifest(key, name, title=None, start=None):
+def manifest(key, name, title=None, start=None, options=None):
     """The manifest dict `Project.create` writes for one template."""
     named = str(key or DEFAULT_TEMPLATE)
     got = spec(named)
-    # the row the manager files it under, without reading its scenes back
+    # the row the manager files it under
     named = named if named in PROJECTS else DEFAULT_TEMPLATE
     three_d = any(kind == "scene3d" for _n, kind, _s, _p in got["scenes"])
+    # the New Project dialog's knobs, each optional and guarded
+    options = options if isinstance(options, dict) else {}
+    size = [int(v) for v in (options.get("size") or got["size"])][:2]
     return {
         "format": const.PROJECT_FORMAT,
         "name": str(name),
@@ -1667,11 +1837,12 @@ def manifest(key, name, title=None, start=None):
         "version": "0.1.0",
         "description": str(got["hint"]),
         "seed": 7,
-        "window": {"size": list(got["size"]), "fullscreen": False,
+        "window": {"size": size, "fullscreen": False,
                    "resizable": True, "min_size": [800, 480]},
-        "render": {"scale": float(got["scale"]), "post": [],
-                   "bake_on_run": False, "bake_size": 512,
-                   "vsync": True, "fps_cap": 60},
+        "render": {"scale": float(options.get("scale", got["scale"])),
+                   "post": [], "bake_on_run": False, "bake_size": 512,
+                   "vsync": bool(options.get("vsync", True)),
+                   "fps_cap": int(options.get("fps_cap", 60))},
         "audio": {"master": 0.8, "music_volume": 0.6, "music": ""},
         "save": {"slot": const.SAVE_SLOT, "autosave": 0.0,
                  "auto_load": False},
@@ -1685,8 +1856,8 @@ def layout(key, start=None):
     """What a template writes for `Project.create`."""
     got = spec(key)
     stem = str(start or got["start"])
-    # the folder and suffix are read off the template's own document types,
-    # so an entity is written into `entities/` and a prop into `objects/`
+    # folder and suffix come from the template's document types,
+    # so a prop lands in `objects/`, an entity in `entities/`
     where = {name: (scenedoc.doc_folder(kind), scenedoc.doc_ext(kind))
              for name, kind, _src, _nodes in got["objects"]}
 
@@ -1696,12 +1867,17 @@ def layout(key, start=None):
         return f"{folder}/{ref}{ext}"
 
     scripts, documents = {}, {}
+    ships = tuple(got.get("maps") or ())
     for name, kind, source, places in got["scenes"]:
         file = stem if name == got["start"] else name
         scripts[f"scripts/scenes/{file}.py"] = source
         doc = scenedoc.blank_scene(
             file, kind, scenedoc.script_field("scripts/scenes",
                                               f"{file}.py"))
+        # a starter scene builds nothing: it names the map it loads
+        loaded = map_for(kind, ships)
+        if loaded is not None:
+            doc["map"] = loaded
         doc["objects"] = [{"id": ref, "object": document_ref(ref),
                            "pos": list(place)} for ref, place in places]
         documents[f"scenes/{file}.scene"] = doc
@@ -1714,5 +1890,4 @@ def layout(key, start=None):
         doc["nodes"] = [dict(node) for node in nodes]
         documents[f"{scenedoc.doc_folder(kind)}/{name}"
                   f"{scenedoc.doc_ext(kind)}"] = doc
-    return scripts, documents, tuple(got["models"]), \
-        tuple(got.get("maps") or ())
+    return scripts, documents, tuple(got["models"]), ships

@@ -92,10 +92,16 @@ FOLDER_CREATE = {"scenes": ("scene", "new_scene"),
                  "objects": ("object", "new_object"),
                  "entities": ("entity", "new_entity_3d"),
                  "shaders": ("shader", "new_shader"),
+                 "models": ("asset", "new_model"),
+                 "maps": ("map", "new_map"),
                  "scripts/scenes": ("scene", "new_scene"),
                  "scripts/objects": ("object", "new_object"),
                  "scripts/entities": ("entity", "new_entity_3d"),
                  "scripts/shaders": ("shader", "new_shader")}
+# asset folders whose plus runs a New action, since no dialog suits them
+FOLDER_NEW = {"textures": "new_image",
+              "audio": "new_sfx",
+              "scripts": "new_script"}
 # a `.py` in a document folder belongs to no document
 _STRAY_KINDS = ("scenes", "objects", "entities")
 # the extensions whose files own a branch, so the tree can fold them; an
@@ -177,6 +183,8 @@ MENUS = {
                 ("-", None),
                 ("New Model...", "new_model"),
                 ("New 2D Model...", "new_model_2d"),
+                ("New 3D Map...", "new_map"),
+                ("New 2D Map...", "new_map_2d"),
                 ("New Image...", "new_image"),
                 ("New Script...", "new_script"),
                 ("-", None),
@@ -208,6 +216,8 @@ ACTION_ICONS = {
     "new_screen_2d": "new-file-sym",
     "new_model": "new-file-sym",
     "new_model_2d": "new-file-sym",
+    "new_map": "new-file-sym",
+    "new_map_2d": "new-file-sym",
     "new_image": "new-file-sym",
     "new_shader": "new-file-sym",
     "new_script": "new-file-sym",
@@ -242,7 +252,8 @@ ACTION_ICONS = {
 
 # kinds New makes: menu and dialog share one set
 _CREATE_KINDS = frozenset(SCENE_PRESETS) | frozenset(OBJECT_PRESETS) | \
-    frozenset({"new_model", "new_model_2d", "new_script", "new_shader"})
+    frozenset({"new_model", "new_model_2d", "new_script", "new_shader",
+               "new_map", "new_map_2d"})
 
 SCRIPT_TEMPLATE = '''"""Shared helpers; import them from a scene.
 
@@ -271,6 +282,18 @@ def clean_stem(text, fallback="untitled"):
                 for c in str(text).strip())
     s = s.strip("_")
     return s or fallback
+
+
+def _parse_size(text):
+    """`64x64` or `64 64` as (w, h); None when it does not read."""
+    parts = str(text or "").lower().replace(" ", "x").split("x")
+    parts = [p for p in parts if p]
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
 
 
 # the icon a `.py` earns from its base class
@@ -463,6 +486,14 @@ class Editor:
         if self.project is not None:
             return self.project.relative(path)
         return str(path)
+
+    def paint_session(self):
+        """The paint canvas the active tab is showing, or None."""
+        if self.tab == TAB_PIXEL:
+            return self.pixel
+        if self.tab == TAB_MODEL and self.model.ui_mode == "uv":
+            return self.model.uvpaint
+        return None
 
     @property
     def cfg(self):
@@ -845,7 +876,8 @@ class Editor:
                              "label": f"{kind} ({len(files)})",
                              "depth": 1, "path": p.dir(kind),
                              "open": opened, "key": kind,
-                             "create": FOLDER_CREATE.get(kind)})
+                             "create": FOLDER_CREATE.get(kind),
+                             "new": FOLDER_NEW.get(kind)})
                 if not opened:
                     continue
                 for f in files:
@@ -941,7 +973,7 @@ class Editor:
             self.status = f"shader {path.name}"
             return True
         if suffix in (scenedoc.MODEL3D_EXT, scenedoc.MODEL_EXT,
-                      scenedoc.MODEL2D_EXT, scenedoc.MAP3D_EXT):
+                      scenedoc.MODEL2D_EXT) + scenedoc.MAP_EXTS:
             # both model halves open in Model, chosen by suffix
             if self.code.dirty:
                 self.code.save()
@@ -992,6 +1024,29 @@ class Editor:
             return True
         self.log(f"{path.name}: open it with an external program", "muted")
         return False
+
+    def preview_map(self, path):
+        """Run one map in the Scene tab, with no scene document of it."""
+        if self.project is None:
+            return False
+        self.set_tab(TAB_SCENE)
+        if not self.preview.play_map(Path(path).stem):
+            return False
+        self.status = f"map {Path(path).stem} running"
+        return True
+
+    def edit_map(self, path):
+        """Open one map in the Scene tab and drop straight into Edit.
+
+        The node tree comes up ready: placed nodes drag like anything
+        else, the player start is a marker you can move, and every
+        change writes itself back into the map file.
+        """
+        if not self.preview_map(path):
+            return False
+        self.preview.toggle_mode("edit")
+        self.status = f"editing map {Path(path).stem}"
+        return True
 
     def open_raw(self, path):
         """Show a document's raw JSON in the Code tab."""
@@ -1066,7 +1121,14 @@ class Editor:
         elif self.tab == TAB_PROJECT:
             self.projecttab.save()
         elif self.tab == TAB_MODEL:
-            self.model.save()
+            if self.model.save():
+                # a saved level shows itself in the preview behind you
+                if self.hot_reload_save:
+                    self._maybe_hot_reload(str(self.model.path))
+                elif self.model.is_map:
+                    # a map is meant to be looked at: rebuild even
+                    # with hot reload switched off
+                    self.preview.reload()
         elif self.tab == TAB_PIXEL:
             self.pixel.save()
         elif self.tab == TAB_AUDIO:
@@ -1448,14 +1510,26 @@ class Editor:
             if text == "Save PNG":
                 self.pixel.save(force=True)
             return
+        if kind == "layer_rename":
+            paint = self.paint_session()
+            if paint is not None:
+                paint.set_layer_name(text)
+            return
+        if kind == "pixel_resize":
+            size = _parse_size(text)
+            if size is None:
+                self.log(f"{text!r} is not WxH, like 64x64", "warn")
+            elif self.pixel.resize_canvas(size):
+                self.pixel.dirty = True
+            return
         if kind == "sfx_new":
             self.media.maker.new(text)
             self.media.set_mode("maker")
             return
         if kind == "sfx_save":
             # the maker asked before turning itself into a wav
-            if text == "Collapse":
-                self.media.maker.save(force=True)
+            if text != "Cancel":
+                self.media.maker.save(force=True, fmt=text)
             return
         if kind == "sfx_sample":
             self.media.maker.add_sample(text)
@@ -1472,10 +1546,15 @@ class Editor:
             try:
                 Project.create(path, title=raw.strip() or stem,
                                template=payload.get("choice")
-                               or templates.DEFAULT_TEMPLATE)
+                               or templates.DEFAULT_TEMPLATE,
+                               options=payload.get("options"))
             except Exception as exc:
                 self.log(f"cannot create project: {exc}", "error")
                 return
+            opts = payload.get("options") or {}
+            if opts:
+                self.log(f"{stem}: {opts.get('size')} window, "
+                         f"{opts.get('fps_cap') or 'uncapped'} fps", "muted")
             self.open_project(path)
             return
         if kind and kind.startswith("project_rename:"):
@@ -1524,6 +1603,10 @@ class Editor:
             self._new_model(stem)
         elif kind == "new_model_2d":
             self._new_model_2d(stem)
+        elif kind == "new_map":
+            self._new_map(stem, "map3d")
+        elif kind == "new_map_2d":
+            self._new_map(stem, "map2d")
 
     def _new_script(self, stem):
         """Write a shared helper module under `scripts/`."""
@@ -1556,6 +1639,35 @@ class Editor:
         self.model.open(path)
         self.set_tab(TAB_MODEL)
         self.log(f"created models/{stem}{scenedoc.MODEL2D_EXT}", "ok")
+
+    def _new_map(self, stem, kind="map3d", starter=None):
+        """Create a map, opened in the Model tab: a starter room or a box.
+
+        A named starter from `templates.MAPS` writes a whole playable
+        level - parts, collision nodes, a spawn - in one gesture; the
+        plain `blank` way starts from a single box to carve up.
+        """
+        if self.project.map_doc(stem) is not None:
+            self.log(f"maps/{stem} already exists", "warn")
+            return
+        row = templates.MAPS.get(str(starter or ""))
+        if row is not None and row[0] == kind:
+            doc = templates.make_map(stem, starter)
+            path = self.project.save_map_doc(stem, doc)
+            self.refresh_tree()
+            if path is not None:
+                self.model.open(path)
+            self.set_tab(TAB_MODEL)
+            self.log(f"created {self.project.relative(path)} from the "
+                     f"{starter} - carve it into parts, then Save", "ok")
+            return
+        self.set_tab(TAB_MODEL)
+        self.model.new_map("box", kind)
+        self.model.name_field.set(stem)
+        if not self.model.save():
+            return
+        self.log(f"created {self.project.relative(self.model.path)} - "
+                 "carve it into parts, then Save", "ok")
 
     def _new_scene(self, kind, stem, model=None, texture=None):
         """Write a scene's script and its document."""
@@ -1658,6 +1770,10 @@ class Editor:
             self._new_model(stem, texture=texture or "grid")
         elif kind == "new_model_2d":
             self._new_model_2d(stem)
+        elif kind == "new_map":
+            self._new_map(stem, "map3d", payload.get("template"))
+        elif kind == "new_map_2d":
+            self._new_map(stem, "map2d", payload.get("template"))
         else:
             self.log(f"cannot create a {kind}", "warn")
 
@@ -1697,8 +1813,8 @@ class Editor:
         suffix = path.suffix.lower()
         return suffix == ".py" or scenedoc.kind_of(path) is not None or \
             suffix in (scenedoc.MODEL3D_EXT, scenedoc.MODEL_EXT,
-                       scenedoc.MODEL2D_EXT,
-                       scenedoc.MAP3D_EXT) or suffix in IMAGE_EXT or \
+                       scenedoc.MODEL2D_EXT) + scenedoc.MAP_EXTS or \
+            suffix in IMAGE_EXT or \
             suffix in AUDIO_EXT or suffix == sfx.SFX_EXT or \
             suffix == ".flig" or \
             path.name in (META_NAME, INPUT_NAME, ASSET_NAME)
@@ -1708,6 +1824,9 @@ class Editor:
         acts = []
         if self._can_open(path):
             acts.append(("open", "Open"))
+        if path.suffix.lower() in scenedoc.MAP_EXTS:
+            acts.append(("preview_map", "Play in Scene tab"))
+            acts.append(("edit_map", "Edit level"))
         kind = scenedoc.kind_of(path)
         if kind is not None:
             acts.append(("raw", "View raw JSON"))
@@ -1740,6 +1859,10 @@ class Editor:
         """Do what a context-menu row asked, on its file."""
         if action == "open":
             self.open_file(path)
+        elif action == "preview_map":
+            self.preview_map(path)
+        elif action == "edit_map":
+            self.edit_map(path)
         elif action == "raw":
             self.open_raw(path)
         elif action == "add_scene":
@@ -2253,7 +2376,7 @@ class Editor:
                 "music" if action == "new_music" else "sfx")
         elif action == "import_asset":
             self.import_dialog()
-        elif action in _CREATE_KINDS:
+        elif action in _CREATE_KINDS or action == "new_image":
             # one path for every New entry: the unified dialog
             self._prompt(action)
         elif action == "reload_project":
@@ -2598,13 +2721,30 @@ class Editor:
             return False
         return bool(path) and self.open_file(path)
 
+    def create_row(self, folder):
+        """What a folder's New offers, for the tree and the Assets rail."""
+        folder = str(folder)
+        return {"kind": "folder", "key": folder, "label": folder,
+                "create": FOLDER_CREATE.get(folder),
+                "new": FOLDER_NEW.get(folder)}
+
     def create_in_folder(self, row):
-        """Open the New dialog filtered to one folder's kinds."""
+        """Open the New route one folder's plus points at."""
         if self.project is None:
             self.log("open a project first", "warn")
             return
-        group, kind = row["create"]
+        action = row.get("new")
+        if action:
+            self._run_action(action)
+            return
+        spec = row.get("create")
         self.dialog_kind = "create"
+        if spec is None:
+            # no folder named: the whole New dialog, every group in it
+            self.dialog = widgets.CreateDialog(self.project, "new_scene",
+                                               width=470)
+            return
+        group, kind = spec
         self.dialog = widgets.CreateDialog(self.project, kind, width=470,
                                            only=group)
 

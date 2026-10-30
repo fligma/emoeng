@@ -31,8 +31,10 @@ hello/
 │   └── helpers.py        shared module: `from scripts import helpers`
 ├── models/               .model3d (solid) and .model2d (flat, riggable) JSON
 │   └── box.model3d
-├── maps/                 .map3d - the same schema, in a walked folder
-│   └── keep.map3d        placed by a scene's `maps` field; builds its collider
+├── maps/                 .map3d (walked) and .map2d (flat) level documents
+│   ├── hall.map3d        a whole level: parts, placed nodes, a spawn point
+│   └── echo.map2d        a scene names one in its `map` field, and can
+│                         swap it for another mid play
 ├── textures/             .png / .jpg, uploaded by file stem
 ├── audio/                .wav .ogg .mp3 .flac, loaded by file stem;
 │                         a .sfxproject is rendered instead
@@ -61,7 +63,7 @@ says which family a document is in (`.ent3d` / `.ent2d` against `.obj3d` /
 | `entities` | `KINDS` | `enemy.ent3d` / `enemy.ent2d`; `entity_names()` lists the stems |
 | `scripts` | `KINDS`, `PACKAGES` | `scripts/scenes/`, `scripts/objects/`, `scripts/entities/` and shared modules |
 | `models` | `KINDS` | `Model.load` / `Model2D.load` by stem |
-| `maps` | `KINDS` | `maps/<stem>.map3d` - model documents that build a mesh collider when placed; `map_names()` lists the stems |
+| `maps` | `KINDS` | `maps/<stem>.map3d` and `<stem>.map2d` - level documents holding geometry, placed nodes and a spawn; `map_names()` lists the stems, `map2d_names()` the flat ones. See [Maps](maps.md) |
 | `textures` | `KINDS` | `Renderer.texture` by stem |
 | `audio` | `KINDS` | `Audio.load` by stem; a `.sfxproject` is rendered by `engine.sfx` under the same stem |
 | `shaders` | - (watched) | `scanlines.shader` documents + `scripts/shaders/*.py`; `shader_names()` lists the stems. A folder the manifest's `post` and objects read from; see [Shaders](shaders.md) |
@@ -104,10 +106,13 @@ to the dimensioned spelling when the folder is opened
 `objects` is a tree: an entry's `children` hang off it, and a child's `pos` is
 read against its parent, so moving the crate moves its picture and its shape.
 An entry names either a script or one of the engine's node types - see
-[Objects](objects.md) for the whole table. A scene document may also carry a
-`maps` list - bare stems or `"map"`-keyed rows with a place - and
-`Project.scene()` spawns a `Map3D` for each before the object tree, so a whole
-level can be one file in `maps/`. An **object** document is a tree
+[Objects](objects.md) for the whole table. A scene document may also name the
+level it opens on - `"map": "hall"` - and `Project.scene()` loads that map
+before `setup()` runs, so the file says where the player stands. The older
+`maps` list - bare stems or `"map"`-keyed rows with a place - still works and
+spawns one `Map3D` per entry after `setup()`, for a scene that wants two
+levels side by side. [Maps](maps.md) covers both, and swapping a level at
+runtime. An **object** document is a tree
 too: `objects/prop.obj3d` files its own branch under `nodes`, so a label or a
 collision shape it owns shows up nested under every placement of it - the same
 structure the Project View and Scene list draw. An **entity** document is the
@@ -280,7 +285,7 @@ read, so the `_help` note can stay.
 | `scenes_dir`, `objects_dir`, `entities_dir`, `scripts_dir`, `models_dir`, `maps_dir`, `textures_dir`, `audio_dir`, `shaders_dir`, `scene_scripts_dir`, `object_scripts_dir`, `entity_scripts_dir`, `shader_scripts_dir`, `saves_dir` | the same, per kind |
 | `files(kind)` | every file in that folder |
 | `scene_names()`, `object_names()`, `entity_names()`, `spawnable_names()`, `script_names()`, `shader_names()` | stems; `spawnable_names()` is both document folders at once |
-| `model_names()`, `model2d_names()`, `map_names()` | `.model3d` (old `.model` too) / `.model2d` / `.map3d` stems |
+| `model_names()`, `model2d_names()`, `map_names()`, `map2d_names()` | `.model3d` (old `.model` too) / `.model2d` / `.map3d` (both kinds) / `.map2d` stems |
 | `texture_files()`, `audio_files()`, `sfx_files()` | paths; `sfx_files()` is the `.sfxproject` documents in `audio/` |
 | `relative(path)` | project-relative display path |
 | `model_path(name)`, `model2d_path(name)`, `object_path(name)` | path for a stem |
@@ -290,7 +295,9 @@ read, so the `_help` note can stay.
 | Member | Notes |
 | --- | --- |
 | `model(name)` / `store_model(model, name=None)` | Load-and-cache / save-and-refresh a `.model3d` |
-| `map(name)` / `store_map(model, name=None)` | The same pair for `maps/<stem>.map3d`, read through the model loader; `map_path(name)` prefers the `.map3d` spelling |
+| `map(name)` / `map2d(name)` / `store_map(model, name=None, doc=None, kind=None)` | The carved geometry of `maps/<stem>.map3d` or `.map2d`, read through the model loader; `store_map` keeps the nodes the file already placed. `map_path(name, kind)` prefers the spelling `kind` means |
+| `map_doc(name)` / `save_map_doc(name, doc)` / `new_map(name, kind)` | A map's whole document - parts, `nodes`, `spawn` - and a fresh one of a kind |
+| `map_scene(name, game)` | A bare scene around one map, which is what the editor's Play map runs |
 | `model2d(name)` / `store_model2d(model, name=None)` | Same for `.model2d` |
 | `texture(name)` | Load a texture file into a numpy array |
 | `register_textures(renderer, verbose=None)` | Upload every file, filtered as `assets.json` asks, per sheet included |
@@ -318,7 +325,7 @@ read, so the `_help` note can stay.
 | `load_shaders()` | Import every `scripts/shaders/*.py`; name -> class, mirroring object scripts |
 | `upgrade_documents()` | Rename legacy `.object` / `.model` files, and move an `entities/` document still spelled `.obj3d` / `.obj2d` onto `.ent3d` / `.ent2d`; run for you when the project opens |
 | `check_uses(cls, seen=None, base=GameObject)` | Stems a scene (or an object) needs but neither document folder has |
-| `snapshot(kinds=None)` / `changed_since(snap, kinds=None)` | mtime+size watch over `WATCHED` = `scenes`, `objects`, `entities`, `scripts`, `shaders` |
+| `snapshot(kinds=None)` / `changed_since(snap, kinds=None)` | mtime+size watch over `WATCHED` = `scenes`, `objects`, `entities`, `scripts`, `shaders`, `maps` |
 | `touch(kind, name)` | Create an empty file (the editor's New buttons) |
 | `ensure_templates(gitignore=True, readme=True)` | Write the folder docs, never overwriting |
 

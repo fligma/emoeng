@@ -167,7 +167,7 @@ What the kind decides:
 | drawer rows | `blocks.palette(category, kind)` drops a block whose `kinds` list does not name the file's kind |
 | language drawers | a script is offered `control`, `data`, `functions`, `modules` and `code` - `SCRIPT_CATEGORIES` - and nothing that needs a scene |
 | strict node drawers | a preset node's script is offered its own drawer plus the language, and nothing else - `blocks.TYPE_CATEGORIES`. An audio emitter sees `audio`, a light node sees `light`, a shader script sees `shader`, a timer sees only the language; an entity sees `object`, `entity`, `trigger` and `light` on top of the language, because it spawns and moves, has behaviour, hears signals and carries a light of its own. `blocks.fits()` consults the allowlist before the `kinds` check |
-| events drawer | `HOOK_ROWS` carries the kinds a hook runs in: `on_enter` and `on_exit` are a scene's, `build` and `update` belong to any file; a hitbox or trigger also hears `on_enter(self, other)` / `on_exit(self, other)`, a timer hears `on_timeout(self)`, and a shader script hears the `frag(self, g)` hat |
+| events drawer | `HOOK_ROWS` carries the kinds a hook runs in: `on_enter` and `on_exit` are a scene's, `build` and `update` belong to any file; a scene also hears `on_map_loaded(self, level)` / `on_map_unloaded(self, level)` when a level comes or goes, a hitbox or trigger also hears `on_enter(self, other)` / `on_exit(self, other)`, a timer hears `on_timeout(self)`, and a shader script hears the `frag(self, g)` hat |
 | toolbar | a chip beside the file's name says which kind was read |
 | drawer on open | the palette opens on the drawer that kind is made from - `scene` for a 3D scene, `object` for a 3D object, `entity` for an entity script, `ui` for a UI scene, `light` for a light node, `audio` for an emitter, `shader` for a shader script, `functions` for a timer, `data` for a script (`blocktab.DRAWER_FOR`) |
 | Inspector | `info()` lists it under *Kind* |
@@ -314,7 +314,7 @@ What a signature cannot say, `Call` adds:
 
 | Drawer | Built from | A fresh block writes |
 | --- | --- | --- |
-| `scene` | `play_scene`, `push_scene`, `pop_scene`, `set_ambient`, `set_sun`, `add_camera`, `set_active_camera`, `shake`, `follow`, `look_at`, `set_post`, `set_shader_knob` | `self.play_scene("menu")`, `self.set_sun(dir=(0.4, 0.8, 0.3), color=(1.0, 1.0, 1.0))` |
+| `scene` | `play_scene`, `push_scene`, `pop_scene`, `load_map`, `change_map`, `unload_map`, `set_ambient`, `set_sun`, `add_camera`, `set_active_camera`, `shake`, `follow`, `look_at`, `set_post`, `set_shader_knob` | `self.play_scene("menu")`, `self.set_sun(dir=(0.4, 0.8, 0.3), color=(1.0, 1.0, 1.0))` |
 | `object` | `spawn`, `place_model`, `model_object`, `add`, `dynamic`, and the words the object classes take | `self.spawn("spark", (0.0, 0.0, 0.0))`, `self.place_model("crate", (0.0, 0.0, 0.0))` |
 | `entity` | the setters `EntityBehaviour` owns: `set_health`, `set_max_health`, `set_ai`, `set_ai_target`, `set_team`, `set_aggro_range`, `set_attack`, `set_move_speed`, `set_hitbox`, `set_hitbox2d` | `self.set_health(100.0)`, `self.set_attack(range=2.0, damage=15.0, cooldown=1.5)` (see [Entity blocks](#entity-blocks)) |
 | `trigger` | `self.connect`, `self.disconnect`, `self.emit`, on top of the scene's own `broadcast` / `listen` / `unlisten` | `self.connect("door", self.on_door)`, `self.emit("door", True)` |
@@ -458,6 +458,7 @@ the slots that really take an asset open a list:
 | `sound` | `audio` | the built-in synth tones |
 | `path` | `audio` | nothing built in |
 | `scene` | `scenes` | nothing built in |
+| `map` | `maps` - both `.map3d` and `.map2d` stems | nothing built in |
 | `obj` | `objects` and `entities` | nothing built in |
 
 `api.choices(project, slot)` builds the list, and `api.known` checks a word
@@ -596,7 +597,8 @@ a class.
 
 ```python
 ("setup", "build", "update", "overlay", "draw", "handle_event", "on_enter",
- "on_exit", "on_timeout", "on_save", "on_load", "status", "place",
+ "on_exit", "on_timeout", "on_save", "on_load", "on_map_loaded",
+ "on_map_unloaded", "on_trigger", "status", "place",
  "spawn_point", "ground_height", "interact", "use", "trigger", "collide",
  "dispose", "attach", "set", "set_camera", "clone_kwargs", "poll_look",
  "poll_move", "apply_look", "apply_move", "publish_camera", "teleport",
@@ -622,6 +624,8 @@ The drawer's own descriptions of the hooks it advertises
 | `on_timeout` | `self` | when this timer's wait is up |
 | `on_save` | `self, save` | before a save is written |
 | `on_load` | `self, save` | after a save is read |
+| `on_map_loaded` | `self, level` | after a map is built or swapped in |
+| `on_map_unloaded` | `self, level` | after this scene's map is taken out |
 | `dispose` | `self` | last, when the object is going away |
 | `frag` | `self, g` | records the picture a shader paints, once at compile |
 

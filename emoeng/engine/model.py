@@ -88,9 +88,9 @@ class Model:
             self.uvs.append([0.0, 0.0])
         del self.uvs[len(self.verts):]
         if self.uv2:      # a second channel is padded only when it exists,
-            while len(self.uv2) < len(self.verts):    # so `[]` still means
-                self.uv2.append([0.0, 0.0])           # "this model has
-            del self.uv2[len(self.verts):]            # no uv2 at all"
+            while len(self.uv2) < len(self.verts):
+                self.uv2.append([0.0, 0.0])
+            del self.uv2[len(self.verts):]            # `[]` means no uv2
         keep = [i for i, t in enumerate(self.tris)
                 if len(t) == 3 and all(0 <= j < len(self.verts) for j in t)]
         where = {old: new for new, old in enumerate(keep)}
@@ -715,8 +715,8 @@ class Model:
         self.tris.append([a, b, c])
         self.tex.append(tex or None)
         if self.uv2:
-            while len(self.uv2) < len(self.tris):   # never split the
-                self.uv2.append([0.0, 0.0])         # two parallel lists
+            while len(self.uv2) < len(self.tris):   # keep the lists parallel
+                self.uv2.append([0.0, 0.0])
         if self.objects:      # a brand new face joins the first part
             self.objects[0]["faces"].append(fid)
         return fid
@@ -826,16 +826,356 @@ class Model:
         self.tris, self.tex = tris, tex
         self._sync_claims()
 
+    # ---- the surgery kit: subdivide, inset, slice ----------------------
+    def _face_owners(self):
+        """face index -> object index, when the model is carved."""
+        own = {}
+        for oi, o in enumerate(self.objects):
+            for f in o["faces"]:
+                own[int(f)] = oi
+        return own
+
+    def _reclaim_from(self, src):
+        """Part claims follow a rebuilt face list (`src[i]` = owner idx)."""
+        if not self.objects:
+            return
+        for oi, o in enumerate(self.objects):
+            o["faces"] = [i for i, old in enumerate(src) if old == oi]
+        self.align_objects()
+
+    def subdivide(self, faces=None):
+        """Split each picked triangle into four at the edge midpoints.
+
+        Midpoints are shared between neighbours, so the new ring welds;
+        every piece wears its source's texture tag and part claim.
+        Returns the faces gained."""
+        total = len(self.tris)
+        if not total:
+            return 0
+        if faces is None:
+            wanted = set(range(total))
+        else:
+            wanted = {int(f) for f in faces
+                      if isinstance(f, (int, float))
+                      and 0 <= int(f) < total}
+        if not wanted:
+            return 0
+        tags = self.align_tex()
+        own = self._face_owners()
+        have2 = bool(self.uv2)
+        uv2 = self._aligned_uv2() if have2 else []
+        verts = [list(v) for v in self.verts]
+        uvs = [list(p) for p in self.uvs]
+        mid = {}
+
+        def half(i, j):
+            key = (i, j) if i < j else (j, i)
+            got = mid.get(key)
+            if got is None:
+                a, b = verts[i], verts[j]
+                ua, ub = uvs[i], uvs[j]
+                verts.append([(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5,
+                              (a[2] + b[2]) * 0.5])
+                uvs.append([(ua[0] + ub[0]) * 0.5, (ua[1] + ub[1]) * 0.5])
+                if have2:
+                    uv2.append([(uv2[i][0] + uv2[j][0]) * 0.5,
+                                (uv2[i][1] + uv2[j][1]) * 0.5])
+                mid[key] = got = len(verts) - 1
+            return got
+
+        tris, tex, src = [], [], []
+        for fi in range(total):
+            a, b, c = self.tris[fi]
+            if fi not in wanted:
+                tris.append([a, b, c])
+                tex.append(tags[fi])
+                src.append(own.get(fi))
+                continue
+            ab, bc, ca = half(a, b), half(b, c), half(c, a)
+            for t in ([a, ab, ca], [ab, b, bc], [ca, bc, c],
+                      [ab, bc, ca]):
+                tris.append(list(t))
+                tex.append(tags[fi])
+                src.append(own.get(fi))
+        self.verts, self.uvs = verts, uvs
+        if have2:
+            self.uv2 = uv2
+        self.tris, self.tex = tris, tex
+        self._reclaim_from(src)
+        return len(tris) - total
+
+    def inset_faces(self, faces, amount=0.2):
+        """Shrink each picked face toward its centre and skirt the gap
+        back to its outline - Blender's inset, one face at a time. Both
+        the inner face and the skirt's outline take fresh copies, so a
+        neighbour sharing a welded corner keeps its own untouched."""
+        total = len(self.tris)
+        wanted = sorted({int(f) for f in (faces or [])
+                         if isinstance(f, (int, float))
+                         and 0 <= int(f) < total})
+        if not wanted:
+            return []
+        tags = self.align_tex()
+        amount = max(0.02, min(0.9, float(amount)))
+        have2 = bool(self.uv2)
+        uv2 = self._aligned_uv2() if have2 else []
+        own = self._face_owners()
+
+        def newv(p, uv, uv_2):
+            self.verts.append(list(p))
+            self.uvs.append(list(uv))
+            if have2:
+                self.uv2.append(list(uv_2))
+            return len(self.verts) - 1
+
+        inner = []
+        for fi in wanted:
+            t = list(self.tris[fi])
+            pts = [np.asarray(self.verts[i], np.float64) for i in t]
+            u = [np.asarray(self.uvs[i], np.float64) for i in t]
+            c2 = sum(pts) / 3.0
+            cu = sum(u) / 3.0
+            c3 = (sum(np.asarray(uv2[i], np.float64) for i in t) / 3.0
+                  if have2 else np.zeros(2))
+            base_n = _normal(pts[0], pts[1], pts[2])
+            oi = own.get(fi)
+            moved = []
+            for k in range(3):
+                q = pts[k] + (c2 - pts[k]) * amount
+                uu = u[k] + (cu - u[k]) * amount
+                u2 = uv2[t[k]] + (c3 - np.asarray(uv2[t[k]], np.float64)) \
+                    * amount if have2 else (0.0, 0.0)
+                moved.append(newv([float(x) for x in q],
+                                  [float(x) for x in uu],
+                                  [float(x) for x in u2]))
+            outer = [newv(list(pts[k]), list(u[k]),
+                          list(uv2[t[k]]) if have2 else (0.0, 0.0))
+                     for k in range(3)]
+            self.tris[fi] = moved
+            inner.append(fi)
+            for k in range(3):
+                before = len(self.tris)
+                self._auto_quad([outer[k], outer[(k + 1) % 3],
+                                 moved[(k + 1) % 3], moved[k]],
+                                base_n)
+                for i in range(before, len(self.tris)):
+                    self.tex[i] = tags[fi]
+                    if oi is not None:
+                        self.objects[oi]["faces"].append(i)
+        return inner
+
+    def bevel_faces(self, faces, amount=0.15, segments=1, depth=0.1):
+        """Bevel the picked faces' edges: inset them and drop the inner
+        face along its normal so the ring slopes out to the outline. One
+        segment is a flat chamfer; more lay concentric bands that fall a
+        step each, rounding the corner. Returns the innermost faces."""
+        band = sorted({int(f) for f in (faces or [])
+                       if isinstance(f, (int, float))
+                       and 0 <= int(f) < len(self.tris)})
+        if not band:
+            return []
+        segments = max(1, min(4, int(segments)))
+        step = float(depth) / segments
+        inner = band
+        for _ in range(segments):
+            inner = self.inset_faces(band, amount)
+            for fi in inner:
+                t = self.tris[fi]
+                nv = _normal(self.verts[t[0]], self.verts[t[1]],
+                             self.verts[t[2]])
+                for i in t:
+                    self.verts[i] = [self.verts[i][k] + nv[k] * step
+                                     for k in range(3)]
+            band = inner
+        return inner
+
+    def bisect_plane(self, normal, origin, drop=None, cap=False):
+        """Slice every triangle a plane crosses; the new points weld into
+        one ring. `drop` ("plus"/"minus") takes that half away and `cap`
+        closes the cut. Returns the faces the plane crossed."""
+        n = np.asarray(normal, np.float64)
+        ln = float(np.linalg.norm(n))
+        if ln <= 1e-9 or not self.tris:
+            return 0
+        n = n / ln
+        o = np.asarray(origin, np.float64)
+        V = np.asarray(self.verts, np.float64)
+        d = (V - o) @ n
+        eps = 1e-9
+        tags = self.align_tex()
+        own = self._face_owners()
+        have2 = bool(self.uv2)
+        uv2 = self._aligned_uv2() if have2 else []
+        cache = {}
+        cut = 0
+
+        def cross_pt(i, j):
+            key = (i, j) if i < j else (j, i)
+            got = cache.get(key)
+            if got is None:
+                di, dj = float(d[i]), float(d[j])
+                f = di / (di - dj) if abs(di - dj) > 1e-15 else 0.5
+                if f < 1e-9:
+                    got = i
+                elif f > 1.0 - 1e-9:
+                    got = j
+                else:
+                    p = V[i] + (V[j] - V[i]) * f
+                    uv = (np.asarray(self.uvs[i], np.float64) +
+                          (np.asarray(self.uvs[j], np.float64) -
+                           np.asarray(self.uvs[i], np.float64)) * f)
+                    self.verts.append([float(c) for c in p])
+                    self.uvs.append([float(c) for c in uv])
+                    if have2:
+                        q = (np.asarray(uv2[i], np.float64) +
+                             (np.asarray(uv2[j], np.float64) -
+                              np.asarray(uv2[i], np.float64)) * f)
+                        self.uv2.append([float(c) for c in q])
+                    got = len(self.verts) - 1
+                cache[key] = got
+            return got
+
+        tris, tex, src = [], [], []
+        base_n = {fi: _normal(self.verts[self.tris[fi][0]],
+                              self.verts[self.tris[fi][1]],
+                              self.verts[self.tris[fi][2]])
+                  for fi in range(len(self.tris))}
+
+        def emit(t, fi):
+            p0, p1, p2 = (np.asarray(self.verts[q], np.float64)
+                          for q in t)
+            if float(np.linalg.norm(np.cross(p1 - p0, p2 - p0))) < 1e-12:
+                return                    # the cut left a sliver
+            if float(np.cross(p1 - p0, p2 - p0) @
+                     np.asarray(base_n[fi], np.float64)) < 0.0:
+                t = [t[0], t[2], t[1]]    # keep the source's facing
+            tris.append(list(t))
+            tex.append(tags[fi])
+            src.append(own.get(fi))
+
+        for fi in range(len(self.tris)):
+            t = self.tris[fi]
+            s = [1 if d[i] > eps else -1 for i in t]
+            if all(x > 0 for x in s):
+                if drop != "plus":
+                    emit(t, fi)
+                continue
+            if all(x < 0 for x in s):
+                if drop != "minus":
+                    emit(t, fi)
+                continue
+            cut += 1
+            plus = [i for i, x in zip(t, s) if x > 0]
+            if len(plus) == 1:
+                pi = plus[0]
+                k = t.index(pi)
+                m1, m2 = t[(k + 1) % 3], t[(k + 2) % 3]
+                c1, c2 = cross_pt(pi, m1), cross_pt(pi, m2)
+                if drop != "plus":
+                    emit([pi, c1, c2], fi)
+                if drop != "minus":
+                    emit([m1, m2, c2], fi)
+                    emit([m1, c2, c1], fi)
+            else:
+                mi = [i for i, x in zip(t, s) if x < 0][0]
+                k = t.index(mi)
+                p1, p2 = t[(k + 1) % 3], t[(k + 2) % 3]
+                c1, c2 = cross_pt(mi, p1), cross_pt(mi, p2)
+                if drop != "minus":
+                    emit([mi, c1, c2], fi)
+                if drop != "plus":
+                    emit([p1, p2, c2], fi)
+                    emit([p1, c2, c1], fi)
+        if not cut:
+            return 0
+        self.tris, self.tex = tris, tex
+        self._reclaim_from(src)
+        if cap and drop:
+            self._cap_cut(drop, n, cache, src)
+        return cut
+
+    def _cap_cut(self, drop, n, cache, src):
+        """Close a cut plane's hole with a fan around its own centre.
+        A primitive hands each face its own copy of a shared corner, so
+        the hole ring is found by position, not by vertex index."""
+        on = set(cache.values())
+        if not on:
+            return
+
+        def pk(i):
+            return tuple(round(c, 4) for c in self.verts[i])
+
+        on = {pk(i) for i in on}
+
+        edge_use = {}
+        for t in self.tris:
+            for k in range(3):
+                a, b = t[k], t[(k + 1) % 3]
+                pa, pb = pk(a), pk(b)
+                if pa <= pb:
+                    key, ea, eb = (pa, pb), a, b
+                else:
+                    key, ea, eb = (pb, pa), b, a
+                got = edge_use.get(key)
+                if got is None:
+                    edge_use[key] = [1, ea, eb]
+                else:
+                    got[0] += 1
+        ring = {}
+        for e, got in edge_use.items():
+            if got[0] == 1 and e[0] in on and e[1] in on:
+                # an edge key is a pair of positions; keep one vertex per
+                # position, so the fan skips a ring corner's duplicates
+                for p, i in ((e[0], got[1]), (e[1], got[2])):
+                    ring.setdefault(p, i)
+        uniq = list(dict.fromkeys(ring.keys()))
+        if len(uniq) < 3:
+            return
+        pts = [np.asarray(self.verts[ring[p]], np.float64) for p in uniq]
+        ctr = sum(pts) / len(pts)
+        k = int(np.argmin(np.abs(n)))
+        unit = np.zeros(3)
+        unit[k] = 1.0
+        u = np.cross(n, unit)
+        u = u / (float(np.linalg.norm(u)) or 1.0)
+        v = np.cross(n, u)
+        order = sorted(
+            range(len(uniq)),
+            key=lambda i: math.atan2(float((pts[i] - ctr) @ v),
+                                     float((pts[i] - ctr) @ u)))
+        ids = [ring[uniq[i]] for i in order]
+        outward = n if drop == "plus" else -n
+        owner = None
+        if self.objects:
+            counts = {}
+            for o in src:
+                if o is not None:
+                    counts[o] = counts.get(o, 0) + 1
+            if counts:
+                owner = max(counts, key=counts.get)
+        mean_uv = [sum(self.uvs[ring[p]][j] for p in uniq) / len(uniq)
+                   for j in range(2)]
+        self.verts.append([float(c) for c in ctr])
+        self.uvs.append(mean_uv)
+        if self.uv2:
+            self.uv2.append([0.0, 0.0])
+        hub = len(self.verts) - 1
+        for i in range(len(ids)):
+            t = [hub, ids[i], ids[(i + 1) % len(ids)]]
+            p0, p1, p2 = (np.asarray(self.verts[q], np.float64) for q in t)
+            cr = np.cross(p1 - p0, p2 - p0)
+            fid = len(self.tris)
+            if float(cr @ outward) < 0.0:
+                t = [t[0], t[2], t[1]]
+            self.tris.append(t)
+            self.tex.append(None)
+            if owner is not None:
+                self.objects[owner]["faces"].append(fid)
+        self.align_tex()
+
     def auto_uv(self, faces=None):
         """Planar UV per face, projected along its dominant axis.
-
-        This is a fallback for geometry that arrived with no sheet of its
-        own. A primitive unwraps itself per metre, and re-projecting that
-        by the model's bounds squeezes every narrow face into a slice of
-        the picture - the stretch a round side shows after it. `faces`
-        limits the pass to the triangles named, so a part can be
-        re-unwrapped without disturbing the parts beside it.
-        """
+        `faces` limits it to the triangles named."""
         b = self.bounds() or ((0, 0, 0), (1, 1, 1))
         size = [max(1e-4, b[1][i] - b[0][i]) for i in range(3)]
         if faces is None:
@@ -920,14 +1260,8 @@ def _tri(m, ids, hint, uvs=((0, 0), (1, 0), (1, 1))):
 
 
 def _panel(m, r, y0, y1, seg, i, span, v0=0.0, v1=1.0):
-    """The four corners of barrel panel `i`, new verts with their own u.
-
-    A corner shared with the next panel can hold only one of the two u it
-    is drawn at - 1 and 0 across the seam - and whichever panel is written
-    last wins, which flattens the first one into a line. Copying costs
-    four vertices and saves the picture. Returns (ids, uv) so the caller
-    hands the same sheet back to `_quad` instead of its default 0..1.
-    """
+    """Four corners of barrel panel `i`, with their own u.
+    A seam corner holds one u, so copy it."""
     u0, u1 = i / seg * span, (i + 1) / seg * span
     out, sheet = [], []
     for a, y, u, v in ((i, y0, u0, v0), (i + 1, y0, u1, v0),
@@ -940,14 +1274,8 @@ def _panel(m, r, y0, y1, seg, i, span, v0=0.0, v1=1.0):
 
 
 def _disc(m, r, y, seg, up, middle, unit=1.0):
-    """A cap of `seg` triangles with corners of its own, sheet and all.
-
-    The rim is copied rather than shared with the barrel on purpose: a cap
-    reusing the side's corners inherits the side's unwrap, which runs down
-    the wall and not across the disc, leaving every triangle a line.
-    `unit` is the world size one sheet covers, so a cap is drawn at the
-    same density as the wall beside it.
-    """
+    """A cap of `seg` triangles with corners of its own.
+    Reusing the wall's rim would inherit its unwrap."""
     unit = max(1e-6, unit)
     centre = m.add_vertex((0.0, y, 0.0), middle)
     rim = []
@@ -975,13 +1303,8 @@ def _faces(m, corners, faces, sheets=None):
 
 
 def box_model(size=1.0, name="box"):
-    """Cube with its base on y = 0; a side per face, so all six unwrap.
-
-    Corners are copied per face on purpose. Six sides sharing eight corner
-    vertices can only hold one unwrap of each corner, so whichever face is
-    written last wins and the rest flatten to a line - the two stretched
-    sides an editor shows on a shared-corner box.
-    """
+    """Cube on the ground, a side per face: six unwraps.
+    Corners are copied, so no face flattens to a line."""
     m = Model(name)
     h = float(size)
     x = z = h / 2.0
@@ -1008,31 +1331,27 @@ def plane_model(size=2.0, name="plane"):
 
 
 def wedge_model(size=1.0, name="wedge"):
-    """Ramp: flat on the ground, rising toward +Z, a face at a time."""
+    """Ramp: flat on the ground, rising toward +Z."""
     m = Model(name)
     h = float(size)
     x = z = h / 2.0
     slope = math.hypot(h, h) / h        # the ramp is 2 m long for 1 m down
     c = [(-x, 0, -z), (x, 0, -z), (x, 0, z), (-x, 0, z),
          (x, h, z), (-x, h, z)]
-    _faces(m, c, (((0, 1, 2, 3), (0, -1, 0)),      # ground
-                  ((0, 1, 4, 5), (0, 0.4, -1)),    # ramp
-                  ((2, 3, 5, 4), (0, 0, 1)),       # tall back
-                  ((1, 2, 4), (1, 0, 0)),          # +x cheek
-                  ((0, 3, 5), (-1, 0, 0))),        # -x cheek
+    # faces: ground, ramp, back, +x cheek, -x cheek
+    _faces(m, c, (((0, 1, 2, 3), (0, -1, 0)),
+                  ((0, 1, 4, 5), (0, 0.4, -1)),
+                  ((2, 3, 5, 4), (0, 0, 1)),
+                  ((1, 2, 4), (1, 0, 0)),
+                  ((0, 3, 5), (-1, 0, 0))),
            sheets=(None, ((0, 0), (1, 0), (1, slope), (0, slope)),
                    None, None, None))
     return m
 
 
 def cylinder_model(size=1.0, seg=12, name="cylinder"):
-    """Y-up cylinder, base on y = 0, its sheet square per metre.
-
-    The barrel wraps `2 * pi * r / h` sheets, not one: a single sheet over
-    a tall narrow drum squashes the picture round its middle, which is the
-    sideways stretch a cylinder shows next to a box. The caps are built
-    with `_disc` so their sheet runs across the disc.
-    """
+    """Y-up cylinder on its base, sheet square per metre.
+    The barrel wraps `2*pi*r/h` sheets so nothing is squashed."""
     m = Model(name)
     h = float(size)
     r = h * 0.35
@@ -1048,7 +1367,7 @@ def cylinder_model(size=1.0, seg=12, name="cylinder"):
 
 
 def cone_model(size=1.0, seg=10, name="cone"):
-    """Cone on its base, its sheet measured round the base and up the slant."""
+    """Cone on its base, its sheet measured up the slant."""
     m = Model(name)
     h = float(size)
     r = h * 0.45
@@ -1071,15 +1390,8 @@ def cone_model(size=1.0, seg=10, name="cone"):
 
 
 def sphere_model(size=1.0, seg=12, rings=6, name="sphere"):
-    """UV sphere on its base, one sheet round and one pole to pole.
-
-    Each quad carries corners of its own and the poles are triangles, so no
-    seam or pole corner has to hold two sheet positions at once - which is
-    what used to flatten the sphere's back into a line. A latitude/longitude
-    ball cannot be square everywhere: the rings narrow while `u` does not,
-    so a picture is widest at the equator, as it is on every globe. Making
-    `u` narrow with the ring instead only pinches every seam together.
-    """
+    """UV sphere, one sheet round and pole to pole.
+    Quads own their corners: no seam shares a u."""
     m = Model(name)
     r = float(size) / 2.0
 
@@ -1099,9 +1411,8 @@ def sphere_model(size=1.0, seg=12, rings=6, name="sphere"):
     for ri in range(rings):
         for si in range(seg):
             if ri == 0 or ri == rings - 1:
-                # a pole row is one triangle: the other corner of the quad
-                # would be the same point twice, and the pole takes the
-                # middle of the arc it fans over rather than a corner u
+                # a pole row is one triangle: the other corner
+                # would be the same point twice
                 low, top = (1, 0) if ri == 0 else (rings - 1, rings)
                 a, au = spot(low, si)
                 b, bu = spot(low, si + 1)

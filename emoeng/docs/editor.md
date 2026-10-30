@@ -127,7 +127,7 @@ consume the key, so a tab owns its own bindings first.
 | Document | `editor.doctab` | `DocTab` | the open `.scene` / `.obj3d` / `.obj2d` files as a form |
 | Code | `editor.codeeditor` | `CodeEditor` | the current `.py` as text |
 | Blocks | `editor.blocktab` | `BlockTab` | the same `.py` as blocks |
-| Model | `editor.modeleditor` | `ModelEditor` | one `.model3d` or `.map3d` file (a legacy `.model` opens here too) |
+| Model | `editor.modeleditor` | `ModelEditor` | one `.model3d`, `.model2d`, `.map3d` or `.map2d` file (a legacy `.model` opens here too) |
 | Assets | `editor.assets` | `AssetBrowser` | the project folder as cards |
 | Audio | `editor.audiotab` | `AudioTab` - a `MediaPlayer` and an `SfxEditor` | the `audio/` folder: play its files, or edit a sound project |
 | Build | `editor.buildtab` | `BuildTab` | `engine.build.BuildConfig` |
@@ -168,9 +168,13 @@ Scene shelf all show and pick one structure. Clicking a file row calls
 `open_file`. Rows are 19 px (`widgets.TreeView.ROW_H`), scrolled by wheel two
 rows per notch.
 
-Right-clicking a document row in either tree puts up a two-row menu - `Edit
-as Document` (the Document tab) and `View raw JSON` (the same file as text in
-the Code tab). Any other right-click dismisses the menu.
+Right-clicking a file row in either tree - or an Assets-tab card - puts up
+`_file_actions()`: `Open`, then `Play in Scene tab` for a map file (the only
+row that skips the scene script; see [Maps](maps.md)), `View raw JSON` and
+`Add to current scene` for a document, and `Rename...`, `Duplicate`, `Reveal
+in Explorer`, `Copy path` and `Delete` for anything. The Document tab's
+`Scene v` button has its own four rows: `Arm in Scene tab`, `Preview this
+scene`, `Set as start scene`, `View raw JSON`.
 
 A `.py` row earns its icon from the first engine class the file defines:
 
@@ -217,7 +221,8 @@ displacing first.
 | Suffix | Result |
 | --- | --- |
 | `.py` | Code tab, unless `editor.open_as` asks for Blocks; an unsaved buffer is parked, not lost |
-| `.model3d`, `.model`, `.map3d` | Model tab, Edit / Texture modes - a map is the same schema in `maps/`, so it opens identically |
+| `.model3d`, `.model`, `.map3d` | Model tab, Edit / Texture / UV Paint modes - a map is that schema plus its nodes, spawn and `collision` mode in `maps/`, so it opens identically ([Maps](maps.md)) |
+| `.map2d` | Model tab, flat - a level drawn in world pixels, its parts carved the same way and its rects filed per part |
 | `.model2d` | Model tab, 2D rig mode - parts, transforms, uv, parents and tracks edited in a flat viewport |
 | `.scene`, `.obj3d`, `.obj2d`, `.object` | Document tab, one small tab per open file; with no project loaded it falls back to the Code tab, and right-clicking the row there offers `View raw` |
 | `.sfxproject` | Audio tab, in the maker - the pattern opens for editing, not the wav it renders |
@@ -247,6 +252,8 @@ Every create action goes through one prompt dialog
 | `new_screen_2d` | New Screen 2D | `screen2d` | the same pair |
 | `new_model` | New Model | `prop` | `models/<stem>.model3d` from a box primitive, opened in the Model tab |
 | `new_model_2d` | New 2D Model | `sprite` | `models/<stem>.model2d` |
+| `new_map` | New 3D Map | `level` | `maps/<stem>.map3d` holding one 4 m box named for the primitive, opened in the Model tab |
+| `new_map_2d` | New 2D Map | `flat` | `maps/<stem>.map2d` holding one 8 x 6 `room` quad |
 | `new_script` | New Script | `helpers` | `scripts/<stem>.py` with a `clamp()` helper |
 | `new_shader` | New Shader | `shader1` | a `shaders/<stem>.shader` document plus `scripts/shaders/<stem>.py`, chosen from the stock templates |
 | `sfx_new` | New Sound Project / New Music Project | `sound` / `theme` | `audio/<stem>.sfxproject` from `sfx.blank()`, opened in the Audio tab's maker |
@@ -287,7 +294,7 @@ document (`save_all()`), and quitting asks about unsaved documents.
 
 | Mechanism | Trigger | Effect |
 | --- | --- | --- |
-| `_maybe_hot_reload(path)` | a save, when `editor.hot_reload_save` | reloads the preview when the saved file sits in `project.WATCHED` (`scenes/`, `objects/`, `scripts/`, `shaders/`) |
+| `_maybe_hot_reload(path)` | a save from the Document or Model tab, or a saved Code / Blocks script when `editor.hot_reload_save` | reloads the preview when the saved file sits in `project.WATCHED` (`scenes/`, `objects/`, `entities/`, `scripts/`, `shaders/`, `maps/`) |
 | `_watch_tick()` | every 2.0 s, when `editor.hot_reload_watch` | compares `project.snapshot()` (mtime + size) and reloads on any difference, including files written by another program |
 | `preview.reload()` | the above, `R`, `Project > Reload Scene` | `project.reload_scripts()` (a real `sys.modules` sweep) then rebuilds the scene |
 | `reload_project()` | `Ctrl+R` | reloads models, re-registers textures, reopens the model, refreshes the tree |
@@ -297,7 +304,9 @@ across a file write. Nothing outside the watched folders disturbs the preview,
 so saving a texture or a manifest stays quiet. Saving a document whose scene
 the preview is showing queues a rebuild the same way: `doctab.save()` sets
 `preview.pending`, and `_maybe_hot_reload` fires when
-`editor.hot_reload_save` is on.
+`editor.hot_reload_save` is on. A Model tab `Save` asks the same question of
+the file it wrote, which is what makes a level a one-key loop: carve a wall
+into a `maps/` map, `Ctrl+S`, and the room in the Scene tab has the wall.
 
 ## Running the game
 
@@ -645,7 +654,7 @@ node's own engine class - no per-type code in the tab:
 
 | Picked | Rows |
 | --- | --- |
-| the scene | `kind` (a picker over `SCENE_KINDS`), `script`, `maps` (a multi-select over `project.map_names()`, stored as the list), and read-only counts of placed entries and overrides |
+| the scene | `kind` (a picker over `SCENE_KINDS`), `script`, `map` (one pick over `project.map_names()`, writing the level the scene opens on) and - 3D kinds only - `maps` (a multi-select over the same stems, stored as the list), plus read-only counts of placed entries and overrides |
 | a node | `type` (a picker over its family's createable types), `script`, `pos x/y/z` (`x/y` flat), `yaw`/`scale` or `rot`/`size w,h`, any `model` / `texture` / `color` / `showing` it carries, then one row per knob |
 | an object document | the same rows for the one node the file is |
 
@@ -653,9 +662,10 @@ Knobs come from the class's `doc_knobs` plus its class attributes, so a
 `Collision3D` offers `shape` (box / sphere / capsule), `half` as one typed
 list, `solid`, `group`, `offset` and a `Light3D` offers `point` / `spot` /
 `directional`; a `Map3D` offers the `map` stem it reads from `maps/`, its
-`solid`, `group` and `tint`. A `maps` row writes the header list the scene
-loader places before any object; leaving the last one out takes the key out
-of the file entirely. A script node with no type falls back to whatever
+`solid`, `group`, `tint` and `collision` mode. A `maps` row writes the header
+list the scene loader places after `setup()`; leaving the last one out takes
+the key out of the file entirely, and the `map` row above it is the level the
+scene opens on instead. A script node with no type falls back to whatever
 knobs its file already carries, keeping each value's own kind. A bool row
 flips on click, an enum row opens a list, everything else opens a field:
 `Enter` or a click away commits, `Esc` throws it away, and a value that does
@@ -728,9 +738,12 @@ lays out its own bands, so the tools always visible are the ones that mode
 uses. A `.model2d` opened here is none of these modes: a flat rig has one mode
 of its own, described under [2D rig mode](#2d-rig-mode) below. A `.map3d`
 opens in all three 3D modes exactly like a `.model3d`, because it *is* one -
-same schema,
-other folder - with its parts listed on the
-[objects rail](#the-objects-rail).
+same geometry,
+other folder, plus the nodes and spawn point
+[Maps](maps.md) covers - with its parts listed on the
+[objects rail](#the-objects-rail). A `.map2d` opens flat: its shapes are quads,
+its viewport is the world in pixels, and each part gets the rectangle a mover
+stops on.
 
 ### Edit mode
 
@@ -809,13 +822,15 @@ moment a Shift-click makes a touching pair. What the fold does - enclosed
 faces dropped, the survivors welded, unreferenced vertices pruned - is
 documented in [Models and Meshes](models-and-meshes.md).
 
-`New Map` starts a map rather than a model: one `box` primitive sized 4 m,
-filed as a single object named for the primitive. Nothing else differs -
-carving it into floor, walls and roof is this rail's work, and the tab's
-usual `Save` writes `maps/<stem>.map3d` through `Project.store_map` while it
-holds a map, and `models/<stem>.model3d` through `store_model` otherwise. A
-new project's `game3d` template also ships one starter, `maps/room.map3d`,
-already carved into a `floor` and two walls.
+`New 3D Map` and `New 2D Map` start a map rather than a model: the solid one is
+one `box` primitive sized 4 m, filed as a single object named for the
+primitive, and the flat one is an 8 x 6 quad named `room`. Nothing else differs
+- carving it into floor, walls and roof is this rail's work, and the tab's
+usual `Save` writes `maps/<stem>.map3d` or `.map2d` through
+`Project.store_map` while it holds a map, and `models/<stem>.model3d` through
+`store_model` otherwise. A new project's `game3d` template also ships one
+starter, `maps/room.map3d`, already carved into a `floor` and four walls with
+their shapes and a lamp placed; `game2d` ships `maps/arena.map2d`.
 
 The `File` band's third button names the way round the open document is about
 to be filed - `To map` on a model, `To model` on a map - and pressing it
@@ -1075,11 +1090,13 @@ reads and writes it.
 | Folder row | Lists |
 | --- | --- |
 | All | manifest, sidecars, then every asset folder |
-| Scenes / Objects / Scripts / Models / Textures / Audio | `project.files(kind)` |
+| Scenes / Objects / Scripts / Models / Maps / Textures / Audio | `project.files(kind)` |
 
 Each rail row wears `FOLDER_ICONS` - the same picture the Project View uses for
-that kind - and the two panel headers use `tab-assets-sym` and
-`open-folder-sym`.
+that kind, with `maps` taking `file-model3d-sym` - and the two panel headers
+use `tab-assets-sym` and `open-folder-sym`. The row's `New...` button carries
+that folder's own label from `NEW_LABELS`; on the Maps row it reads
+`New Map...` and opens the two-kind picker.
 
 Cards are `CARD_W` 116 x `CARD_H` 100 with a `THUMB_H` 58 thumbnail well and
 `GAP` 9 between them; the folder rail is 104-148 px wide. Order is manifest
@@ -1092,6 +1109,8 @@ alphabetically inside each group.
 | `.wav` `.ogg` `.mp3` `.flac` | the real waveform from `wav_peaks` |
 | `.model3d` | a drawn cube plus `N tris` |
 | `.model2d` | an outlined quad plus `N parts  M tracks` |
+| `.map3d` | the level drawn as a box card plus `N tris  M parts` |
+| `.map2d` | a flat outline plus `N parts  M nodes` |
 | `.py`, `.json` | the first four lines, keywords tinted with `xp.SYN_KW` |
 | `project.flig` | `name`, `title`, `start`, `render.scale` rows |
 

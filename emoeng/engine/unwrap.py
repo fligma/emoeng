@@ -233,7 +233,7 @@ def _chart_bounds(chart):
 
 
 def _pack(charts):
-    """Pack charts into a square atlas without leaving a row per face."""
+    """Pack charts into a square atlas, not per-face rows."""
     if not charts:
         return []
     info = []

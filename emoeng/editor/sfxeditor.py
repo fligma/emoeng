@@ -78,6 +78,8 @@ class SfxEditor:
         self._lengths = {}          # path -> (mtime, seconds)
         self.hover_tip = None
         self.hover_pos = (0, 0)
+        self.picks = None           # the open tone-shape list
+        self._wave_rect = None      # where the Wave button was drawn
 
     # -- the open document ---------------------------------------------
 
@@ -189,7 +191,7 @@ class SfxEditor:
 
     # -- saving --------------------------------------------------------
 
-    def save(self, force=False):
+    def save(self, force=False, fmt=None):
         """Render the project to a wav and delete the document."""
         if self.doc is None or self.path is None:
             self.message = "no sound project open"
@@ -199,19 +201,21 @@ class SfxEditor:
         if not force:
             self.app.dialog_kind = "sfx_save"
             self.app.dialog = widgets.ChoiceDialog(
-                "Collapse to WAV",
+                "Collapse to a Sound File",
                 f"{self.path.name} becomes {self.path.stem}.wav, and the "
                 "sound project is deleted.",
-                ("Collapse", "Cancel"),
-                hint="The project is the pattern you edit; the wav is what a "
-                     "game plays. Collapse once the sound is finished - a "
-                     "build does the same to its bundled copy, so this file "
-                     "is the only one that changes.", default=0)
+                tuple(label for _key, label, _bits in sfx.FORMATS) + ("Cancel",),
+                hint="16-bit keeps the tones clean, 8-bit keeps the chip "
+                     "crunch. The project file goes either way, so collapse "
+                     "once the sound is finished - a build does the same to "
+                     "its bundled copy.", default=0)
             return False
         target = self.path.with_suffix(".wav")
         seconds = sfx.length(self.doc)
+        depth = sfx.format_bits(sfx.format_of(fmt or sfx.DEFAULT_FORMAT))
         try:
-            sfx.write_wav(target, self.doc, audio_dir=self._audio_dir())
+            sfx.write_wav(target, self.doc, audio_dir=self._audio_dir(),
+                          bits=depth)
             self.path.unlink()
         except (OSError, ValueError) as exc:
             self.message = f"cannot collapse: {exc}"
@@ -227,7 +231,8 @@ class SfxEditor:
         self.redo.clear()
         self.message = f"collapsed to {target.name}"
         self.app.log(f"collapsed audio/{name} into {target.name} "
-                     f"({seconds:.2f}s); the project file is gone", "ok")
+                     f"({depth}-bit, {seconds:.2f}s); the project file is "
+                     "gone", "ok")
         self.app.media.player.refresh()
         # the wav is the sound now: the player takes over with it loaded
         self.app.media.load(target)
@@ -406,15 +411,23 @@ class SfxEditor:
         self._touch(f"{steps} steps")
         return True
 
-    def cycle_wave(self, step=1):
+    def open_waves(self):
+        """Open the tone-shape list under the Wave button."""
         track = self.current_track()
-        if track is None:
+        anchor = self._wave_rect
+        if track is None or anchor is None:
+            return False
+        self.picks = widgets.Choices(sfx.WAVES, anchor, self.area).filter("")
+        return True
+
+    def pick_wave(self, word):
+        """Take a tone shape from the open list."""
+        self.picks = None
+        track = self.current_track()
+        if track is None or word not in sfx.WAVES:
             return False
         self._push_undo()
-        waves = sfx.WAVES
-        at = waves.index(track.get("wave")) if track.get("wave") in waves \
-            else 0
-        track["wave"] = waves[(at + step) % len(waves)]
+        track["wave"] = str(word)
         self._touch(f"{track.get('name')}: {track['wave']}")
         return True
 
@@ -426,25 +439,102 @@ class SfxEditor:
         self._touch(f"{self.doc['bits']}-bit tones")
         return True
 
-    def toggle_duck(self):
-        """The tone generator's sidechain: pump this track under track 1."""
+    def toggle_loop(self):
+        if self.doc is None:
+            return False
+        self._push_undo()
+        self.doc["loop"] = not bool(self.doc.get("loop"))
+        self._touch(f"loop {'on' if self.doc['loop'] else 'off'}")
+        return True
+
+    def nudge(self, key, delta, low, high):
+        """Move a track's own number by `delta`, kept inside its range."""
         track = self.current_track()
         if track is None:
             return False
-        if len(self.doc["tracks"]) < 2:
+        self._push_undo()
+        track[key] = round(max(low, min(high, float(track.get(key) or 0.0)
+                                       + delta)), 3)
+        self._touch(f"{track.get('name')} {key} {track[key]:g}")
+        return True
+
+    def bump_track(self, key, delta, low, high):
+        """Move one of a track's whole numbers, kept inside its range."""
+        track = self.current_track()
+        if track is None:
+            return False
+        self._push_undo()
+        value = int(track.get(key) or 0) + int(delta)
+        track[key] = max(low, min(high, value))
+        self._touch(f"{track.get('name')} {key} {track[key]:+d}"
+                    if key == "octave" else
+                    f"{track.get('name')} {key} {track[key]}")
+        return True
+
+    def cycle_duck(self):
+        """Step the sidechain depth: 0, 25, 50, 75, 100 per cent."""
+        track = self.current_track()
+        if track is None:
+            return False
+        steps = (0.0, 0.25, 0.5, 0.75, 1.0)
+        if len(self.doc["tracks"]) < 2 and not track.get("duck"):
             self.message = "ducking needs a second track to follow"
             self.app.log("sfx: ducking needs a second track to follow",
                          "warn")
             return False
         self._push_undo()
         deep = float(track.get("duck") or 0.0)
-        track["duck"] = 0.0 if deep > 0 else 0.5
-        if track["duck"]:
+        at = min(range(len(steps)), key=lambda i: abs(steps[i] - deep))
+        track["duck"] = steps[(at + 1) % len(steps)]
+        if track["duck"] and int(track.get("duck_by") or 0) == self.track:
             track["duck_by"] = 0 if self.track != 0 else 1
-            self._touch(f"{track.get('name')} ducks 50% under track "
-                        f"{track['duck_by'] + 1}")
+        if track["duck"]:
+            self._touch(f"{track.get('name')} ducks "
+                        f"{track['duck'] * 100:.0f}% under track "
+                        f"{int(track.get('duck_by') or 0) + 1}")
         else:
             self._touch(f"{track.get('name')} no longer ducks")
+        return True
+
+    def cycle_duck_source(self):
+        """Pick which other track this one's sidechain follows."""
+        track = self.current_track()
+        if track is None or len(self.doc["tracks"]) < 2:
+            self.message = "ducking needs a second track to follow"
+            return False
+        self._push_undo()
+        count = len(self.doc["tracks"])
+        at = int(track.get("duck_by") or 0)
+        nxt = (at + 1) % count
+        if nxt == self.track:
+            nxt = (nxt + 1) % count
+        track["duck_by"] = nxt
+        self._touch(f"{track.get('name')} follows track {nxt + 1}")
+        return True
+
+    def cycle_duck_release(self):
+        """Pick how fast the sidechain recovers."""
+        track = self.current_track()
+        if track is None:
+            return False
+        steps = (0.05, 0.15, 0.3, 0.6)
+        self._push_undo()
+        deep = float(track.get("duck_release") or 0.15)
+        at = min(range(len(steps)), key=lambda i: abs(steps[i] - deep))
+        track["duck_release"] = steps[(at + 1) % len(steps)]
+        self._touch(f"release {track['duck_release']:g}s")
+        return True
+
+    def cycle_rate(self):
+        """Step the sample rate the pattern renders at."""
+        if self.doc is None:
+            return False
+        self._push_undo()
+        rates = sfx.RATES
+        now = int(self.doc.get("rate") or sfx.RATES[2])
+        at = min(range(len(rates)), key=lambda i: abs(rates[i] - now))
+        self.doc["rate"] = rates[(at + 1) % len(rates)]
+        self._touch(f"{self.doc['rate']} Hz")
         return True
 
     def toggle_mute(self):
@@ -458,38 +548,36 @@ class SfxEditor:
         return True
 
     def prompt_sample(self):
-        """Ask for a wav to mix under the grid."""
+        """Ask for an audio file to mix under the grid."""
         if self.doc is None:
             self.app.log("sfx: open or make a sound project first", "warn")
             return
         self.app.dialog_kind = "sfx_sample"
         self.app.dialog = widgets.PromptDialog(
-            "Import a Sample", "WAV file path", "",
-            hint="Only .wav for now: the file is copied into audio/ and "
-                 "mixed under the tracks. Click the ruler to choose where, "
-                 "then the sample row, to place it.", width=470)
+            "Import a Sample", "Audio file path", "",
+            hint="wav, ogg, mp3 or flac: the file is copied into audio/ as a "
+                 "wav and mixed under the tracks. Click the ruler to choose "
+                 "where, then the sample row, to place it.", width=470)
 
     def add_sample(self, raw):
-        """Mix an external wav in, copying it into the project's audio."""
+        """Mix an external file in, copied into the project's audio."""
         if self.doc is None:
             return False
         source = Path(str(raw or "").strip().strip('"')).expanduser()
         if not source.is_file():
             self.app.log(f"no such file: {source}", "error")
             return False
-        if source.suffix.lower() != ".wav":
-            # the engine writes and reads wav; anything else needs a codec
-            self.app.log(f"{source.name}: only .wav files for now", "warn")
+        if source.suffix.lower() not in sfx.IMPORTS:
+            # the engine plays wav; the others arrive only through a decoder
+            self.app.log(f"{source.name}: import wav, ogg, mp3 or flac",
+                         "warn")
             return False
         folder = Path(self._audio_dir() or "")
         if not str(folder):
             return False
-        target = folder / source.name
         try:
-            folder.mkdir(parents=True, exist_ok=True)
-            if source.resolve() != target.resolve():
-                target.write_bytes(source.read_bytes())
-        except OSError as exc:
+            target = sfx.import_audio(source, folder)
+        except (OSError, ValueError) as exc:
             self.app.log(f"cannot copy {source.name}: {exc}", "error")
             return False
         self._push_undo()
@@ -585,6 +673,10 @@ class SfxEditor:
     # -- events --------------------------------------------------------
 
     def handle_event(self, e):
+        if self.picks is not None:
+            got = self._picks_event(e)
+            if got is not None:
+                return got
         if e.type == pygame.MOUSEWHEEL:
             hit = self._cell_at(pygame.mouse.get_pos())
             if hit is None:
@@ -600,7 +692,7 @@ class SfxEditor:
             pos = e.pos
             for button in self.buttons:
                 if button["rect"].collidepoint(pos):
-                    self._act(button["action"])
+                    self._act(button["action"], e.button, e.mod)
                     return True
             if e.button == 3:
                 hit = self._cell_at(pos)
@@ -676,13 +768,37 @@ class SfxEditor:
                 return track, step
         return None
 
+    def _picks_event(self, e):
+        """The open tone list takes its own rows; anything else closes it."""
+        picks = self.picks
+        if e.type == pygame.KEYDOWN:
+            if e.key == pygame.K_ESCAPE:
+                self.picks = None
+                return True
+            if e.key in (pygame.K_UP, pygame.K_DOWN):
+                picks.step(-1 if e.key == pygame.K_UP else 1)
+                return True
+            if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                return self.pick_wave(picks.current())
+            return None
+        if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+            if picks.holds(e.pos):
+                word = picks.click(e.pos)
+                return True if word is None else self.pick_wave(word)
+            self.picks = None
+            return None
+        if e.type == pygame.MOUSEBUTTONDOWN:
+            self.picks = None
+            return None
+        return None
+
     def _sample_at(self, pos):
         for index, rect in self.sample_rows:
             if rect.collidepoint(pos):
                 return index
         return None
 
-    def _act(self, action):
+    def _act(self, action, button=1, mods=0):
         kind = action[0]
         if kind == "toggle":
             return self.toggle_play()
@@ -698,21 +814,35 @@ class SfxEditor:
             self.prompt_sample()
             return True
         if kind == "bpm-":
-            return self.bump("bpm", -5, sfx.MIN_BPM, sfx.MAX_BPM)
-        if kind == "bpm+":
-            return self.bump("bpm", 5, sfx.MIN_BPM, sfx.MAX_BPM)
+            return self.bump("bpm", 5 if button == 3 else -5,
+                             sfx.MIN_BPM, sfx.MAX_BPM)
         if kind == "bits":
             return self.toggle_bits()
-        if kind == "wave":
-            return self.cycle_wave()
+        if kind == "loop":
+            return self.toggle_loop()
+        if kind == "wave-menu":
+            return self.open_waves()
+        if kind == "gain+":
+            step = 0.15 if mods & pygame.KMOD_CTRL else 0.05
+            return self.nudge("gain", -step if button == 3 else step,
+                              0.0, 1.5)
+        if kind == "oct+":
+            return self.bump_track("octave", -1 if button == 3 else 1,
+                                   -4, 4)
+        if kind == "duck":
+            return self.cycle_duck()
+        if kind == "duckby":
+            return self.cycle_duck_source()
+        if kind == "duckrel":
+            return self.cycle_duck_release()
+        if kind == "rate":
+            return self.cycle_rate()
         if kind == "steps":
             return self.cycle_steps()
         if kind == "track+":
             return self.add_track()
         if kind == "track-":
             return self.remove_track()
-        if kind == "duck":
-            return self.toggle_duck()
         if kind == "mute":
             return self.toggle_mute()
         return False
@@ -770,6 +900,8 @@ class SfxEditor:
         track = self.current_track() or {}
         playing = self.is_playing()
         duck = float(track.get("duck") or 0.0)
+        release = float(track.get("duck_release") or 0.15)
+        source = int(track.get("duck_by") or 0) + 1
         return [
             ("Stop" if playing else "Play", ("toggle",), playing,
              "Render the pattern and play it (space)"),
@@ -778,22 +910,34 @@ class SfxEditor:
             ("New Music", ("new-music",), False,
              "Make a looping pattern in audio/"),
             ("Save", ("save",), False,
-             "Flatten to wav and delete the project file"),
+             "Flatten to a sound file and delete the project file"),
             ("Import", ("import",), False,
-             "Mix a .wav from disk under the tracks"),
-            ("BPM -", ("bpm-",), False, "Slow the pattern down"),
-            ("BPM +", ("bpm+",), False, "Speed the pattern up"),
+             "Mix an imported wav, ogg, mp3 or flac under the tracks"),
+            (f"BPM {doc.get('bpm', sfx.DEFAULT_BPM)}", ("bpm-",), False,
+             "Left-click slows the pattern, right-click speeds it up"),
+            (f"{doc.get('steps', sfx.STEPS)} steps", ("steps",), False,
+             "Pattern length; click for the next size"),
             (f"{doc.get('bits', 16)}-bit", ("bits",), False,
              "Chip depth: 8-bit is crunchier than 16-bit"),
-            (str(track.get("wave") or "-"), ("wave",), False,
-             "Cycle this track's tone shape"),
-            ("Steps", ("steps",), False,
-             f"Pattern length now {doc.get('steps', sfx.STEPS)}; click for "
-             "the next size"),
+            (f"Loop {'on' if doc.get('loop') else 'off'}", ("loop",),
+             bool(doc.get("loop")), "Repeat the pattern when it is played"),
+            (f"Wave {track.get('wave') or '-'}", ("wave-menu",), False,
+             "Choose this track's tone shape"),
+            (f"Gain {float(track.get('gain') or 0.0) * 100:.0f}%",
+             ("gain+",), False,
+             "Left-click louder, right-click quieter (Ctrl for a big step)"),
+            (f"Oct {int(track.get('octave') or 0):+d}", ("oct+",), False,
+             "Left-click up an octave, right-click down"),
+            (f"Duck {duck * 100:.0f}%", ("duck",), duck > 0,
+             "Sidechain depth: click to cycle 0, 25, 50, 75, 100%"),
+            (f"By {source}", ("duckby",), False,
+             "Which track this one ducks under"),
+            (f"Rel {release:g}s", ("duckrel",), False,
+             "How fast the sidechain recovers"),
+            (f"{doc.get('rate', sfx.RATES[2])} Hz", ("rate",), False,
+             "Sample rate the pattern is rendered at"),
             ("+ Track", ("track+",), False, "Add a tone track"),
             ("- Track", ("track-",), False, "Remove the selected track"),
-            (f"Duck {duck * 100:.0f}%", ("duck",), duck > 0,
-             "Sidechain: this track dips while the track it follows sounds"),
             ("Mute", ("mute",), bool(track.get("mute")),
              "Silence the selected track"),
         ]
@@ -813,6 +957,7 @@ class SfxEditor:
         self.buttons = []
         self.hover_tip = None
         self.hover_pos = pygame.mouse.get_pos()
+        self._wave_rect = None
         mouse = self.hover_pos
         font = self.app.fonts["small"]
         x, y = self.bar.x, self.bar.y
@@ -825,9 +970,13 @@ class SfxEditor:
             xp.button(surface, box, label, font, pressed=active,
                       hovered=box.collidepoint(mouse))
             self.buttons.append({"action": action, "rect": box})
+            if action[0] == "wave-menu":
+                self._wave_rect = box
             if box.collidepoint(mouse):
                 self.hover_tip = tip
             x += width + 4
+        if self.picks is not None:
+            self.picks.draw(surface, font)
 
     def _draw_list(self, surface):
         files = self.project.sfx_files() if self.project is not None else []

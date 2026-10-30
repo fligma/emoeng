@@ -277,6 +277,7 @@ FILE_ICONS = {
     ".model": "file-model3d-sym",
     ".model3d": "file-model3d-sym",
     ".map3d": "file-model3d-sym",
+    ".map2d": "file-model2d-sym",
     ".model2d": "file-model2d-sym",
     ".scene": "file-scene-3d",
     ".object": "file-object-3d",
@@ -318,7 +319,10 @@ CLASS_ART = {"Model3D": "file-model3d-sym",
              "AudioEmitter3D": "sound-on-sym",
              "AudioEmitter2D": "sound-on-sym",
              "Text3D": "file-text-sym",
-             "Text2D": "file-text-sym"}
+             "Text2D": "file-text-sym",
+             # an emitter is a spark: the nearest art is the light's own
+             "Particle3D": "node-light-sym",
+             "Particle2D": "node-light-sym"}
 FLAT_ART = {"3d": "file-object-3d", "2d": "file-object-2d"}
 
 
@@ -343,6 +347,7 @@ _ICON_COLORS = {
     ".model": ((190, 120, 40), "3D"),
     ".model3d": ((190, 120, 40), "3D"),
     ".map3d": ((190, 120, 40), "Mp"),
+    ".map2d": ((70, 140, 190), "M2"),
     ".model2d": ((70, 140, 190), "2D"),
     ".scene": ((52, 124, 82), "Sc"),
     ".object": ((120, 96, 160), "Ob"),
@@ -503,7 +508,7 @@ class TreeView:
                 tx += 26
             color = (255, 255, 255) if i == self.selected else xp.TEXT
             # rows end at the scroll strip; long names cut
-            plus = row.get("create")
+            plus = row.get("create") or row.get("new")
             room = rect.right - tx - 2 - (17 if plus else 0)
             label = cached_text(font, elide(font, row["label"], room), color)
             if label is not None:
@@ -827,6 +832,11 @@ class NewProjectDialog:
     BTN_H = 26
     LIST_W = 178
     PANEL_H = 214
+    OPT_H = 20                 # one options row under the panel
+    SIZES = ((640, 360), (960, 540), (1152, 700), (1280, 720), (1600, 900),
+             (1920, 1080))
+    SCALES = (0.5, 0.75, 1.0, 1.5, 2.0)
+    FPS = (0, 30, 60, 120, 144, 240)
 
     def __init__(self, title="New Project", value="my_game", width=620):
         self.title = title
@@ -835,15 +845,50 @@ class NewProjectDialog:
         self.selected = templates.DEFAULT_TEMPLATE
         self.rows = []                 # [(kind, key)] with group headings
         self.row_rects = []            # [(kind, key, rect)] drawn live
+        self.option_rects = []         # [(name, rect)] the options block
         self.rect = pygame.Rect(0, 0, width, 380)
         self.list_rect = pygame.Rect(0, 0, self.LIST_W, 100)
         self.panel_rect = pygame.Rect(0, 0, 100, 100)
+        self.options_rect = pygame.Rect(0, 0, 100, 100)
         self.field_rect = pygame.Rect(0, 0, 100, self.FIELD_H)
         self.ok = pygame.Rect(0, 0, 86, self.BTN_H)
         self.cancel = pygame.Rect(0, 0, 86, self.BTN_H)
         self.close_rect = pygame.Rect(0, 0, 0, 0)
         self.answer = None
+        self.option = self._defaults(self.selected)
         self._group_rows()
+
+    @classmethod
+    def _defaults(cls, key):
+        """The dialog's knobs, started at the picked starter's own values."""
+        got = templates.spec(key)
+        size = tuple(got["size"])
+        fits = min(cls.SIZES, key=lambda s: abs(s[0] * s[1] -
+                                                size[0] * size[1]))
+        scale = min(cls.SCALES, key=lambda s: abs(s - float(got["scale"])))
+        return {"size": fits, "scale": scale, "vsync": True, "fps_cap": 60}
+
+    def _options(self):
+        """[(name, label, value)] for the knobs this dialog offers."""
+        opt = self.option
+        return [("size", "Window", f"{opt['size'][0]} x {opt['size'][1]}"),
+                ("scale", "Render scale", f"{opt['scale']:g}"),
+                ("vsync", "VSync", "on" if opt["vsync"] else "off"),
+                ("fps_cap", "FPS cap",
+                 "uncapped" if not opt["fps_cap"] else str(opt["fps_cap"]))]
+
+    def cycle(self, name):
+        """Step one knob to its next choice."""
+        opt = self.option
+        if name == "vsync":
+            opt["vsync"] = not opt["vsync"]
+            return True
+        table = {"size": self.SIZES, "scale": self.SCALES,
+                 "fps_cap": self.FPS}[name]
+        now = opt[name]
+        at = table.index(now) if now in table else 0
+        opt[name] = table[(at + 1) % len(table)]
+        return True
 
     def _group_rows(self):
         """[(kind, key)]: a heading before each group of starters."""
@@ -869,16 +914,25 @@ class NewProjectDialog:
         index = keys.index(self.selected) \
             if self.selected in keys else 0
         self.selected = keys[max(0, min(len(keys) - 1, index + delta))]
+        self.option = self._defaults(self.selected)
         return self.selected
 
-    @staticmethod
-    def _lines(key):
+    def pick(self, key):
+        """Take a starter from the list, refilling the knobs with its owns."""
+        if key == self.selected:
+            return False
+        self.selected = key
+        self.option = self._defaults(key)
+        return True
+
+    def _lines(self, key):
         """What a starter writes, as (label, value) pairs."""
         got = templates.spec(key)
         scenes = ", ".join(
             f"{name} ({STARTER_KINDS.get(kind, kind)})"
             for name, kind, _src, _places in got["scenes"])
-        out = [("Window", f"{got['size'][0]} x {got['size'][1]}"),
+        out = [("Window", f"{self.option['size'][0]} x "
+                          f"{self.option['size'][1]}"),
                ("Scenes", scenes)]
         objects = ", ".join(name for name, _k, _s, _n in got["objects"])
         if objects:
@@ -891,7 +945,8 @@ class NewProjectDialog:
 
     def _layout(self, size):
         list_h = len(self.rows) * self.ROW_H + 8
-        body_h = max(list_h, self.PANEL_H)
+        opt_h = 18 + len(self._options()) * self.OPT_H
+        body_h = max(list_h, self.PANEL_H + opt_h + 10)
         height = self.CAP_H + 12 + body_h + 12 + self.FIELD_H + 34 \
             + self.BTN_H + 14
         self.rect = pygame.Rect(0, 0, self.width, height)
@@ -903,8 +958,10 @@ class NewProjectDialog:
                                      self.LIST_W, list_h)
         px = self.list_rect.right + 12
         self.panel_rect = pygame.Rect(px, body.y + 10,
-                                      body.right - 12 - px, body_h)
-        self.field_rect = pygame.Rect(px, self.panel_rect.bottom + 26,
+                                      body.right - 12 - px, self.PANEL_H)
+        self.options_rect = pygame.Rect(px, self.panel_rect.bottom + 4,
+                                        self.panel_rect.width, opt_h)
+        self.field_rect = pygame.Rect(px, self.options_rect.bottom + 18,
                                       self.panel_rect.width, self.FIELD_H)
         bottom = self.rect.bottom - 14
         self.ok.bottomright = (body.right - 12, bottom)
@@ -971,6 +1028,7 @@ class NewProjectDialog:
                     surf.blit(img, (self.panel_rect.x + 74, y))
                 y += img.get_height() + 2 if img is not None else 12
             y += 3
+        self._draw_options(surf, fonts)
         tag = cached_text(fonts["small"], "Project folder name",
                           xp.TEXT_MUTED)
         if tag is not None:
@@ -992,6 +1050,38 @@ class NewProjectDialog:
                   hovered=self.cancel.collidepoint(mouse))
         return body
 
+    def _draw_options(self, surf, fonts):
+        """The knobs the starter's manifest takes, one clickable row each."""
+        rect = self.options_rect
+        self.option_rects = []
+        head = cached_text(fonts["small"], "OPTIONS", xp.TEXT_MUTED)
+        if head is not None:
+            surf.blit(head, (rect.x, rect.y))
+        pygame.draw.line(surf, xp.DK_SHADOW, (rect.x + head.get_width() + 6,
+                                              rect.y + head.get_height() // 2),
+                         (rect.right, rect.y + head.get_height() // 2))
+        y = rect.y + 18
+        mouse = pygame.mouse.get_pos()
+        for name, label, value in self._options():
+            row = pygame.Rect(rect.x, y, rect.width, self.OPT_H - 2)
+            self.option_rects.append((name, row))
+            lit = row.collidepoint(mouse)
+            if lit:
+                surf.fill(xp.BTN_HOVER_BG, row)
+            tag = cached_text(fonts["small"], label, xp.TEXT_MUTED)
+            if tag is not None:
+                surf.blit(tag, (row.x + 4, row.centery - tag.get_height() // 2))
+            ink = xp.LINK if lit else xp.TEXT
+            img = cached_text(fonts["small"], value, ink)
+            if img is not None:
+                surf.blit(img, (row.right - 18 - img.get_width(),
+                                row.centery - img.get_height() // 2))
+            arrow = cached_text(fonts["small"], "\u203a", xp.TEXT_MUTED)
+            if arrow is not None:
+                surf.blit(arrow, (row.right - 12,
+                                  row.centery - arrow.get_height() // 2))
+            y += self.OPT_H
+
     def handle(self, e):
         """Return "ok" once Create is pressed; `answer` holds the payload."""
         if e.type == pygame.KEYDOWN:
@@ -1007,7 +1097,11 @@ class NewProjectDialog:
         if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
             for kind, key, rect in self.row_rects:
                 if kind == "item" and rect.collidepoint(e.pos):
-                    self.selected = key
+                    self.pick(key)
+                    return None
+            for name, rect in self.option_rects:
+                if rect.collidepoint(e.pos):
+                    self.cycle(name)
                     return None
             if self.ok.collidepoint(e.pos):
                 return self._commit()
@@ -1022,7 +1116,8 @@ class NewProjectDialog:
         name = (self.field.text or "").strip()
         if not name:
             return None
-        self.answer = {"name": name, "choice": self.selected}
+        self.answer = {"name": name, "choice": self.selected,
+                       "options": dict(self.option)}
         return "ok"
 
 
@@ -1030,6 +1125,12 @@ class NewProjectDialog:
 ASSET_KINDS = (("new_model", "Model", "prop"),
                ("new_model_2d", "2D Model", "sprite"),
                ("new_script", "Script", "helpers"))
+# the two halves of the map format, in the order the dialog lists them
+MAP_KINDS = (("new_map", "3D Map", "level"),
+             ("new_map_2d", "2D Map", "flat"))
+# what a new map can start from, best first; `blank` is the bare box
+MAP_STARTERS = {"new_map": ("room", "blank"),
+                "new_map_2d": ("arena", "blank")}
 
 
 class CreateDialog:
@@ -1053,6 +1154,7 @@ class CreateDialog:
         self.model = None
         self.texture = None
         self.template = self.templates[0] if self.templates else None
+        self._reseed_templates()
         self.answer = None
         self.rect = pygame.Rect(0, 0, width, 300)
         self.row_rects = []
@@ -1071,6 +1173,11 @@ class CreateDialog:
             rows.append((None, "Scene"))
             for key, preset in SCENE_PRESETS.items():
                 rows.append((key, preset[3].replace("New ", "")))
+        if self.only in (None, "map"):
+            # a map is a level document, so it sits beside the scenes
+            rows.append((None, "Map"))
+            for key, label, _stem in MAP_KINDS:
+                rows.append((key, label))
         # a preset's node type says which folder it is written into, so the
         # dialog groups the same way the Project View does
         if self.only in (None, "entity"):
@@ -1111,7 +1218,7 @@ class CreateDialog:
             return preset[2]
         if kind == "new_shader":
             return str(self.template or "shader")
-        for key, _label, stem in ASSET_KINDS:
+        for key, _label, stem in ASSET_KINDS + MAP_KINDS:
             if key == kind:
                 return stem
         return "untitled"
@@ -1126,13 +1233,24 @@ class CreateDialog:
         return self.selected in OBJECT_PRESETS
 
     def uses_template(self):
-        """A shader is written from one of the stock looks."""
-        return self.selected == "new_shader"
+        """A shader copies a stock look; a map starts from a starter."""
+        return self.selected == "new_shader" or \
+            self.selected in MAP_STARTERS
 
     def template_title(self):
         """The chosen look's own words, for its chooser button."""
+        if self.selected in MAP_STARTERS:
+            return str(self.template or "")
         row = SHADER_PRESETS.get(str(self.template))
         return row[2] if row else ""
+
+    def _reseed_templates(self):
+        """The chooser offers stock looks or starter maps, per kind."""
+        starters = MAP_STARTERS.get(self.selected)
+        self.templates = list(starters) if starters is not None \
+            else list(SHADER_PRESETS)
+        if self.template not in self.templates:
+            self.template = self.templates[0] if self.templates else None
 
     def select(self, kind):
         """Pick a kind; re-seed the name if unchanged."""
@@ -1141,6 +1259,7 @@ class CreateDialog:
         if self.field.text == self._default_stem(self.selected):
             self.field.set(self._default_stem(kind))
         self.selected = kind
+        self._reseed_templates()
 
     def _cycle(self, which):
         """Advance a chooser through the project's files, or a shader"""
@@ -1231,7 +1350,9 @@ class CreateDialog:
             self._draw_chooser(surf, fonts, self.texture_rect, "Texture",
                                self.texture)
         if self.uses_template():
-            self._draw_chooser(surf, fonts, self.template_rect, "Stock look",
+            label = ("Starter map" if self.selected in MAP_STARTERS
+                     else "Stock look")
+            self._draw_chooser(surf, fonts, self.template_rect, label,
                                self.template_title())
         xp.button(surf, self.ok, "Create", fonts["normal"], default=True,
                   hovered=self.ok.collidepoint(mouse))

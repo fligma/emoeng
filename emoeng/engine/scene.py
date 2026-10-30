@@ -37,7 +37,7 @@ def _uv_look(obj):
 
 
 def _frame_of(obj):
-    """Where a metre sheet is pinned on this object, and how it turns."""
+    """Where the metre sheet is pinned, and how it turns."""
     pos = getattr(obj, "pos", None) or ()
     if obj is None or len(list(pos)) < 2:
         return None
@@ -57,7 +57,7 @@ def _hook_arity(hook):
 
 
 def _deliver(hook, name, value):
-    """Call a trigger hook with as much of (name, value) as it takes."""
+    """Call a hook with (name, value), trimmed to its arity."""
     return hook(name) if _hook_arity(hook) < 2 else hook(name, value)
 
 
@@ -136,16 +136,17 @@ class Scene:
     kind = "scene"
     name = "scene"
     object_base = GameObject      # what self.spawn() accepts
-    uses = ()                     # object files this scene places
+    uses = ()
     actions = {}                  # action -> bindings, bound on load
-    controls = ()                 # extra actions the help panel lists
+    controls = ()
+
+    # the map this scene loads: a class name, or the document's `map`
+    map_name = None
 
     clear_color = (0.02, 0.02, 0.03)
-    post = ()                     # the frame's own shader chain: names of
-                                  # `screen` looks in the project's shaders/
-    viewport = None               # None = the whole window, or a rect
-                                  # (x, y, w, h) in pixels / 0..1 floats
-    camera_class = None           # what add_camera() builds (per kind)
+    post = ()                     # `screen` shaders, in order
+    viewport = None               # None = whole window, else (x, y, w, h)
+    camera_class = None
 
     # lighting the renderer uploads: `ambient2d` and `blockers`
     ambient = (0.22, 0.22, 0.26)
@@ -155,9 +156,8 @@ class Scene:
     blockers = None               # rects / segments / objects / a callable
     master = 1.0                  # scene-wide dimmer: set_master(0) is black
 
-    # movement numbers a script may read: the engine's walk-mode player is
-    # glued to the ground, so these only mean something to a scene that
-    # implements falling (`self.gravity` down, `self.jump_speed` up)
+    # movement numbers a script may read: they only mean
+    # something to a scene that implements falling
     gravity = 0.0
     jump_speed = 0.0
 
@@ -169,15 +169,14 @@ class Scene:
         self.input = game.input
         self.rng = np.random.default_rng(seed)
         self.objects = []
-        self.lights = []            # Light3D / Light2D (or old-style dicts)
-        self.sun = None             # the one directional light, if any
-        self.player = None          # the attached player object (any kind)
-        self.camera_rig = None      # Scene3D: object that claimed set_camera()
-        self.lock_input = False     # freezes the player (cutscenes etc.)
-        self.cameras = {}           # name -> Camera/Camera2D add_camera made
-        self.active = None          # name of the rendering camera; None =
-                                    # the scene's default view
-        self.t = 0.0                # seconds since setup(), advanced here
+        self.lights = []
+        self.sun = None
+        self.player = None
+        self.camera_rig = None
+        self.lock_input = False     # freezes the player (cutscenes)
+        self.cameras = {}
+        self.active = None          # rendering camera name; None = default
+        self.t = 0.0                # seconds since setup()
         self.timers = Timers()
         self.save = game.save
         self._hud = None            # built on first use, see `hud`
@@ -185,6 +184,8 @@ class Scene:
         self.plan = {}
         self.doc = None
         self.placed = {}            # class name -> how many spawn() built
+        # the live level: a MapLevel from `load_map()`, swapped at will
+        self.map = None
         # live-drag bookkeeping: meshes, queued geometry, sequence numbers
         self.live = False
         self._rec = None            # the object whose build is recording
@@ -196,7 +197,7 @@ class Scene:
         self.colliders = []
         # trigger bus: name -> [(owner, method)] waiting for a broadcast
         self.listeners = {}
-        # what this scene's code rebinds at load: name -> the keys it set
+        # what this scene rebinds at load: name -> keys
         self.binds = {}
         # objects `queue_free()` marked, taken out when the frame ends
         self._freeing = []
@@ -210,6 +211,42 @@ class Scene:
 
     def setup(self):
         pass
+
+    # -- maps: one level file, loadable and swappable at any time --------
+    def load_map(self, name=None, doc=None):
+        """Build a map and everything it places; the level comes back."""
+        from .level import MapLevel
+        stem = name or self.map_name
+        if not stem:
+            return None
+        if self.map is not None:
+            self.unload_map()
+        self.map_name = stem
+        self.map = MapLevel(self, stem, doc=doc).build()
+        self.on_map_loaded(self.map)
+        return self.map
+
+    def change_map(self, name=None, doc=None):
+        """Swap this scene's map mid play: old level out, new one in.
+        The player, the HUD and everything the scene spawned stay put."""
+        return self.load_map(name, doc=doc)
+
+    swap_map = change_map
+
+    def unload_map(self):
+        """Take the live map, and every node it placed, out."""
+        level = self.map
+        self.map = None
+        if level is not None:
+            level.dispose()
+            self.on_map_unloaded(level)
+        return level
+
+    def on_map_loaded(self, level):
+        """Called after a map is built: dress it, tune it, read its nodes."""
+
+    def on_map_unloaded(self, level):
+        """Called after a map is gone: tidy up what pointed at it."""
 
     def add(self, data, texture="white", blend="opaque", owner=None,
             opacity=None, shader=None, uv=None):
@@ -274,12 +311,8 @@ class Scene:
         return pas.set(knob, value) if pas is not None else None
 
     def object_class(self, obj):
-        """Resolve a class or a project name to its class.
-
-        A name is looked for in `entities/` first, then `objects/`, so a
-        script may say `spawn("enemy")` without caring which folder the
-        behaviour lives in.
-        """
+        """Resolve a class or a project name to its class:
+        `entities/` first, then `objects/`."""
         if isinstance(obj, str):
             cls = self.project.spawnable(obj, self.object_base)
         else:
@@ -374,12 +407,11 @@ class Scene:
         slid = any(abs(c) > 1e-6 for c in off)
         seq = self.live_seq[ident] = self.live_seq.get(ident, 0) + 1
         if ident not in self.live_anchor:
-            # a drag that starts without a recorded build pins itself now
+            # a drag with no recorded build pins itself now
             self.live_anchor[ident] = _frame_of(obj) or mesh_anchor(
                 items[0][0])
-        # the pin travels with the body, so its sheet rides it and does not
-        # swim underneath; the stored pin stays at the build place, since
-        # every relive slides the build geometry by the whole distance
+        # the pin moves with the body: its sheet rides along
+        # the stored pin stays at the build place
         pin = slide_pin(self.live_anchor[ident], off) if slid \
             else self.live_anchor[ident]
         self.renderer.drop_live(ident, seq - 1)
@@ -446,11 +478,8 @@ class Scene:
                 if isinstance(o, cls) and o.alive]
 
     def queue_free(self, obj):
-        """Mark an object to leave when this frame's update ends.
-
-        Removal in the middle of a loop over `get_children()` would skip a
-        node, so the request waits its turn; `despawn()` still means now.
-        """
+        """Leave when this frame's update ends, not now:
+        removing mid-loop would skip a node."""
         if obj is not None and getattr(obj, "alive", False) and \
                 not any(o is obj for o in self._freeing):
             self._freeing.append(obj)
@@ -463,13 +492,8 @@ class Scene:
         return self
 
     def get_node(self, path):
-        """A live object by branch: `get_node("Torch#0/Flame#0")`.
-
-        A word is a node's document name, its tag or its class. Top-level
-        names are looked for among the scene's roots first, so a script need
-        not spell the whole branch to reach a node it knows the name of.
-        `"."` is the scene itself.
-        """
+        """A live object by branch: `Torch#0/Flame#0`; `.` is the scene.
+        A word is a document name, tag or class."""
         text = str(path or "").strip().replace("\\", "/")
         parts = [p for p in text.split("/") if p and p != "."]
         if not parts or parts[0] == "..":
@@ -478,7 +502,7 @@ class Scene:
         return node_from(roots, parts) or node_from(self.objects, parts)
 
     def find_by_name(self, name):
-        """The first live object that goes by that name, or None."""
+        """The first live object with that name, or None."""
         for obj in self.objects:
             if obj.alive and answers_to(obj, name):
                 return obj
@@ -903,15 +927,15 @@ class Scene:
         """Called when a trigger is broadcast; the scene's own hook."""
 
     def is_current(self):
-        """True when the game runs this scene, not a picture inside one."""
+        """True when the game runs this scene, not a screen."""
         return getattr(self.game, "scene", None) is self
 
     def broadcast(self, name, value=None):
-        """Say a trigger fired: me, my listeners, every object with a hook."""
+        """Say a trigger fired: listeners and every object's hook."""
         name = str(name)
         self.on_trigger(name, value)
         for owner, method in list(self.listeners.get(name, ())):
-            # a `connect()` listener is the callable; a `listen()` one owns it
+            # a `connect()` listener is the callable; `listen()` owns it
             hook = owner if method is None else getattr(owner, method, None)
             if hook is not None:
                 _deliver(hook, name, value)
@@ -922,10 +946,7 @@ class Scene:
 
     def listen(self, name, owner, method="on_trigger"):
         """Have `owner` hear a trigger broadcast; the pair back.
-
-        `method` is the name of the hook to call on `owner`, or None when
-        `owner` is the callable itself -- what `connect()` asks for.
-        """
+        `method` names the hook; None when `owner` is the callable."""
         name = str(name)
         row = self.listeners.setdefault(name, [])
         pair = (owner, None if method is None else str(method))
@@ -934,11 +955,11 @@ class Scene:
         return pair
 
     def unlisten(self, name, owner=None):
-        """Forget one listener of a trigger, or every listener of it."""
+        """Forget one listener of a trigger, or all of them."""
         name = str(name)
         if owner is None:
             return self.listeners.pop(name, [])
-        # `!=` as well as identity, so a bound method lets itself go
+        # `!=` too, so a bound method can let itself go
         row = [pair for pair in self.listeners.get(name, ())
                if pair[0] is not owner and pair[0] != owner]
         if self.listeners.get(name) is None:
@@ -949,17 +970,14 @@ class Scene:
     # -- signals, as Godot spells them ------------------------------------
     def connect(self, name, fn, method=None):
         """Hear a signal: `connect("door", self.on_door)`.
-
-        An object and the name of its hook work too, and mean the same as
-        the older `listen("door", obj, "on_door")`.
-        """
+        An object and hook name work too, as `listen()` does."""
         if method is None and not callable(fn):
             raise TypeError("a signal listener is a callable, or an object "
                             "and the name of its hook")
         return self.listen(name, fn, method)
 
     def disconnect(self, name, fn=None):
-        """Forget one listener of a signal, or every listener of it."""
+        """Forget one listener of a signal, or all of them."""
         return self.unlisten(name, fn)
 
     def emit(self, name, value=None):
@@ -1013,7 +1031,7 @@ class Scene:
     def bind(self, action, *bindings):
         """Bind an action to tokens, exactly like `input.map.json` does."""
         self.input.bind(action, *bindings)
-        # the editor shows this: a scene may override what the project set
+        # the editor shows this; a scene may override the project
         self.binds[str(action)] = self.input.bindings_of(action)
         return action
 
@@ -1028,15 +1046,14 @@ class Scene3D(Scene):
     uses = ()                       # objects/<name>.py this scene spawns
 
     # camera knobs used when no Player is spawned
-    camera = "walk"                 # "walk" glues to the ground, "fly" is free
-    move_speed = (6.0, 12.0)        # (walk, run) m/s
-    eye_height = 2.0                # above ground in walk mode
-    world_radius = 128.0            # hard camera clamp from origin; 0 = off
-                                    # levels set 0 and manage the player themselves
-    fov = 68.0                      # vertical field of view, degrees
-    near = 0.05                     # frustum, in world units
-    far = 800.0                     # anything past this is not drawn
-    roll = 0.0                      # horizon tilt in radians (Dutch angle)
+    camera = "walk"                 # "walk" glues to the ground, "fly" free
+    move_speed = (6.0, 12.0)
+    eye_height = 2.0
+    world_radius = 128.0            # clamp from origin; 0 = off
+    fov = 68.0
+    near = 0.05
+    far = 800.0
+    roll = 0.0
 
     # lighting defaults the renderer uploads every frame
     fog_color = (0.06, 0.06, 0.09)
@@ -1104,6 +1121,11 @@ class Scene3D(Scene):
         return 0.0
 
     def spawn_point(self):
+        """The live map's player start, else the origin."""
+        if self.map is not None:
+            pos, yaw = self.map.spawn_point()
+            if pos is not None:
+                return pos, yaw
         return (0.0, 0.0, 0.0), 0.0
 
     def attach_player(self, ent, pos=None, yaw=None, pitch=None):
@@ -1180,9 +1202,9 @@ class Scene2D(Scene):
     scale_mode = "fit"              # "fit" letterboxes, "expand" crops
 
     clear_color = (0.0, 0.0, 0.0)
-    ambient = (1.0, 1.0, 1.0)       # the lit pass is never used here, but
-    sun_col = (0.0, 0.0, 0.0)       # keep uniforms harmless if it is
-    fog_near = 1.0e6                # fog is a 3D shader term; switch it off
+    ambient = (1.0, 1.0, 1.0)       # lit pass unused; keep harmless
+    sun_col = (0.0, 0.0, 0.0)
+    fog_near = 1.0e6                # fog is 3D only; switched off
     fog_far = 2.0e6
 
     def __init__(self, game, seed=7):
@@ -1229,6 +1251,15 @@ class Scene2D(Scene):
         if hasattr(view, "to_world"):
             return view.to_world(screen_pixel)
         return self.view2d.to_world(screen_pixel)
+
+    def spawn_point(self):
+        """The live map's player start, else the world's middle."""
+        if self.map is not None:
+            pos, yaw = self.map.spawn_point()
+            if pos is not None:
+                return pos, yaw
+        w, h = self.world_size or self.game.screen.get_size()
+        return (w / 2.0, h / 2.0, 0.0), 0.0
 
     def render(self, camera=None):
         self.sync_view()

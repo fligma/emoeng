@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pygame
 
-from ..engine import inputmap, scenedoc, shaders, ui, xp
+from ..engine import inputmap, mapdoc, scenedoc, shaders, ui, xp
 from ..engine.camera import Camera, CameraHost, wish
 from ..engine.game import control_hint, register_builtin_textures
 from ..engine.input import Input
@@ -82,6 +82,38 @@ BOX_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7),
              (7, 4), (0, 4), (1, 5), (2, 6), (3, 7))
 RING_SEG = 20               # samples around a round shape's circle
 TRIGGER_RGB = (240, 158, 62)    # a see-through shape, warm on purpose
+SPAWN_RGB = (112, 214, 158)     # the player-start marker, green for "go"
+
+
+class SpawnMarker:
+    """The map's player start as a draggable pseudo-node.
+
+    It rides the pick, drag and gizmo rails like any placed node, but
+    owns only a position and a yaw. It is not in the scene's objects:
+    its home is the map document's `spawn` fields, which the editor
+    writes back through `mapdoc.set_spawn`.
+    """
+
+    is_spawn = True
+    alive = True
+    placed_id = None
+    doc_key = None
+
+    def __init__(self, pos, yaw=0.0):
+        self.pos = [float(c) for c in pos]
+        self.yaw = float(yaw)
+        self.objects = ()
+        self.lights = ()
+        self.children = ()
+
+    def set(self, pos=None, yaw=None):
+        if pos is not None:
+            self.pos = [float(c) for c in pos][:3]
+            while len(self.pos) < 3:
+                self.pos.append(0.0)
+        if yaw is not None:
+            self.yaw = float(yaw)
+        return self
 
 
 def _seg_distance(px, py, a, b):
@@ -233,6 +265,7 @@ class Preview:
         self.project = None
         self.scene = None
         self.scene_name = None
+        self.map_name = None      # a map played on its own, no scene of it
         self.pending = None
         self.selected = None
         self.started = False
@@ -287,6 +320,7 @@ class Preview:
         self.grip = None          # (property key, TextField) while typing
         self.picks = None         # the asset list under the row being typed
         self.gizmo = None         # the handle a drag is holding
+        self.spawn = None         # the player-start marker, in Edit
         self._click = None        # (when, node) for a double click
         self.light_view = False   # Edit draws flat until this is switched
         self.focus_mode = False   # the viewport has the pointer and keys
@@ -303,6 +337,7 @@ class Preview:
         self.game.save = SaveStore(project, slot="preview")
         self.paused = False
         self.started = False
+        self.map_name = None
         self.error = None
         self._error_logged = False
         self.pending = None
@@ -331,16 +366,35 @@ class Preview:
         if name not in names:
             name = names[0] if names else None
         self.selected = name
+        self.map_name = None
         self.started = True
         self.pending = name
         self.paused = False
         self.error = None
         self._error_logged = False
 
+    def play_map(self, name):
+        """Run one map on its own, in a bare scene built around it."""
+        if self.project is None:
+            return False
+        stem = Path(str(name)).stem
+        if self.project.map_doc(stem) is None:
+            self.app.log(f"no map called {stem}", "warn")
+            return False
+        self.map_name = stem
+        self.selected = None
+        self.started = True
+        self.pending = stem
+        self.paused = False
+        self.error = None
+        self._error_logged = False
+        return True
+
     def select_node(self, name, key):
         """Select one placed node, building its scene first."""
         self.sel_key = str(key)
         self.selected = name
+        self.map_name = None
         self.started = True
         self.pending = name
 
@@ -349,6 +403,7 @@ class Preview:
         self.started = False
         self.pending = None
         self.paused = False
+        self.map_name = None
         self.error = None
         self.exit_scene()
 
@@ -396,6 +451,7 @@ class Preview:
         self.scene = None
         self.scene_name = None
         self.sel = None
+        self.spawn = None
         self.drag = None
         try:
             self.app.audio.stop()
@@ -447,6 +503,8 @@ class Preview:
         was_active = self.scene.active if (self.scene is not None
                                            and self.mode == "edit") \
             else ...
+        # a map played alone outweighs the scene of the same name
+        map_name = self.map_name
         self.exit_scene()
         if name is None:
             return
@@ -456,7 +514,11 @@ class Preview:
                 self.project.reload_objects()
             # the project's own keys and triggers, so Play hears them
             inputmap.load(self.project).apply(self.input)
-            self.scene = self.project.scene(name, self.game)
+            if map_name is not None and name == map_name:
+                # no scene document, no script: the map alone, placed
+                self.scene = self.project.map_scene(name, self.game)
+            else:
+                self.scene = self.project.scene(name, self.game)
             if self.mode == "edit":
                 self.scene.live = True
                 self.scene.editor_build = True
@@ -679,8 +741,9 @@ class Preview:
             if scene.active:
                 self._reseat_rig(scene.cameras.get(scene.active), cam)
             self.edit_seated = True
+        self.spawn = None         # the marker re-reads the map document
         self._apply_view()
-        self.app.log("edit mode - drag objects to move them", "muted")
+        self.app.log("edit mode - drag objects or the player start", "muted")
 
     def _leave_edit(self):
         self.drag = None
@@ -688,6 +751,7 @@ class Preview:
         self.grip = None
         self.picks = None
         self.node_ctx = None
+        self.spawn = None
         self.release()
         if self._play_cam is not None:
             self.game.camera = self._play_cam
@@ -833,6 +897,8 @@ class Preview:
                     continue
                 if best is None or got[2] < depth:
                     best, depth = obj, got[2]
+            if best is None:
+                best = self._pick_spawn(local)
             return best
         world = scene.to_world(local)
         for obj in reversed(scene.objects):
@@ -844,6 +910,22 @@ class Preview:
             if rect is None and getattr(obj, "rect", None) is not None:
                 continue          # a box we cannot read is not a hit
             return obj
+        return self._pick_spawn(local)
+
+    def _pick_spawn(self, local):
+        """The player-start marker, when a click lands on it."""
+        mark = self.spawn
+        if mark is None or self.mode != "edit":
+            return None
+        if self._flat():
+            px, py = self._to_pixels(mark.pos)
+        else:
+            got = self.game.camera.project(mark.pos, self.inner.size)
+            if got is None:
+                return None
+            px, py = got[0], got[1]
+        if math.hypot(px - local[0], py - local[1]) <= PICK_PX * 0.7:
+            return mark
         return None
 
     def _world_rect(self, obj):
@@ -970,6 +1052,8 @@ class Preview:
 
     def _refresh(self, obj):
         """Redraw what an object owns after a move."""
+        if getattr(obj, "is_spawn", False):
+            return                    # the marker owns nothing in the scene
         scene = self.scene
         if scene is not None and getattr(scene, "live", False):
             try:
@@ -998,9 +1082,53 @@ class Preview:
         if not moved or not self.edit_moved:
             return None
         for obj in moved:
-            self.write_placement(obj)
+            if getattr(obj, "is_spawn", False):
+                self.write_spawn()
+            else:
+                self.write_placement(obj)
         self.pending = self.scene_name      # rebuild where they now sit
         return moved[0]
+
+    def _sync_spawn(self):
+        """Keep the Edit marker reading the live map document."""
+        level = getattr(self.scene, "map", None) if self.scene else None
+        if self.mode != "edit" or level is None:
+            self.spawn = None
+            return None
+        spot, yaw = mapdoc.spawn_of(level.doc)
+        if spot is None:
+            # unset means the scene's own fallback: show where Play lands
+            try:
+                spot, yaw = self.scene.spawn_point()
+            except Exception:
+                spot, yaw = (0.0, 0.0, 0.0), 0.0
+        pos = [float(c) for c in spot]
+        while len(pos) < 3:
+            pos.append(0.0)
+        if self.spawn is None:
+            self.spawn = SpawnMarker(pos, yaw)
+        elif self.drag is None and self.gizmo is None:
+            # a rebuild may land the level on a spawn someone saved
+            if [round(c, 3) for c in self.spawn.pos] != \
+                    [round(c, 3) for c in pos] or \
+                    round(self.spawn.yaw, 3) != round(float(yaw), 3):
+                self.spawn.pos, self.spawn.yaw = pos, float(yaw)
+                if self.sel_key == "player start":
+                    self.sel = self.spawn
+        return self.spawn
+
+    def write_spawn(self):
+        """Record the player start in the map document that owns it."""
+        level = getattr(self.scene, "map", None) if self.scene else None
+        if level is None or self.project is None or self.spawn is None:
+            return None
+        mapdoc.set_spawn(level.doc, list(self.spawn.pos), self.spawn.yaw)
+        path = self.project.save_map_doc(level.name, level.doc)
+        if path is not None:
+            self.app.log(f"player start moved in "
+                         f"{self.project.relative(path)}", "ok")
+            self.app.refresh_tree()
+        return path
 
     def _doc_kind(self):
         """The document's word for the open scene."""
@@ -1014,27 +1142,67 @@ class Preview:
             return f"scripts/objects/{module.rsplit('.', 1)[-1]}.py"
         return None
 
+    def _map_doc_open(self):
+        """The map document a played-alone map edits, or None.
+
+        `Play in Scene tab` on a map builds a bare scene with no `.scene`
+        behind it, so every node the tab moves belongs to the `.map`
+        file. A normal scene answers None: it keeps its own document and
+        only the level's own nodes route away (see `_home_of`).
+        """
+        name = self.scene_name
+        if self.project is None or name is None:
+            return None
+        if self.map_name is not None and name == self.map_name:
+            return self.project.map_doc(name)
+        return None
+
+    def _home_of(self, placed):
+        """(is_map, doc, name): the file that placed this node.
+
+        A scene that loads a map keeps two documents' worth of nodes in
+        one tree, so a node's id decides which file a drag writes back
+        to - the level's `.map` or the scene's `.scene`. `name` is the
+        stem that file is saved under, which a map's level knows.
+        """
+        level = getattr(self.scene, "map", None) if self.scene else None
+        if placed is not None and level is not None and \
+                mapdoc.placed(level.doc, placed) is not None:
+            return True, level.doc, level.name
+        open_map = self._map_doc_open()
+        if open_map is not None:
+            return True, open_map, self.scene_name
+        return False, self.project.scene_doc(self.scene_name), \
+            self.scene_name
+
+    def _save_home(self, is_map, name, doc):
+        """Write a placed node back to the folder its kind means."""
+        if is_map:
+            return self.project.save_map_doc(name, doc)
+        return self.project.save_scene_doc(name, doc)
+
     def write_placement(self, obj):
-        """Record one object's placement in the open scene's document."""
+        """Record one object's placement in whichever file placed it."""
         project, name = self.project, self.scene_name
         if project is None or name is None:
             return None
-        doc = project.scene_doc(name) or scenedoc.blank_scene(
-            name, self._doc_kind())
-        if not doc.get("script"):
+        placed = getattr(obj, "placed_id", None)
+        is_map, doc, home = self._home_of(placed)
+        if doc is None:
+            doc = scenedoc.blank_scene(name, self._doc_kind())
+        api = mapdoc if is_map else scenedoc
+        if not is_map and not doc.get("script"):
             script = project.scene_script(name)
             if script is not None:
                 doc["script"] = scenedoc.script_field("scripts/scenes",
                                                       script.name)
         fields = scenedoc.look_of(obj)
-        placed = getattr(obj, "placed_id", None)
         if placed:
-            entry = dict(scenedoc.placed(doc, placed) or {"id": placed})
+            entry = dict(api.placed(doc, placed) or {"id": placed})
             entry.update(fields)
             entry.setdefault("script", self._script_of(obj))
             # file a node under its holder, avoiding a root copy
-            scenedoc.add_placed(doc, entry,
-                                scenedoc.parent_of(doc, placed))
+            api.add_placed(doc, entry, api.parent_of(doc, placed))
             what = placed
         elif getattr(obj, "doc_key", None):
             key = obj.doc_key
@@ -1044,33 +1212,32 @@ class Preview:
             what = key
         else:
             return None
-        path = project.save_scene_doc(name, doc)
+        path = self._save_home(is_map, home, doc)
         self.app.log(f"placed {what} in {project.relative(path)}", "ok")
         self.app.refresh_tree()
         return path
 
     def revert(self):
-        """Hand the selection back to the document."""
+        """Hand the selection back to the document that placed it."""
         obj = self.sel
         project, name = self.project, self.scene_name
         if obj is None or project is None or name is None:
             return False
-        doc = project.scene_doc(name)
-        if doc is None:
-            return False
         placed = getattr(obj, "placed_id", None)
         key = getattr(obj, "doc_key", None)
-        if placed:
-            entry = scenedoc.placed(doc, placed)
-            if entry is None:
-                return False
+        is_map, doc, home = self._home_of(placed)
+        if doc is None:
+            return False
+        api = mapdoc if is_map else scenedoc
+        if placed and api.placed(doc, placed) is not None:
+            entry = api.placed(doc, placed)
             for field in scenedoc.LOOK_KEYS:
                 entry.pop(field, None)
-        elif key:
+        elif key and (doc.get("overrides") or {}).get(key) is not None:
             (doc.get("overrides") or {}).pop(key, None)
         else:
             return False
-        project.save_scene_doc(name, doc)
+        self._save_home(is_map, home, doc)
         self.app.log(f"reverted {placed or key}", "ok")
         self.app.refresh_tree()
         self.pending = name
@@ -1078,6 +1245,8 @@ class Preview:
 
     def _node_key(self, obj):
         """What the tree and the document both call this node."""
+        if getattr(obj, "is_spawn", False):
+            return "player start"
         return str(getattr(obj, "placed_id", None)
                    or getattr(obj, "doc_key", None)
                    or type(obj).__name__)
@@ -1150,35 +1319,45 @@ class Preview:
         return True
 
     def add_node(self, type_name):
-        """Add a node under the selection when possible."""
+        """Add a node under the selection when possible.
+
+        A played-alone map takes its new nodes into the map document;
+        a scene keeps them in its own, as it always did.
+        """
         project, name = self.project, self.scene_name
         row = scenedoc.node_type(type_name)
         if project is None or name is None or row is None:
             return None
-        doc = project.scene_doc(name) or scenedoc.blank_scene(
-            name, self._doc_kind())
-        if not doc.get("script"):
+        is_map = self._map_doc_open() is not None
+        api = mapdoc if is_map else scenedoc
+        doc = (project.map_doc(name) if is_map
+               else project.scene_doc(name) or scenedoc.blank_scene(
+                   name, self._doc_kind()))
+        if doc is None:
+            return None
+        if not is_map and not doc.get("script"):
             script = project.scene_script(name)
             if script is not None:
                 doc["script"] = scenedoc.script_field("scripts/scenes",
                                                       script.name)
         label, solid = row[1], row[4] == "3d"
         parent_key = getattr(self.sel, "placed_id", None)
-        parent = scenedoc.placed(doc, parent_key) if parent_key else None
+        parent = api.placed(doc, parent_key) if parent_key else None
         if self.sel is not None and parent is None:
             self.app.log(f"'{self._node_key(self.sel)}' is spawned by a "
-                         f"script: {label} joins the scene's roots", "warn")
+                         f"script: {label} joins the "
+                         f"{'map' if is_map else 'scene'}'s roots", "warn")
         # the next free name, counted as the scene counts
         index = 0
-        while scenedoc.placed(
+        while api.placed(
                 doc, scenedoc.key(label, index, parent_key)) is not None:
             index += 1
         node_key = scenedoc.key(label, index, parent_key)
         entry = {"id": node_key, "type": str(type_name),
                  "pos": [0.0, 0.0, 0.0] if solid else [0.0, 0.0]}
         # a picked parent places at its pivot, else the origin
-        scenedoc.add_placed(doc, entry, parent)
-        project.save_scene_doc(name, doc)
+        api.add_placed(doc, entry, parent)
+        self._save_home(is_map, name, doc)
         if parent is not None:
             self.collapsed.discard(str(parent.get("id")))
         self.sel = None
@@ -1189,7 +1368,11 @@ class Preview:
         return entry
 
     def remove_node(self):
-        """Take the selected nodes and their branches out."""
+        """Take the selected nodes and their branches out.
+
+        Each node leaves the file that placed it, so deleting a lamp a
+        map brought does not edit the scene that only loads it.
+        """
         project, name = self.project, self.scene_name
         if project is None or name is None:
             return False
@@ -1200,14 +1383,19 @@ class Preview:
             self.app.log("only a node the document placed can be deleted",
                          "warn")
             return False
-        doc = project.scene_doc(name)
-        if doc is None:
-            return False
+        homes = {}
         for obj in nodes:
             key = obj.placed_id
-            scenedoc.remove_placed(doc, key)
+            is_map, doc, home = self._home_of(key)
+            if doc is None:
+                continue
+            (mapdoc if is_map else scenedoc).remove_placed(doc, key)
             self.collapsed.discard(str(key))
-        project.save_scene_doc(name, doc)
+            homes[(is_map, home)] = doc
+        if not homes:
+            return False
+        for (is_map, home), doc in homes.items():
+            self._save_home(is_map, home, doc)
         self.sel = None
         self.sel_key = None
         self.sels = []
@@ -1225,7 +1413,8 @@ class Preview:
         if obj is None or not getattr(obj, "alive", True):
             return []
         flat = self._flat()
-        rows = [("class", type(obj).__name__, None)]
+        rows = [("class", "player start" if getattr(obj, "is_spawn", False)
+                 else type(obj).__name__, None)]
         script = self._script_of(obj)
         if script:
             rows.append(("script", script, None))
@@ -1428,7 +1617,10 @@ class Preview:
         self._moved(obj)
         self.edit_moved = True
         self._refresh(obj)
-        self.write_placement(obj)
+        if getattr(obj, "is_spawn", False):
+            self.write_spawn()
+        else:
+            self.write_placement(obj)
         self.pending = self.scene_name
         return True
 
@@ -1961,7 +2153,10 @@ class Preview:
         obj = drag["obj"]
         if not self.edit_moved:
             return None
-        self.write_placement(obj)
+        if getattr(obj, "is_spawn", False):
+            self.write_spawn()
+        else:
+            self.write_placement(obj)
         self.pending = self.scene_name      # rebuild where it now sits
         self.edit_moved = False
         return obj
@@ -2278,11 +2473,13 @@ class Preview:
             surface.blit(img, (inner.right - img.get_width() - 8,
                                inner.bottom - img.get_height() - 6))
         if self.mode == "edit":
+            self._sync_spawn()
             if self.grid:
                 self._draw_grid(surface)
             self._draw_selection(surface, self.inner)
             self._draw_shapes(surface)
             self._draw_gizmo(surface)
+            self._draw_spawn(surface)
         if self.paused:
             ui.dim(surface, 0.45)
             img = widgets.cached_text(self.fonts["big"], "Paused",
@@ -2580,7 +2777,11 @@ class Preview:
         return rows
 
     def instantiate(self, relpath):
-        """Place one of the project's files as a child instance."""
+        """Place one of the project's files as a child instance.
+
+        On a played-alone map the instance joins the level's own file,
+        so a prefab stamped into a room travels with the room.
+        """
         project, name = self.project, self.scene_name
         if project is None or name is None:
             return None
@@ -2588,9 +2789,14 @@ class Preview:
         if path is None:
             self.app.log(f"cannot find {relpath}", "warn")
             return None
-        doc = project.scene_doc(name) or scenedoc.blank_scene(
-            name, self._doc_kind())
-        if not doc.get("script"):
+        is_map = self._map_doc_open() is not None
+        api = mapdoc if is_map else scenedoc
+        doc = (project.map_doc(name) if is_map
+               else project.scene_doc(name) or scenedoc.blank_scene(
+                   name, self._doc_kind()))
+        if doc is None:
+            return None
+        if not is_map and not doc.get("script"):
             script = project.scene_script(name)
             if script is not None:
                 doc["script"] = scenedoc.script_field("scripts/scenes",
@@ -2606,9 +2812,9 @@ class Preview:
                     or "").lower()) == "3d"
         label = path.stem
         parent_key = getattr(self.sel, "placed_id", None)
-        parent = scenedoc.placed(doc, parent_key) if parent_key else None
+        parent = api.placed(doc, parent_key) if parent_key else None
         index = 0
-        while scenedoc.placed(
+        while api.placed(
                 doc, scenedoc.key(label, index, parent_key)) is not None:
             index += 1
         node_key = scenedoc.key(label, index, parent_key)
@@ -2616,8 +2822,8 @@ class Preview:
         entry = {"id": node_key,
                  field: scenedoc.instance_field(relpath),
                  "pos": [0.0, 0.0, 0.0] if solid else [0.0, 0.0]}
-        scenedoc.add_placed(doc, entry, parent)
-        project.save_scene_doc(name, doc)
+        api.add_placed(doc, entry, parent)
+        self._save_home(is_map, name, doc)
         if parent is not None:
             self.collapsed.discard(str(parent.get("id")))
         self.sel = None
@@ -2769,6 +2975,45 @@ class Preview:
         if img is not None:
             surface.blit(img, (box.right + 2,
                                box.centery - img.get_height() // 2))
+
+    def _draw_spawn(self, surface):
+        """The player start: a ring, the way it faces, and its name."""
+        mark = self.spawn
+        if mark is None:
+            return
+        if self._flat():
+            px, py = self._to_pixels(mark.pos)
+            fx, fy = math.cos(mark.yaw) * 16.0, math.sin(mark.yaw) * 16.0
+        else:
+            got = self.game.camera.project(mark.pos, self.inner.size)
+            if got is None:
+                return
+            px, py = got[0], got[1]
+            # the way a player looks from here: (sin yaw, 0, cos yaw)
+            ahead = (mark.pos[0] + math.sin(mark.yaw) * 1.2,
+                     mark.pos[1], mark.pos[2] + math.cos(mark.yaw) * 1.2)
+            tip = self.game.camera.project(ahead, self.inner.size)
+            fx, fy = (tip[0] - px, tip[1] - py) if tip else (0.0, -16.0)
+        ox, oy = self.inner.x, self.inner.y
+        centre = (int(ox + px), int(oy + py))
+        pygame.draw.circle(surface, SPAWN_RGB, centre, 11, 2)
+        pygame.draw.circle(surface, SPAWN_RGB, centre, 2)
+        length = math.hypot(fx, fy)
+        if length > 1.0:
+            ex, ey = px + fx / length * 21.0, py + fy / length * 21.0
+            head = (int(ox + ex), int(oy + ey))
+            pygame.draw.line(surface, SPAWN_RGB, centre, head, 2)
+            ang = math.atan2(fy, fx)
+            for turn in (0.5, -0.5):
+                pygame.draw.line(surface, SPAWN_RGB, head,
+                                 (int(ox + ex - math.cos(ang - turn) * 7.0),
+                                  int(oy + ey - math.sin(ang - turn) * 7.0)),
+                                 2)
+        img = widgets.cached_text(self.fonts["small"], "player start",
+                                  SPAWN_RGB)
+        if img is not None:
+            surface.blit(img, (centre[0] + 13, centre[1]
+                               - img.get_height() - 7))
 
     def _draw_grid(self, surface):
         """The grid: floor lines, or a sheet in 2D."""
@@ -2977,7 +3222,8 @@ class Preview:
 
     def _draw_pick_label(self, surface, at, obj):
         """The picked node's name and place, beside its marker."""
-        name = getattr(obj, "doc_key", None) or type(obj).__name__
+        name = "player start" if getattr(obj, "is_spawn", False) \
+            else getattr(obj, "doc_key", None) or type(obj).__name__
         extra = f"  +{len(self.sels) - 1} more" if len(self.sels) > 1 else ""
         words = f"{name}  " + "  ".join(f"{c:.2f}" for c in obj.pos) + extra
         img = widgets.cached_text(self.fonts["small"], words,
@@ -3011,6 +3257,7 @@ class Preview:
         sel = self.sel
         out = [
             ("Scene", self.scene_name or self.selected or "-"),
+            ("Map", self.map_name or "-"),
             ("Scenes", ", ".join(names) if names else "-"),
             ("Mode", "edit" if self.mode == "edit" else "game"),
             ("Tool", self.tool if self.mode == "edit" else "-"),

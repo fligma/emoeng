@@ -46,7 +46,7 @@ SLOT_KIND = {
 # engine-called methods; a `def` of one is an event
 HOOKS = ("setup", "build", "update", "overlay", "draw", "handle_event",
          "on_enter", "on_exit", "on_timeout", "on_save", "on_load",
-         "on_trigger", "status", "place",
+         "on_map_loaded", "on_map_unloaded", "on_trigger", "status", "place",
          "spawn_point", "ground_height", "interact", "use", "trigger",
          "collide", "dispose", "attach", "set", "set_camera", "clone_kwargs",
          "poll_look", "poll_move", "apply_look", "apply_move",
@@ -464,9 +464,11 @@ WORLD_KINDS = ("scene3d", "scene2d", "object3d", "object2d", "player3d",
                "model3d", "collision3d", "hitbox3d", "trigger3d",
                "marker3d", "light3d", "omnilight3d", "spotlight3d",
                "directionallight3d", "audio3d", "text3d", "timer3d",
+               "particle3d",
                "sprite2d", "collision2d", "hitbox2d", "trigger2d",
                "marker2d", "light2d", "pointlight2d", "conelight2d",
                "rectlight2d", "audio2d", "text2d", "timer2d",
+               "particle2d",
                "entity3d", "entity2d")
 ENTITY_KINDS = ("entity3d", "entity2d", "object3d", "object2d", "player3d", "player2d")
 _s("remove", "take %who% out of the scene", "object", STACK,
@@ -1804,6 +1806,8 @@ KINDS = {
     "text2d": "2D text",
     "timer3d": "3D timer",
     "timer2d": "2D timer",
+    "particle3d": "3D particles",
+    "particle2d": "2D particles",
     "shader": "shader",
     "script": "script",
 }
@@ -1828,6 +1832,7 @@ BASES = {"Scene3D": "scene3d", "Scene2D": "scene2d", "SceneUI": "sceneui",
          "AudioEmitter3D": "audio3d", "AudioEmitter2D": "audio2d",
          "Text3D": "text3d", "Text2D": "text2d",
          "Timer3D": "timer3d", "Timer2D": "timer2d",
+         "Particle3D": "particle3d", "Particle2D": "particle2d",
          "Shader": "shader"}
 
 # a kind borrowing another's blocks: screens share objects
@@ -1866,6 +1871,9 @@ TYPE_CATEGORIES = {
     "text2d": ("object",) + _LANG,
     "timer3d": ("functions",) + _LANG,
     "timer2d": ("functions",) + _LANG,
+    # an emitter's script: its own points, and the object's place in the world
+    "particle3d": ("object", "light") + _LANG,
+    "particle2d": ("object", "light") + _LANG,
     # a shader script sees the shader and language drawers only
     "shader": ("shader",) + _LANG,
 }

@@ -3,20 +3,19 @@
 import pygame
 
 
-# surfaces
 FACE = (236, 233, 216)          # dialog / window background (#ECE9D8)
-HILITE = (255, 255, 255)        # raised bevel highlight
+HILITE = (255, 255, 255)
 SHADOW = (170, 166, 150)        # raised bevel shadow
-DK_SHADOW = (120, 116, 100)     # outer / sunken deep shadow
+DK_SHADOW = (120, 116, 100)
 FIELD = (255, 255, 255)         # text fields, list boxes
-FIELD_ALT = (247, 246, 240)     # alternating list rows
+FIELD_ALT = (247, 246, 240)
 
 # title bar gradient (active window)
 CAP_TOP = (38, 120, 222)        # light band under the top edge
-CAP_HI = (18, 92, 205)          # top of the arch
+CAP_HI = (18, 92, 205)
 CAP_MID = (10, 74, 180)         # middle
 CAP_BOT = (8, 58, 148)          # where the caption meets the face
-CAP_GLOW = (150, 198, 255)      # thin highlight line along the very top
+CAP_GLOW = (150, 198, 255)
 
 # text
 TEXT = (16, 16, 16)
@@ -33,9 +32,8 @@ BTN_HOVER_BG = (229, 241, 253)
 BTN_DEFAULT_BORDER = (228, 195, 101)   # the green-ish default glow
 BTN_PRESSED = (198, 204, 180)
 
-# selection / focus
 SELECTION = (49, 106, 197)             # list selection blue
-PRESS_SELECTION = (24, 66, 130)        # ... and while a click holds it
+PRESS_SELECTION = (24, 66, 130)        # and while a click holds it
 
 # combo box button
 COMBO_A = (255, 255, 255)
@@ -51,7 +49,7 @@ CLOSE_BTN_EDGE = (255, 210, 200)
 
 # theme swaps these names, so draw code reads `xp.NAME`
 PANEL = (247, 246, 240)          # central workspace backdrop
-OUTLINE = (128, 124, 108)        # hairline around the workspace
+OUTLINE = (128, 124, 108)
 LINK = (20, 50, 100)             # accent headings
 SELECT_BORDER = (60, 120, 200)
 SELECT_TEXT = (255, 255, 255)
@@ -314,8 +312,8 @@ def titlebar(surf, rect, title, font, icon=None, dialog=False,
         x += icon.get_width() + 6
     else:
         x += 20
-    # Native Linux decorations own the caption controls; the in-app header
-    # keeps the title but leaves them out when custom chrome is unavailable.
+    # Native Linux decorations own the caption controls; the in-app
+    # header keeps the title but drops them without custom chrome.
     buttons = (3 + (16 + 3) * (1 if dialog else 3)) if controls else 0
     title = _fit(font, title, g.right - buttons - x - 4)
     t = font.render(title, True, CAPTION)
@@ -355,12 +353,7 @@ def titlebar(surf, rect, title, font, icon=None, dialog=False,
 
 def menubar(surf, rect, active=None, font=None, labels=_MENU_LABELS,
             hover=None, pressed=None):
-    """XP menu strip; `hover`/`pressed` are cell indexes, open or one-shot.
-
-    A cell the pointer is over glows pale blue and gains a border; a cell
-    being clicked sinks to its pressed face, which is what makes a click
-    look like a click rather than a teleport.
-    """
+    """XP menu strip; `hover`/`pressed` are cell indexes."""
     surf.fill(FACE, rect)
     pygame.draw.line(surf, SHADOW, (rect.x, rect.bottom - 1),
                      (rect.right, rect.bottom - 1))
@@ -388,13 +381,7 @@ def menubar(surf, rect, active=None, font=None, labels=_MENU_LABELS,
 
 
 def menu_items(surf, pos, items, font, hover=-1, width=170, pressed=-1):
-    """XP dropdown panel. items: [(label, enabled[, icon])] where a label
-
-    `hover` lights the row under the pointer and `pressed` sinks the one
-    being clicked, so a choice answers the hand as well as the eye. Cells
-    are the strip's own widths, so a caller that measures them its own way
-    may hit-test the returned list instead.
-    """
+    """XP dropdown panel; items are `(label, enabled[, icon])`."""
     rows = []
     h = 4
     for item in items:
@@ -416,7 +403,7 @@ def menu_items(surf, pos, items, font, hover=-1, width=170, pressed=-1):
         row = pygame.Rect(panel.x + 2, y, panel.w - 4, font.get_height() + 8)
         lit = enabled and (i == hover or i == pressed)
         if lit:
-            # a press deepens the band and lifts the label a pixel
+            # a press deepens the band and lifts the label
             surf.fill(PRESS_SELECTION if i == pressed else SELECTION, row)
         color = TEXT if enabled else TEXT_MUTED
         if lit:

@@ -12,21 +12,24 @@ __version__ = const.VERSION
 
 from .engine import (anim, audio, camera, collision, colors, components,
                      config,  # noqa
-                     input, lights, loader, meshes, model, objects, paths,
-                     player, proctex, renderer, save, scene, scenedoc,
-                     shaders, screen, templates, theme, timers, ui,
-                     winchrome, xp)
+                     input, inputmap, level, lights, loader, mapdoc, meshes,
+                     model, objects, particles, paths, placement, player,
+                     proctex, renderer, save, scene, scenedoc, sfx, shaders,
+                     screen, templates, theme, timers, ui, winchrome, xp)
 from .engine.camera import Camera, Camera2D, CameraHost, OrbitCamera
 from .engine.components import (AudioEmitter2D, AudioEmitter3D,
                                 Collision2D, Collision3D, ConeLight2D,
                                 DirectionalLight3D, Hitbox2D, Hitbox3D,
-                                LightNode2D, LightNode3D, Marker2D,
-                                Marker3D, Model3D, OmniLight3D, PointLight2D,
+                                LightNode2D, LightNode3D, Map2D, Map3D,
+                                Marker2D, Marker3D, Model3D, OmniLight3D,
+                                Particle2D, Particle3D, PointLight2D,
                                 RectLight2D, SpotLight3D, Sprite2D, Text2D,
                                 Text3D, Timer2D, Timer3D, Trigger2D,
                                 Trigger3D)
 from .engine.game import Game
 from .engine.input import Input
+from .engine.inputmap import InputMap
+from .engine.level import MapLevel
 from .engine.lights import Light, Light2D, Light3D
 from .engine.loader import Project
 from .engine.model import Model, new_model
@@ -49,9 +52,9 @@ def main(argv=None):
 __all__ = [
     "anim", "audio", "camera", "collision", "colors", "components",
     "config",
-    "input", "lights", "loader", "meshes", "model", "objects", "paths",
-    "player",
-    "proctex", "renderer", "save", "screen", "scene",
+    "input", "inputmap", "level", "lights", "loader", "mapdoc", "meshes",
+    "model", "objects", "particles", "paths", "placement", "player",
+    "proctex", "renderer", "save", "scene", "sfx", "screen",
     "scenedoc", "shaders", "templates", "theme",
     "timers", "ui", "winchrome",
     "xp", "Camera", "Camera2D", "CameraHost",
@@ -66,6 +69,8 @@ __all__ = [
     "DirectionalLight3D", "PointLight2D", "ConeLight2D", "RectLight2D",
     "AudioEmitter3D", "AudioEmitter2D", "Text3D", "Text2D", "Timer3D",
     "Timer2D", "Trigger3D", "Trigger2D", "Marker3D", "Marker2D",
+    "Particle3D", "Particle2D", "Map2D", "Map3D", "MapLevel",
+    "InputMap",
     "Scene", "Scene2D", "Scene3D",
     "SceneUI", "Timer", "Timers", "main", "const",
     "NAME", "CODENAME", "VERSION", "TITLE", "SUBTITLE", "DESCRIPTION",

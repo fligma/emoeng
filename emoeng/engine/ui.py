@@ -10,10 +10,7 @@ SHADOW = (8, 8, 10)
 _CACHE = {}
 _CACHE_MAX = 512          # one entry per distinct line/colour/size
 
-# The faces the engine ships, by the name a project writes. A system with
-# no such font would otherwise fall back to pygame's built-in compact face,
-# which is unreadable at HUD sizes, so each name also carries the system
-# faces a real platform is likely to have.
+# the faces the engine ships, by name, plus system fallbacks
 _BUNDLED = {"tahoma": ("tahoma.ttf",),
             "consolas": ("consola.ttf", "consolas.ttf")}
 _LOCAL = {
@@ -25,7 +22,7 @@ _INITED = False
 
 
 def bundled_font_file(name):
-    """The TTF this build ships for a face; None when it ships none."""
+    """The TTF this build ships for a face, or None."""
     folder = paths.bundled_fonts()
     for cand in _BUNDLED.get(str(name).lower(), (f"{name}.ttf",)):
         path = folder / cand
@@ -34,8 +31,19 @@ def bundled_font_file(name):
     return None
 
 
+def font_names():
+    """Every face a document may name: aliases, then files."""
+    out = list(_BUNDLED)
+    try:
+        out += [p.stem.lower() for p in sorted(paths.bundled_fonts().iterdir())
+                if p.suffix.lower() in (".ttf", ".otf")]
+    except OSError:
+        pass
+    return tuple(dict.fromkeys(out))
+
+
 def load_font(name, size, bold=False, italic=False):
-    """A pygame font by face name: the shipped file, then the platform's."""
+    """A pygame font by face: shipped file, then the system's."""
     global _INITED
     size = max(1, int(size))
     key = (str(name), size, bool(bold), bool(italic))

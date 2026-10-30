@@ -2,6 +2,7 @@
 
 import ctypes
 import ctypes.util
+import os
 import sys
 from pathlib import Path
 
@@ -31,12 +32,14 @@ MWM_HINTS = 1 << 1          # the decorations field counts
 MWM_DECOR_ALL = 1
 MWM_DECOR_NONE = 0
 
+CARDINAL = 6        # XA_CARDINAL, the type a pid property is stored as
+IS_VIEWABLE = 2
+TREE_DEPTH = 3      # a window manager frame sits one level above us
+TREE_LIMIT = 512
 
-# ------------------------------------------------------------------ X11 wire
-# Linux has no SDL wrapper that can drop decorations, so the borderless
-# trick goes straight to X11. Every call is typed on purpose: an untyped
-# ctypes call hands back a 32-bit int, which truncates the display pointer
-# and the 64-bit window id, and the next call then faults the process.
+
+# Linux has no borderless SDL wrapper: this talks X11 directly.
+# Every struct below is the LP64 size, field for field.
 class XWindowAttributes(ctypes.Structure):
     _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int),
                 ("width", ctypes.c_int), ("height", ctypes.c_int),
@@ -51,7 +54,9 @@ class XWindowAttributes(ctypes.Structure):
                 ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int),
                 ("all_event_masks", ctypes.c_long),
                 ("your_event_mask", ctypes.c_long),
-                ("do_not_propagate_mask", ctypes.c_short)]
+                ("do_not_propagate_mask", ctypes.c_long),
+                ("override_redirect", ctypes.c_int),
+                ("screen", ctypes.c_void_p)]
 
 
 class XineramaScreenInfo(ctypes.Structure):
@@ -60,41 +65,37 @@ class XineramaScreenInfo(ctypes.Structure):
                 ("width", ctypes.c_short), ("height", ctypes.c_short)]
 
 
-class XrrScreenSize(ctypes.Structure):
-    _fields_ = [("id", ctypes.c_ulong),
-                ("width", ctypes.c_int), ("height", ctypes.c_int),
-                ("mwidth", ctypes.c_int), ("mheight", ctypes.c_int)]
-
-
 class XrrScreenResources(ctypes.Structure):
-    _fields_ = [("config_timestamp", ctypes.c_ulong),
-                ("timestamp", ctypes.c_ulong),
-                ("root", ctypes.c_ulong),
+    _fields_ = [("timestamp", ctypes.c_ulong),
+                ("config_timestamp", ctypes.c_ulong),
                 ("ncrtc", ctypes.c_int),
                 ("crtcs", ctypes.POINTER(ctypes.c_ulong)),
                 ("noutput", ctypes.c_int),
                 ("outputs", ctypes.POINTER(ctypes.c_ulong)),
                 ("nmode", ctypes.c_int),
-                ("modes", ctypes.POINTER(XrrScreenSize)),
-                ("output_class_count", ctypes.c_int),
-                ("output_class", ctypes.c_char_p)]
+                ("modes", ctypes.c_void_p)]
 
 
 class XrrCrtcInfo(ctypes.Structure):
     _fields_ = [("timestamp", ctypes.c_ulong),
                 ("x", ctypes.c_int), ("y", ctypes.c_int),
                 ("width", ctypes.c_int), ("height", ctypes.c_int),
-                ("mode", ctypes.c_ulong), ("rotation", ctypes.c_int),
+                ("mode", ctypes.c_ulong),
+                ("rotation", ctypes.c_ushort),
                 ("noutput", ctypes.c_int),
                 ("outputs", ctypes.POINTER(ctypes.c_ulong)),
                 ("rotations", ctypes.c_ushort),
-                ("possible_rotations", ctypes.c_uint)]
+                ("npossible", ctypes.c_int),
+                ("possible", ctypes.POINTER(ctypes.c_ulong))]
 
 
 class XrrOutputInfo(ctypes.Structure):
     _fields_ = [("timestamp", ctypes.c_ulong),
                 ("crtc", ctypes.c_ulong),
-                ("name", ctypes.c_char_p), ("name_len", ctypes.c_ulong),
+                ("name", ctypes.c_char_p),
+                ("name_len", ctypes.c_int),
+                ("mm_width", ctypes.c_ulong),
+                ("mm_height", ctypes.c_ulong),
                 ("connection", ctypes.c_ushort),
                 ("subpixel_order", ctypes.c_ushort),
                 ("ncrtc", ctypes.c_int),
@@ -102,7 +103,8 @@ class XrrOutputInfo(ctypes.Structure):
                 ("nclone", ctypes.c_int),
                 ("clones", ctypes.POINTER(ctypes.c_ulong)),
                 ("nmode", ctypes.c_int),
-                ("modes", ctypes.POINTER(ctypes.c_ulong))]
+                ("npreferred", ctypes.c_int),
+                ("modes", ctypes.c_void_p)]
 
 
 VOIDP = ctypes.c_void_p
@@ -110,10 +112,13 @@ ULONG = ctypes.c_ulong
 UINT = ctypes.c_uint
 INT = ctypes.c_int
 CHARP = ctypes.c_char_p
+# int (*XErrorHandler)(Display *, XErrorEvent *)
+ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                                 ctypes.c_void_p)
 
 
 def _sign(lib, names):
-    """Pin down argument and return types, one call site at a time."""
+    """Pin argument and return types, one call at a time."""
     for name, restype, argtypes in names:
         try:
             fn = getattr(lib, name)
@@ -124,7 +129,7 @@ def _sign(lib, names):
 
 
 def _load_x11_lib():
-    """X11, typed and ready; None when there is no X server to talk to."""
+    """X11, typed and ready; None without an X server."""
     if not IS_LINUX:
         return None
     found = ctypes.util.find_library("X11")
@@ -157,6 +162,15 @@ def _load_x11_lib():
         ("XInternAtom", ULONG, [VOIDP, CHARP, ctypes.c_int]),
         ("XChangeProperty", INT,
          [VOIDP, ULONG, ULONG, ULONG, INT, INT, VOIDP, INT]),
+        ("XQueryTree", INT,
+         [VOIDP, ULONG, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG),
+          ctypes.POINTER(ctypes.POINTER(ULONG)), ctypes.POINTER(UINT)]),
+        ("XGetWindowProperty", INT,
+         [VOIDP, ULONG, ULONG, ctypes.c_long, ctypes.c_long, INT, ULONG,
+          ctypes.POINTER(ULONG), ctypes.POINTER(INT), ctypes.POINTER(ULONG),
+          ctypes.POINTER(ULONG), ctypes.POINTER(VOIDP)]),
+        ("XFree", INT, [VOIDP]),
+        ("XSetErrorHandler", VOIDP, [VOIDP]),
         ("XQueryPointer", INT,
          [VOIDP, ULONG, ctypes.POINTER(ULONG), ctypes.POINTER(ULONG),
           ctypes.POINTER(INT), ctypes.POINTER(INT), ctypes.POINTER(INT),
@@ -190,7 +204,7 @@ def _load_xrandr_lib():
 
 
 def _load_xext_lib():
-    """Xext, for the Xinerama monitor boxes Xrandr did not answer with."""
+    """Xext, for the monitor boxes Xrandr did not answer with."""
     if not IS_LINUX:
         return None
     found = ctypes.util.find_library("Xext")
@@ -277,6 +291,11 @@ class WindowChrome:
         self._parent_off = (0, 0)    # window origin's offset inside its parent
         self._ready = False
         self._retry_at = 0
+        self.pid = os.getpid()
+        self._pid_atom = 0
+        self._guarded = False        # Xlib's error path is ours to answer
+        self._prev_handler = None    # whoever held the slot before us
+        self._on_x_error = ERROR_HANDLER(self._trap_x_error)
         self.dll = _load_sdl_dll()
         self.drag = None              # ("move"|"resize", anchor, origin)
         self.maximized = False
@@ -285,7 +304,7 @@ class WindowChrome:
 
     # ------------------------------------------------------------------ boot
     def _ensure(self):
-        """Bind to the live window; the caller must have made one first."""
+        """Bind to the live window; the caller made one first."""
         if not IS_LINUX:
             if _sdl2 is not None and self.win is None:
                 try:
@@ -296,6 +315,8 @@ class WindowChrome:
             return self.win is not None
         if _x11 is None:
             return False
+        if not self._guard_errors():
+            return False
         if self.display is None:
             return self._connect()
         if self._ready and self._alive():
@@ -303,24 +324,107 @@ class WindowChrome:
         return self._rebind()
 
     def _live_window(self):
-        """The X id SDL gave this window, or 0 while there is none."""
+        """The X window this process owns, or 0.
+        `get_wm_info()` faults here, so read the tree and pid."""
+        if not (self.display and self.root):
+            return 0
         try:
-            if not pygame.display.get_init():
-                return 0
-            info = pygame.display.get_wm_info() or {}
+            return self._owned_window(self.root, 0)
         except Exception:
             return 0
-        try:
-            return int(info.get("window") or 0)
-        except (TypeError, ValueError):
+
+    def _owned_window(self, parent, depth):
+        """Depth-first: the first mapped descendant that carries our pid."""
+        kids = ctypes.POINTER(ctypes.c_ulong)()
+        count = UINT()
+        parent_ret = ULONG()
+        root_ret = ULONG()
+        if not _x11.XQueryTree(self.display, parent, ctypes.byref(root_ret),
+                               ctypes.byref(parent_ret), ctypes.byref(kids),
+                               ctypes.byref(count)):
             return 0
+        fallback = 0
+        try:
+            for i in range(min(count.value, TREE_LIMIT)):
+                win = kids[i]
+                if self._window_pid(win) == self.pid:
+                    if self._viewable(win):
+                        return win
+                    # mapped a moment later; a window manager may still
+                    # be placing it
+                    fallback = fallback or win
+                elif depth < TREE_DEPTH:
+                    found = self._owned_window(win, depth + 1)
+                    if found:
+                        return found
+            return fallback
+        finally:
+            if bool(kids):
+                _x11.XFree(kids)
+
+    def _window_pid(self, win):
+        """A window's _NET_WM_PID, or None if it has none."""
+        if not self._pid_atom:
+            self._pid_atom = _x11.XInternAtom(self.display, b"_NET_WM_PID",
+                                              0)
+        got_type = ULONG()
+        fmt = INT()
+        nitems = ULONG()
+        after = ULONG()
+        data = VOIDP()
+        try:
+            ok = _x11.XGetWindowProperty(
+                self.display, win, self._pid_atom, 0, 1, 0, CARDINAL,
+                ctypes.byref(got_type), ctypes.byref(fmt),
+                ctypes.byref(nitems), ctypes.byref(after),
+                ctypes.byref(data))
+        except Exception:
+            return None
+        # XGetWindowProperty answers with Success, which is zero
+        if ok != 0 or not data or not nitems.value:
+            return None
+        try:
+            # a format-32 property arrives as an array of longs
+            return ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[0]
+        finally:
+            _x11.XFree(data)
+
+    def _viewable(self, win):
+        """Is the window mapped on screen right now?"""
+        attrs = XWindowAttributes()
+        try:
+            if not _x11.XGetWindowAttributes(self.display, win,
+                                             ctypes.byref(attrs)):
+                return False
+        except Exception:
+            return False
+        return attrs.map_state == IS_VIEWABLE
+
+    def _guard_errors(self):
+        """Answer Xlib's errors ourselves, before any request is sent.
+        SDL reinstalls its own handler, so ours is re-asserted."""
+        ours = ctypes.cast(self._on_x_error, VOIDP)
+        try:
+            prev = _x11.XSetErrorHandler(ours)
+        except Exception:
+            return False
+        if not self._guarded and prev:
+            self._prev_handler = prev
+        self._guarded = True
+        return True
+
+    def _trap_x_error(self, display, event):
+        """A stale id is an answer, not a failure."""
+        return 0
 
     def _connect(self):
-        """Open the server once; a miss is retried slowly, not per frame."""
+        """Open the server once; a miss waits before retrying."""
         now = pygame.time.get_ticks()
         if now < self._retry_at:
             return False
         self._retry_at = now + RECONNECT_MS
+        if not self._guard_errors():
+            return False
         try:
             self.display = _x11.XOpenDisplay(None)
             if not self.display:
@@ -342,8 +446,11 @@ class WindowChrome:
             return False
 
     def _alive(self):
-        """Is the cached window id still a window this server knows?"""
+        """Is the cached window id still one the server knows?
+        One round trip; a bad id lands in `_trap_x_error`."""
         if not (self.display and self.window):
+            return False
+        if not self._guard_errors():
             return False
         attrs = XWindowAttributes()
         try:
@@ -353,7 +460,7 @@ class WindowChrome:
             return False
 
     def _rebind(self):
-        """A rebuilt window has a new id; follow it rather than give up."""
+        """A rebuilt window has a new id; follow it."""
         got = self._live_window()
         try:
             if got and got != self.window:
@@ -378,9 +485,17 @@ class WindowChrome:
                 _x11.XCloseDisplay(self.display)
             except Exception:
                 pass
+        if self._guarded:
+            try:
+                _x11.XSetErrorHandler(self._prev_handler)
+            except Exception:
+                pass
+            self._guarded = False
+            self._prev_handler = None
         self.display = None
         self.window = 0
         self.root = 0
+        self._pid_atom = 0          # atoms are per connection
         self._parent_off = (0, 0)
         self._ready = False
 
@@ -389,7 +504,7 @@ class WindowChrome:
         return x - self._parent_off[0], y - self._parent_off[1]
 
     def _motif(self, decorations):
-        """Ask the window manager for no frame, or the frame back."""
+        """Ask for no frame from the window manager, or one."""
         if not (self.display and self.window):
             return
         hints = (ctypes.c_ulong * 5)(MWM_HINTS, 0, decorations, 0, 0)
@@ -465,8 +580,8 @@ class WindowChrome:
                                                   ctypes.byref(ry),
                                                   ctypes.byref(child)):
                     return None
-                # a window manager that reparented us keeps its own frame at
-                # an offset; moves are given in the parent's space instead
+                # a reparenting window manager keeps its frame at an offset;
+                # moves are given in the parent's space instead
                 self._parent_off = (rx.value - x.value, ry.value - y.value)
                 return pygame.Rect(rx.value, ry.value, w.value, h.value)
             except Exception:
@@ -520,7 +635,7 @@ class WindowChrome:
             return []
 
     def _xrandr_boxes(self):
-        if _xrandr is None:
+        if _xrandr is None or not self.display:
             return []
         try:
             res = _xrandr.XRRGetScreenResourcesCurrent(self.display,
@@ -529,7 +644,8 @@ class WindowChrome:
                 return []
             out = []
             rr = res.contents
-            for i in range(max(0, rr.noutput)):
+            # capped: a mistyped struct must not walk a wild count
+            for i in range(min(max(0, rr.noutput), 64)):
                 output = rr.outputs[i]
                 info = _xrandr.XRRGetOutputInfo(self.display, res, output)
                 if not info:
@@ -549,7 +665,7 @@ class WindowChrome:
             return []
 
     def _xinerama_boxes(self):
-        if _xext is None:
+        if _xext is None or not self.display:
             return []
         count = INT()
         try:
@@ -708,7 +824,7 @@ class WindowChrome:
         self._place(l, t, r - l, b - t)
 
     def _place(self, x, y, w, h):
-        """Move, and resize too when a size came with the position."""
+        """Move, and resize when a size came with it."""
         if IS_LINUX:
             if w is None or h is None:
                 if not self._ensure():
@@ -735,7 +851,7 @@ class WindowChrome:
 
     @staticmethod
     def _grow(base, edges, g0, gm):
-        """The pressed box, dragged out by the pointer from its grab point."""
+        """The pressed box, dragged out from its grab point."""
         l, t, r, b = base
         dx, dy = gm[0] - g0[0], gm[1] - g0[1]
         if "l" in edges:

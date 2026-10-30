@@ -1,9 +1,6 @@
 """The Pixel tab: paint a picture on layers, save it as one PNG.
 
-`UVPaint` already carries the brushes, the shapes, the layer stack and the
-wrapping toolbar, so this tab is that canvas with no model behind it. The
-layers live in the tab only: saving is the moment they stop existing, so the
-tab says what the PNG will hold before it writes over one.
+The layers live in this tab only; saving flattens them and says so.
 """
 
 from __future__ import annotations
@@ -212,6 +209,9 @@ class PixelEditor(UVPaint):
                 for kind, label, active in (("save", "Save", False),
                                             ("next", "Next", False),
                                             ("new", "New", False),
+                                            ("resize", "Size", False),
+                                            ("zoomin", "+", False),
+                                            ("zoomout", "-", False),
                                             ("grid", "Grid", self.grid))]
         # the palette swatches close the row, so the file buttons go first
         at = next((i for i, item in enumerate(items)
@@ -226,6 +226,11 @@ class PixelEditor(UVPaint):
             return self.next_image()
         if kind == "new":
             self.app._prompt("new_image")
+            return True
+        if kind == "resize":
+            return self.prompt_resize()
+        if kind in ("zoomin", "zoomout"):
+            self.zoom(1.25 if kind == "zoomin" else 0.8)
             return True
         if kind == "grid":
             self.grid = not self.grid
@@ -245,9 +250,34 @@ class PixelEditor(UVPaint):
             return "Open the next texture this project carries"
         if kind == "new":
             return "Make a blank PNG in the project's textures"
+        if kind == "resize":
+            return "Scale every layer to a new canvas size"
+        if kind == "zoomin":
+            return "Zoom in on the canvas"
+        if kind == "zoomout":
+            return "Zoom out of the canvas"
         if kind == "grid":
             return "Show or hide the one-pixel grid"
         return UVPaint._toolbar_tip(action)
+
+    def prompt_resize(self):
+        """Ask for a new canvas size, in pixels."""
+        self.app.dialog_kind = "pixel_resize"
+        self.app.dialog = widgets.PromptDialog(
+            "Canvas Size", "New size (W x H)",
+            f"{self.size[0]}x{self.size[1]}",
+            hint="Every layer is stretched to the new size, nearest pixel "
+                 "to nearest, so the picture keeps its hard edges.",
+            width=400)
+        return True
+
+    def zoom(self, factor):
+        """Scale the canvas view about its centre."""
+        self._auto_fit = False
+        self.view["zoom"] = max(0.1, min(48.0, self.view["zoom"] * factor))
+        self._surf = None
+        self.message = f"zoom {self.view['zoom']:.1f}x"
+        return True
 
     def color_hex(self):
         return "#%02x%02x%02x" % tuple(int(c) for c in self.color[:3])
@@ -395,8 +425,11 @@ class PixelEditor(UVPaint):
         if self.path is not None:
             rows.append(("Folder", self.app.relative(self.path)))
         rows += [("Size", f"{self.size[0]} x {self.size[1]}"),
+                 ("Zoom", f"{self.view['zoom']:.1f}x"),
                  ("Layers", str(len(self.stack.layers))),
                  ("Painting", self.stack.current().name),
+                 ("Opacity", f"{self.stack.current().opacity * 100:.0f}%"),
+                 ("Shapes", "solid" if self.filled else "outline"),
                  ("Tool", f"{self.tool}, {self.brush}px"),
                  ("Grid", "on" if self.grid else "off"),
                  ("Save", "PNG, flattened")]

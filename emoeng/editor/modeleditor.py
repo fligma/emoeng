@@ -8,7 +8,7 @@ import numpy as np
 import pygame
 
 from ..engine import (colors, meshes, model as modelmod, proctex,
-                      scenedoc, xp)
+                      mapdoc, scenedoc, xp)
 from ..engine.camera import OrbitCamera
 from ..engine.game import builtin_sheet, register_builtin_textures
 from ..engine.renderer import Renderer
@@ -160,6 +160,15 @@ class ModelEditor:
         self.sel_obj = None        # the primary object of a parted model
         self.sel_objs = []         # the picked objects, primary last
         self.is_map = False        # the open file is a maps/*.map3d
+        self.map_kind = None       # "map3d" or "map2d" while it is one
+        self.map_nodes = []        # the map's placed nodes, kept on save
+        self.draw_on = False       # the box-draw brush is armed
+        self.box_height = 1.0      # how tall a drawn solid box stands
+        self.mini_on = False       # the live corner panel shows a turntable
+        self.mini = OrbitCamera()  # that panel's own camera
+        self._mini_frame = None    # the panel's last rendered picture
+        self._mini_at = 0          # ticks at the panel's last redraw
+        self.mini_rect = pygame.Rect(0, 0, 0, 0)   # where the panel drew
         self.obj_rect = pygame.Rect(0, 0, 0, 0)   # the objects rail
         self.obj_body = pygame.Rect(0, 0, 0, 0)   # its scrolling list
         self.obj_rows = []         # (name, rect) the rail drew
@@ -269,8 +278,19 @@ class ModelEditor:
         else:
             self.model = doc
             self.path = str(doc.path)
-            self.is_map = Path(str(doc.path)).suffix.lower() == \
-                scenedoc.MAP3D_EXT
+            # a map is a carved model filed under maps/, in either half
+            suffix = Path(str(doc.path)).suffix.lower()
+            self.map_kind = suffix.lstrip(".") \
+                if suffix in scenedoc.MAP_EXTS else None
+            self.is_map = self.map_kind is not None
+            # a map also carries what it places - keep those nodes
+            self.map_nodes = []
+            if self.is_map:
+                base = self.app.project.map_doc(Path(self.path).stem,
+                                                self.map_kind) or {}
+                self.map_nodes = [dict(n) for n in mapdoc.nodes(base)
+                                  if isinstance(n, dict)]
+            self.draw_on = False
             self.name_field.set(doc.name)
             self.paint_key = doc.texture
             self.uvpaint = None
@@ -287,12 +307,32 @@ class ModelEditor:
             self.undo.clear()
             self.redo.clear()
             self.dirty = False
-            self.orbit.frame(doc.bounds())
+            self._frame_kind()
             self._refresh_mesh()
         self.message = f"opened {self.app.project.relative(self.path)}"
         self.app.log(f"opened {self.app.project.relative(self.path)}"
                      f" ({'2D rig' if flat else 'model'})", "muted")
         return True
+
+    def _frame_kind(self):
+        """Fit the view, head-on when the document is a flat map."""
+        if self.model is None:
+            return
+        if self.flat_map:
+            self._flat_map_view()
+        else:
+            self.orbit.frame(self.model.bounds())
+
+    @property
+    def flat_map(self):
+        """True while the open map is the flat half of the format."""
+        return self.map_kind == "map2d"
+
+    def _flat_map_view(self):
+        """Look straight down -Z: a `.map2d` is carved in x and y only."""
+        self.orbit.yaw = 0.0
+        self.orbit.pitch = 0.0
+        self.orbit.frame(self.model.bounds(), pad=1.35)
 
     def save(self):
         if self.model2d is not None:
@@ -313,7 +353,14 @@ class ModelEditor:
                     id(session), session.revision, session.objname)
         try:
             if self.is_map:
-                path = self.app.project.store_map(self.model, stem)
+                # the file's own nodes ride along; placed entries stay put
+                base = self.app.project.map_doc(stem, self.map_kind) \
+                    or mapdoc.blank(stem, self.map_kind)
+                base["nodes"] = [dict(n) for n in self.map_nodes
+                                 if isinstance(n, dict)]
+                path = self.app.project.store_map(self.model, stem,
+                                                  doc=base,
+                                                  kind=self.map_kind)
             else:
                 path = self.app.project.store_model(self.model, stem)
         except Exception as exc:
@@ -388,6 +435,12 @@ class ModelEditor:
         self.rename_obj = None
         self.obj_scroll = 0
         self.is_map = False
+        self.map_kind = None
+        self.map_nodes = []
+        self.draw_on = False
+        self.mini_on = False
+        self._mini_frame = None
+        self.mini_rect = pygame.Rect(0, 0, 0, 0)
         self.sel_part = None
         self.sel_parts = []
         self.grip = self.popup = None
@@ -429,14 +482,25 @@ class ModelEditor:
         self.message = f"new {kind} - edit it, then Save"
         return model
 
-    def new_map(self, kind="box"):
-        """A fresh map: one primitive as a named object."""
+    def new_map(self, kind="box", map_kind="map3d"):
+        """A fresh map: one primitive as a named object, flat or solid."""
         self.autosave()
-        model = modelmod.new_model(kind, 4.0, texture="grid", name="map")
-        self._adopt(model)
+        flat = map_kind == "map2d"
+        if flat:
+            model = modelmod.Model("map", texture="grid")
+            model.add_meshdata(meshes.quad2d((0.0, 0.0), (8.0, 6.0)))
+        else:
+            model = modelmod.new_model(kind, 4.0, texture="grid",
+                                       name="map")
+        self._adopt(model)         # a map starts as a plain model
         self.is_map = True
-        self._wrap_object(kind)
-        self.message = f"new map ({kind}) - split into objects, then Save"
+        self.map_kind = "map2d" if flat else "map3d"
+        self._wrap_object("room" if flat else kind)
+        if flat:
+            self._flat_map_view()
+            self.message = "new flat map - carve parts, then Save"
+        else:
+            self.message = f"new map ({kind}) - split into objects, then Save"
         return model
 
     def _free_name(self, want):
@@ -473,6 +537,10 @@ class ModelEditor:
         self.model = model
         self.path = None
         self.is_map = False
+        self.map_kind = None
+        self.map_nodes = []
+        self.draw_on = False
+        self._mini_frame = None
         self.paint_key = model.texture
         self.uvpaint = None
         self._uvpaint_sessions.clear()
@@ -567,7 +635,13 @@ class ModelEditor:
             self.message = "this is a 2D rig - use Add Part"
             return
         if self.model is None:
-            self.new_model(kind)
+            if self.flat_map:
+                self.new_map(kind, "map2d")
+            else:
+                self.new_model(kind)
+            return
+        if self.flat_map:
+            self._add_flat_shape()
             return
         self._push_undo()
         b = self.model.bounds()
@@ -587,6 +661,22 @@ class ModelEditor:
         self.dirty = True
         self._refresh_mesh()
         self.message = f"added {kind}" + (f" as {made}" if made else "")
+
+    def _add_flat_shape(self):
+        """A flat map grows by quads, never by solid shapes."""
+        self._push_undo()
+        b = self.model.bounds()
+        cx = (b[1][0] + 2.0) if b else 0.0
+        before = len(self.model.tris)
+        self.model.add_meshdata(meshes.quad2d((cx, 0.0), (4.0, 3.0)))
+        made = None
+        if len(self.model.tris) > before:
+            entry = self._wrap_object(
+                "quad", range(before, len(self.model.tris)))
+            made = entry["name"] if entry else None
+        self.dirty = True
+        self._refresh_mesh()
+        self.message = "added a quad" + (f" as {made}" if made else "")
 
     def cycle_texture(self, step):
         if self.model is None or self.model2d is not None:
@@ -1303,6 +1393,13 @@ class ModelEditor:
                     1, min(256, int(field.text.strip())))
             except ValueError:
                 self.message = "brush size must be a number"
+            return
+        if isinstance(spec, tuple) and spec[0] == "mapheight":
+            try:
+                self.box_height = max(0.05, float(field.text.strip()))
+                self.message = f"drawn boxes stand {self.box_height:g} m"
+            except ValueError:
+                self.message = "height must be a number"
             return
         self._write_field(spec, field.text)
 
@@ -2146,12 +2243,9 @@ class ModelEditor:
 
     def _groups(self):
         """The 3D toolbar as captioned bands of (label, action, on, tip)."""
-        # the same document is a map or a model, and the button says which
-        # way round it is about to file it
-        kind_label = "To model" if self.is_map else "To map"
-        kind_tip = ("File this under models/ as a .model3d" if self.is_map
-                    else "File this under maps/ as a .map3d, its faces one "
-                        "object, so each can light and hide on its own")
+        # the same document is a model or a map, and the button says
+        # which way round it is about to file it
+        kind_label, kind_tip = self._kind_word()
         out = [("Mode", [(label, ("ui", mode), self.ui_mode == mode,
                           f"the {label.lower()} half of this tab")
                          for mode, label in UI_MODES])]
@@ -2173,7 +2267,9 @@ class ModelEditor:
                 ("New", ("action", "new"), False,
                  "Start a new model, replacing the open one"),
                 ("New Map", ("action", "newmap"), False,
-                 "Start a new map (saves to maps/ as .map3d)")]))
+                 "Start a new solid map (maps/*.map3d)"),
+                ("New Flat", ("action", "newmap2d"), False,
+                 "Start a new flat map (maps/*.map2d)")]))
             out.append(("Add", [(label, ("prim", kind), False,
                                  f"Add a {label.lower()} to the open model")
                                 for kind, label in PRIMITIVES]))
@@ -2186,6 +2282,18 @@ class ModelEditor:
                  "Fill the picked vertices with a face (F)"),
                 ("Flip", ("action", "flip"), False,
                  "Turn the picked faces over"),
+                ("Subdivide", ("action", "subdivide"), False,
+                 "Split the picked faces - or the whole mesh - at the "
+                 "edge midpoints (Y)"),
+                ("Inset", ("action", "inset"), False,
+                 "Shrink the picked faces and skirt the gap (I)"),
+                ("Bevel", ("action", "bevel"), False,
+                 "Chamfer the picked faces' edges (B)"),
+                ("Bevel2", ("action", "bevel2"), False,
+                 "Bevel again, two bands - a rounded edge"),
+                ("Loop Cut", ("action", "loopcut"), False,
+                 "Slice the mesh on the view plane and weld the ring "
+                 "(Ctrl+R)"),
                 ("Weld", ("action", "weld"), False,
                  "Merge vertices sitting on each other")]))
             move = [("Snap", ("toggle", "snap"), self.snap,
@@ -2205,6 +2313,23 @@ class ModelEditor:
             move.append(("Free", ("axis", None), self.axis is None,
                          "drag on the view plane instead"))
             out.append(("Move", move))
+            if self.is_map:
+                tall = (("Box height", ("action", "boxheight"), False,
+                         f"drawn solids stand {self.box_height:g} m tall - "
+                         "click to set")
+                        if self.map_kind == "map3d" else
+                        ("Boxes", ("none", None), True,
+                         "a flat map draws quads"))
+                out.append(("Draw", [
+                    ("Box draw", ("toggle", "drawbox"), self.draw_on,
+                     "Drag on the ground: a new part, and its collision "
+                     "node as a pair"),
+                    tall,
+                    ("Collide parts", ("action", "collideparts"), False,
+                     "One collision box per named part, replacing the "
+                     "boxes here"),
+                    ("Clear coll.", ("action", "clearcollide"), False,
+                     "Drop every collision node this map placed")]))
         out.append(("File", [
             ("Save", ("action", "save"), False, "Save the model (Ctrl+S)"),
             ("Reload", ("action", "reload"), False,
@@ -2215,6 +2340,9 @@ class ModelEditor:
         out.append(("View", [
             ("Wire", ("toggle", "wire"), self.wire,
              "Draw the edges over the faces"),
+            ("Preview", ("toggle", "mini"), self.mini_on,
+             "A live corner panel: the model turning on its own - click "
+             "it to swap the views"),
             ("Frame", ("action", "frame"), False, "Fit the model"),
             ("AutoUV", ("action", "autouv"), False,
              "Planar-unwrap the picked faces, or all of them")]))
@@ -2678,6 +2806,8 @@ class ModelEditor:
             return self._mouse_move(e)
         if e.type == pygame.MOUSEBUTTONUP:
             if e.button in (1, 2, 3) and self.drag is not None:
+                if self.drag.get("kind") == "drawbox":
+                    self._finish_box_draw()
                 self.drag = None
                 return True
         if e.type == pygame.MOUSEWHEEL:
@@ -2725,6 +2855,9 @@ class ModelEditor:
         if ctrl and e.key == pygame.K_y:
             self.redo_last()
             return True
+        if ctrl and e.key == pygame.K_r:
+            self.loop_cut()
+            return True
         if e.key in (pygame.K_1, pygame.K_KP1):
             self.mode = "object"
             return True
@@ -2751,6 +2884,15 @@ class ModelEditor:
             return True
         if e.key == pygame.K_e:
             self.extrude()
+            return True
+        if e.key == pygame.K_y:
+            self.subdivide_sel()
+            return True
+        if e.key == pygame.K_i:
+            self.inset_sel()
+            return True
+        if e.key == pygame.K_b:
+            self.bevel_sel()
             return True
         if e.key == pygame.K_f:
             self.make_face()
@@ -2821,7 +2963,19 @@ class ModelEditor:
             return True
         if e.button != 1:
             return False
+        if (self.mini_on and self.mini_rect.width
+                and self.mini_rect.collidepoint(e.pos)):
+            self._swap_mini()
+            return True
         shift = widgets.shift_held(e)
+
+        if self.draw_on and self.is_map and self.ui_mode == "edit":
+            # the brush claims the drag: ground footprint, box on release
+            p = self._ground_point(local, size, cam)
+            self.drag = ({"kind": "drawbox", "start": p, "cur": p}
+                         if p is not None else {"kind": "orbit",
+                                                "origin": e.pos})
+            return True
 
         if self.ui_mode == "texture":
             # the brush needs a face: click fills, drag paints
@@ -2967,6 +3121,8 @@ class ModelEditor:
                 self._move_parts_drag(e.pos)
             return True
         if kind == "orbit":
+            if self.flat_map:
+                return True        # a flat map is only seen head-on
             self.orbit.orbit(e.rel[0], e.rel[1])
             return True
         if kind == "pan":
@@ -2979,6 +3135,13 @@ class ModelEditor:
                 return True
             self.drag["face"] = fi
             self._paint_face(fi)
+            return True
+        if kind == "drawbox":
+            local = self._local(e.pos)
+            p = self._ground_point(local, self.inner.size,
+                                   self.orbit.camera())
+            if p is not None:
+                self.drag["cur"] = p
             return True
         local = (e.pos[0] - self.inner.x, e.pos[1] - self.inner.y)
         cam = self.orbit.camera()
@@ -3032,6 +3195,22 @@ class ModelEditor:
                 self.paint_all = not self.paint_all
             elif value == "play":
                 self.toggle_play()
+            elif value == "drawbox":
+                self.draw_on = not self.draw_on
+                self.drag = None
+                self.message = ("box draw on - drag on the ground" if
+                                self.draw_on else "box draw off")
+            elif value == "mini":
+                self.mini_on = not self.mini_on
+                if self.mini_on and self.model is not None:
+                    # start looking from where the main view does
+                    self.mini.target = list(self.orbit.target)
+                    self.mini.dist = self.orbit.dist
+                    self.mini.yaw = self.orbit.yaw + 2.4
+                    self.mini.pitch = self.orbit.pitch
+                self.message = ("live preview on - click the corner to "
+                                "swap" if self.mini_on else
+                                "live preview off")
         elif kind == "flat":
             getattr(self, value)()
         elif kind == "axis":
@@ -3073,11 +3252,25 @@ class ModelEditor:
         self.new_model("box")
 
     def _act_newmap(self):
-        """Start a fresh map, saved into maps/."""
+        """Start a fresh solid map, saved into maps/."""
         self.new_map("box")
 
+    def _act_newmap2d(self):
+        """Start a fresh flat map: one quad, carved into parts."""
+        self.new_map("box", "map2d")
+
+    def _kind_word(self):
+        """The next filing this document takes, and what it means."""
+        if not self.is_map:
+            return ("To map", "File this under maps/ as a .map3d, its faces "
+                               "one object, so each can light on its own")
+        if self.map_kind == "map3d":
+            return ("To flat", "File this under maps/ as a .map2d - the "
+                               "same carve, drawn flat in x and y")
+        return ("To model", "File this under models/ as a .model3d")
+
     def _act_askind(self):
-        """Turn the open document into a map, or back into a plain model.
+        """Turn the open document round: model, solid map, flat map.
 
         A map is a model filed under maps/ and carved into objects, since
         an object is what carries its own sheet, its own lightmap and its
@@ -3086,13 +3279,20 @@ class ModelEditor:
         if self.model is None:
             self.message = "pick a model or a map first"
             return
-        self.is_map = not self.is_map
-        if self.is_map:
-            if not self.model.objects:
-                self._wrap_object(self.model.name or "main")
+        if not self.is_map:
+            self.is_map = True
+            self.map_kind = "map3d"
             self.message = "a map now - Save files it under maps/"
+        elif self.map_kind == "map3d":
+            self.map_kind = "map2d"
+            self._flat_map_view()
+            self.message = "a flat map now - Save writes a .map2d"
         else:
+            self.is_map = False
+            self.map_kind = None
             self.message = "a model now - Save files it under models/"
+        if self.is_map and not self.model.objects:
+            self._wrap_object(self.model.name or "main")
         self.dirty = True
 
     def _act_reload(self):
@@ -3115,6 +3315,21 @@ class ModelEditor:
 
     def _act_weld(self):
         self.weld()
+
+    def _act_subdivide(self):
+        self.subdivide_sel()
+
+    def _act_inset(self):
+        self.inset_sel()
+
+    def _act_bevel(self):
+        self.bevel_sel()
+
+    def _act_bevel2(self):
+        self.bevel_sel(segments=2)
+
+    def _act_loopcut(self):
+        self.loop_cut()
 
     def _act_autouv(self):
         self.auto_uv()
@@ -3313,8 +3528,232 @@ class ModelEditor:
         if self.model2d is not None:
             self.frame_flat()
             return
-        if self.model is not None:
-            self.orbit.frame(self.model.bounds())
+        self._frame_kind()
+
+    def _surgery_faces(self):
+        """The picked faces for a shape edit, or None for the whole mesh."""
+        faces = self.target_faces()
+        if faces is None and self.sel_faces:
+            faces = sorted(self.sel_faces)
+        return list(faces) if faces else None
+
+    def _clear_shape_pick(self):
+        self.sel_verts.clear()
+        self.sel_face = None
+        self.sel_faces.clear()
+
+    def subdivide_sel(self):
+        """Split the picked faces - or all of them - at the midpoints."""
+        if self.model2d is not None or self.model is None:
+            return
+        if not self.model.tris:
+            self.message = "nothing to subdivide"
+            return
+        faces = self._surgery_faces()
+        self._push_undo()
+        gained = self.model.subdivide(faces)
+        self._clear_shape_pick()
+        self.dirty = True
+        self._refresh_mesh()
+        self.message = (f"subdivided, +{gained} faces"
+                        if gained else "nothing to subdivide")
+
+    def inset_sel(self, amount=0.2):
+        """Shrink the picked faces and skirt the gap back to the outline."""
+        if self.model2d is not None or self.model is None:
+            return
+        faces = self._surgery_faces()
+        if not faces:
+            self.message = "pick a face to inset first"
+            return
+        self._push_undo()
+        inner = self.model.inset_faces(faces, amount)
+        self._clear_shape_pick()
+        self.sel_faces = set(inner)
+        self.dirty = True
+        self._refresh_mesh()
+        self.message = f"inset {len(inner)} face(s)"
+
+    def bevel_sel(self, segments=1):
+        """Chamfer the picked faces' edges; two segments rounds them."""
+        if self.model2d is not None or self.model is None:
+            return
+        faces = self._surgery_faces()
+        if not faces:
+            self.message = "pick a face to bevel first"
+            return
+        self._push_undo()
+        inner = self.model.bevel_faces(faces, 0.18, segments, 0.12)
+        self._clear_shape_pick()
+        self.sel_faces = set(inner)
+        self.dirty = True
+        self._refresh_mesh()
+        self.message = f"bevelled {len(inner)} face(s)"
+
+    def loop_cut(self):
+        """Slice the whole mesh on the view plane and weld the new ring."""
+        if self.model2d is not None or self.model is None:
+            return
+        if not self.model.tris:
+            self.message = "nothing to cut"
+            return
+        cam = self.orbit.camera()
+        n = [float(c) for c in cam.forward()]
+        faces = self._surgery_faces()
+        if faces:
+            pts = [self.model.face_centre(f) for f in faces]
+            origin = tuple(sum(p[k] for p in pts) / len(pts)
+                           for k in range(3))
+        else:
+            origin = self.model.centre()
+        self._push_undo()
+        keep = self.model.snapshot()
+        crossed = self.model.bisect_plane(n, origin)
+        if not crossed:
+            # a plane that misses or grazes still collects ring points
+            self.model.restore(keep)
+            self.undo.pop()
+            self.message = "the plane missed the mesh - face it differently"
+            return
+        before = len(self.model.verts)
+        self.model.weld()
+        self._clear_shape_pick()
+        self.dirty = True
+        self._refresh_mesh()
+        self.message = (f"cut {crossed} face(s), welded "
+                        f"{before - len(self.model.verts)} verts")
+
+    # ---- map gear: the box-draw brush and collision boxes from parts ----
+    COLLIDE_TYPES = ("collision3d", "collision2d")
+
+    def _act_boxheight(self):
+        self.grip = (("mapheight", None),
+                     widgets.TextField(f"{self.box_height:g}", 12))
+
+    def _act_clearcollide(self):
+        """Drop every collision node this map placed."""
+        if not self.is_map:
+            self.message = "only a map places collision nodes"
+            return
+        keep = [n for n in self.map_nodes
+                if str(n.get("type")) not in self.COLLIDE_TYPES]
+        if len(keep) == len(self.map_nodes):
+            self.message = "no collision boxes to clear"
+            return
+        self.map_nodes = keep
+        self.dirty = True
+        self.message = f"cleared - {len(keep)} node(s) left"
+
+    def _collision_node(self, name):
+        """The box node that matches one named part, in the map's kind."""
+        b = self.model.obj_bounds(name)
+        if b is None:
+            return None
+        lo, hi = b
+        ctr = [(lo[k] + hi[k]) * 0.5 for k in range(3)]
+        size = [hi[k] - lo[k] for k in range(3)]
+        if self.map_kind == "map2d":
+            return {"id": str(name), "type": "collision2d",
+                    "pos": [round(ctr[0], 4), round(ctr[1], 4)],
+                    "size": [round(max(size[0], 0.01), 4),
+                             round(max(size[1], 0.01), 4)]}
+        return {"id": str(name), "type": "collision3d",
+                "pos": [round(c, 4) for c in ctr],
+                "knobs": {"shape": "box",
+                          "half": [round(max(s * 0.5, 0.005), 4)
+                                   for s in size]}}
+
+    def _act_collideparts(self):
+        """Bulk action: one collision box per named part."""
+        if not self.is_map or self.model is None:
+            self.message = "open a map first"
+            return
+        names = self.model.object_names()
+        if not names:
+            self.message = "carve the map into parts first"
+            return
+        self.map_nodes = [n for n in self.map_nodes
+                          if str(n.get("type")) not in self.COLLIDE_TYPES]
+        made = 0
+        for name in names:
+            node = self._collision_node(name)
+            if node is not None:
+                self.map_nodes.append(node)
+                made += 1
+        self.dirty = True
+        self.message = f"placed {made} collision box(es) over the parts"
+
+    def _ground_point(self, local, size, cam):
+        """Where the pointer meets the plane a map is built on."""
+        normal = (0.0, 0.0, 1.0) if self.flat_map else (0.0, 1.0, 0.0)
+        hit = cam.plane_hit(size, local, (0.0, 0.0, 0.0), normal)
+        return tuple(float(c) for c in hit) if hit is not None else None
+
+    def _finish_box_draw(self):
+        """Turn the dragged footprint into one part and its collision node."""
+        d = self.drag or {}
+        p0, p1 = d.get("start"), d.get("cur")
+        if p0 is None or p1 is None or self.model is None:
+            return
+        if self.flat_map:
+            x0, x1 = sorted((p0[0], p1[0]))
+            y0, y1 = sorted((p0[1], p1[1]))
+            w, hgt = x1 - x0, y1 - y0
+            if min(w, hgt) < 0.05:
+                self.message = "the box is too small"
+                return
+            self._push_undo()
+            before = len(self.model.tris)
+            self.model.add_meshdata(meshes.quad2d((x0, y0), (w, hgt)))
+            node = {"id": "", "type": "collision2d",
+                    "pos": [round((x0 + x1) * 0.5, 4),
+                            round((y0 + y1) * 0.5, 4)],
+                    "size": [round(w, 4), round(hgt, 4)]}
+        else:
+            x0, x1 = sorted((p0[0], p1[0]))
+            z0, z1 = sorted((p0[2], p1[2]))
+            w, dp = x1 - x0, z1 - z0
+            if min(w, dp) < 0.05:
+                self.message = "the box is too small"
+                return
+            hgt = self.box_height
+            self._push_undo()
+            before = len(self.model.tris)
+            piece = modelmod.box_model(size=1.0, name="box")
+            for v in piece.verts:
+                v[0] = v[0] * w + (x0 + x1) * 0.5
+                v[2] = v[2] * dp + (z0 + z1) * 0.5
+                v[1] = v[1] * hgt
+            piece.texture = self.model.texture
+            self.model.append(piece)
+            node = {"id": "", "type": "collision3d",
+                    "pos": [round((x0 + x1) * 0.5, 4), round(hgt * 0.5, 4),
+                            round((z0 + z1) * 0.5, 4)],
+                    "knobs": {"shape": "box",
+                              "half": [round(w * 0.5, 4),
+                                       round(hgt * 0.5, 4),
+                                       round(dp * 0.5, 4)]}}
+        if len(self.model.tris) <= before:
+            # nothing landed (a zero-area footprint): drop the undo beat
+            self.undo.pop()
+            self.message = "the box is too small"
+            return
+        entry = self._wrap_object("box",
+                                  range(before, len(self.model.tris)))
+        if entry is None:
+            self.message = "could not file the drawn box"
+            return
+        node["id"] = entry["name"]
+        self.map_nodes = [n for n in self.map_nodes
+                          if n.get("id") != entry["name"]
+                          or str(n.get("type")) not in self.COLLIDE_TYPES]
+        self.map_nodes.append(node)
+        self.sel_objs = [entry["name"]]
+        self.sel_obj = entry["name"]
+        self.dirty = True
+        self._refresh_mesh()
+        self.message = (f"drew {entry['name']} with its collision "
+                        f"{node['type'][-2:]}")
 
     def draw(self, surface, rect):
         rect = pygame.Rect(rect)
@@ -4112,7 +4551,100 @@ class ModelEditor:
             self._draw_vertices(surface, cam, size)
             self.hover_face = None
         self._draw_hud(surface, size)
+        if self.drag and self.drag.get("kind") == "drawbox":
+            self._draw_box_preview(surface, cam, size)
+        self._draw_mini(surface, viewport)
         surface.set_clip(old_clip)
+
+    def _draw_mini(self, surface, viewport):
+        """The live corner panel: one model, slowly turning on its own.
+
+        The shared renderer only holds one target size, so the panel pays
+        for two resizes on its own slow beats - about eight pictures a
+        second, which is cheap enough next to the main viewport.
+        """
+        self.mini_rect = pygame.Rect(0, 0, 0, 0)
+        if not self.mini_on or self.model is None or self.model.empty:
+            self._mini_frame = None
+            return
+        w = max(140, min(260, viewport.width // 3))
+        h = max(100, min(190, viewport.height // 3))
+        if viewport.width < w * 2 or viewport.height < h * 2:
+            return
+        rect = pygame.Rect(viewport.right - w - 8, viewport.bottom - h - 8,
+                           w, h)
+        self.mini_rect = rect
+        now = pygame.time.get_ticks()
+        if self.renderer is not None and now - self._mini_at >= 120:
+            self._mini_at = now
+            self.mini.orbit(0.6, 0.0)     # a slow turntable spin
+            self._mini_frame = self._render_mini((w, h))
+        pygame.draw.rect(surface, (16, 19, 24), rect)
+        if self._mini_frame is not None:
+            frame = self._mini_frame
+            if frame.get_size() != (w, h):
+                frame = pygame.transform.smoothscale(frame, (w, h))
+            surface.blit(frame, rect.topleft)
+        edge = (255, 210, 60) if self.mini_rect.collidepoint(
+            pygame.mouse.get_pos()) else (90, 100, 116)
+        pygame.draw.rect(surface, edge, rect, 1)
+        cap = widgets.cached_text(self.small, "preview - click to swap",
+                                  (206, 214, 228))
+        bg = pygame.Rect(rect.x + 4, rect.y + 3, cap.get_width() + 6,
+                         cap.get_height() + 2)
+        pygame.draw.rect(surface, (16, 19, 24), bg)
+        surface.blit(cap, (bg.x + 3, bg.y + 1))
+
+    def _render_mini(self, size):
+        """One picture of the model from the panel's own camera."""
+        held = self.render_size
+        try:
+            self.renderer.resize(*size)
+            self.render_size = size
+            return self.renderer.render(self.mini.camera(), self.studio)
+        except Exception:
+            return None
+        finally:
+            try:
+                self.renderer.resize(*held)
+            finally:
+                self.render_size = held
+
+    def _swap_mini(self):
+        """Trade the panel's angle for the main viewport's."""
+        a, b = self.orbit, self.mini
+        for key in ("target", "dist", "yaw", "pitch", "fov"):
+            a_, b_ = getattr(a, key), getattr(b, key)
+            setattr(a, key, b_)
+            setattr(b, key, copy.copy(a_))
+        self.message = "swapped the views"
+
+    def _draw_box_preview(self, surface, cam, size):
+        """Rubber-band the footprint (and height) of the box being drawn."""
+        d = self.drag or {}
+        p0, p1 = d.get("start"), d.get("cur")
+        if p0 is None or p1 is None:
+            return
+        up = 2 if self.flat_map else max(0.05, self.box_height)
+        corners = [(p0[0], p0[1], p0[2]), (p1[0], p0[1], p0[2]),
+                   (p1[0], p1[1], p1[2]), (p0[0], p1[1], p0[2])]
+        if self.flat_map:
+            ring = [self._project(cam, size, c) for c in corners]
+        else:
+            raised = [(c[0], c[1] + up, c[2]) for c in corners]
+            ring = [self._project(cam, size, raised[3]),
+                    self._project(cam, size, raised[0]),
+                    self._project(cam, size, raised[1]),
+                    self._project(cam, size, raised[2]),
+                    self._project(cam, size, p1),
+                    self._project(cam, size, corners[1]),
+                    self._project(cam, size, corners[0]),
+                    self._project(cam, size, p0)]
+        if any(p is None for p in ring):
+            return
+        pygame.draw.polygon(surface, (255, 210, 60, 40), ring)
+        pygame.draw.lines(surface, (12, 14, 18), True, ring, 4)
+        pygame.draw.lines(surface, (255, 210, 60), True, ring, 2)
 
     def _project(self, cam, size, point):
         p = cam.project(point, size)

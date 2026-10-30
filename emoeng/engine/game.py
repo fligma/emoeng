@@ -29,7 +29,7 @@ SHOT_PREFIX = const.ENGINE_NAME.lower() + "_"
 
 
 def startup_help(why):
-    """Say why no window opened, in terms that fix it on either system."""
+    """Why no window opened, and the fix on either system."""
     print(f"{const.CODENAME} could not start: {why}", file=sys.stderr)
     print("  - a desktop session is needed; check DISPLAY (X11) or "
           "WAYLAND_DISPLAY", file=sys.stderr)
@@ -42,7 +42,7 @@ def startup_help(why):
 
 
 def boot_pygame():
-    """Start pygame for a window; a machine with no sound still gets one."""
+    """Start pygame; a machine with no sound still opens."""
     try:
         pygame.mixer.pre_init(44100, -16, 2, 512)
     except pygame.error:
@@ -52,9 +52,8 @@ def boot_pygame():
         return
     except (pygame.error, RuntimeError) as exc:
         reason = exc
-    # `pygame.init()` fails as a whole when one part of it does, and audio
-    # is the part a bare Linux box or a CI runner has no device for: the
-    # sound goes, the window stays
+    # `pygame.init()` fails whole; audio is the part a bare Linux
+    # box lacks: sound goes, the window stays
     try:
         pygame.mixer.quit()
     except pygame.error:
@@ -106,7 +105,7 @@ def project_icon_surface(project, px=32):
     return default_icon_surface(name, px)
 
 
-# the words a sheet is registered with, as a project may file them too
+# the words a sheet registers with
 SHEET_OPTIONS = ("tile", "rgba", "repeat", "filter", "mipmaps", "wrap")
 
 
@@ -136,12 +135,7 @@ def builtin_sheet(name, project=None):
 
 
 def register_builtin_textures(renderer, project=None):
-    """Upload the file-less sheets, with a project's turns applied.
-
-    Each one carries its own `tile` in metres, so it is laid over the uv the
-    way a shader would: the same grain per metre on a small crate and a
-    wide wall, instead of one picture stretched over whatever fits.
-    """
+    """Upload the file-less sheets with a project's turns."""
     for name, _make, _opts in proctex.BUILTIN:
         arr, kwargs = builtin_sheet(name, project)
         if arr is not None:
@@ -273,7 +267,7 @@ class Game(CameraHost):
         # `debug.overlay`: off, and the scene's `overlay()` never draws
         self.overlay_on = bool(self._pick("", "debug", "overlay", True))
         self.running = True
-        # GL teardown is a one-way door; `shutdown()` only walks it once
+        # teardown is one-way; `shutdown()` walks it once
         self._down = False
         self.time = 0.0
         self.last_dt = 1 / 60.0
@@ -324,7 +318,7 @@ class Game(CameraHost):
         self.start_time = time.time()
 
     def _pick(self, cfg_key, section, key, default):
-        """Config wins once the player has changed it; else the manifest."""
+        """The player's config wins; else the manifest."""
         if cfg_key:
             got = self.cfg.get(cfg_key)
             if got is not None and got != config.DEFAULTS.get(cfg_key):
@@ -910,7 +904,7 @@ class Game(CameraHost):
             self.quit()
             return
         if is_focus_lost(e):
-            # the keyboard went away with no key-up for the key held down
+            # the keyboard went away with no key-up
             self.input.release_all()
             return
         if e.type == pygame.VIDEORESIZE:
@@ -1061,8 +1055,8 @@ class Game(CameraHost):
                 self.screen, pos, items, self.fonts["normal"])
 
     def _draw_pause(self):
-        # Only draw the engine pause menu for mode 1
-        # Modes 2 and 3 show their own content (pause scene or script result)
+        # Only mode 1 draws the engine pause menu
+        # Modes 2 and 3 render their own pause scene
         if self._pause_mode != 1:
             return
         w, h = self.screen.get_size()
@@ -1269,23 +1263,14 @@ class Game(CameraHost):
             y += line_h
 
     def shutdown(self):
-        """Hand the GPU its objects back while the window still has them.
-
-        `pygame.quit()` destroys the GL context. Anything moderngl still
-        holds is then freed by the interpreter's final garbage pass, which
-        calls into a context that no longer exists - a segfault with no
-        Python frame to blame on a software driver, silence on a desktop
-        one. So every object goes here, outward from the scene, and the
-        context goes last. It is safe to call twice, and safe to call on
-        a game whose window never came up.
-        """
+        """Release GL objects before `pygame.quit()` takes the context."""
         if getattr(self, "_down", True):
             return
         self._down = True
         scene = getattr(self, "scene", None)
         if scene is not None:
-            # no `on_exit` here: that hook belongs to a scene switch, and
-            # this path only ever runs while the process is going away
+            # no `on_exit`: that hook belongs to a scene switch
+            # and this path runs only as the process goes
             for obj in list(getattr(scene, "objects", ()) or ()):
                 try:
                     obj.dispose()
@@ -1308,10 +1293,8 @@ class Game(CameraHost):
                 renderer.close()
             except Exception as exc:
                 print(f"gl teardown: {exc!r}")
-        # a scene switch or a rebuild can leave a GL wrapper unreachable
-        # rather than released, and moderngl frees those in whichever
-        # collection finds them first - so sweep them here, while the
-        # context they point at is still there to be pointed at
+        # a rebuild can strand a GL wrapper; moderngl frees those
+        # late, so sweep them while the context still stands
         gc.collect()
 
     def run(self, limit=None):
@@ -1371,14 +1354,7 @@ class Game(CameraHost):
 
 
 def finish_process(code=0):
-    """End the process without a final garbage pass over GL objects.
-
-    `shutdown()` frees what the engine made, but neither SDL nor moderngl
-    promises to free what they made for themselves before Python's last
-    collection runs. Once the loop is done there is nothing left to lose:
-    saves and config write as they change, not on the way out. Set
-    EMOENG_NO_HARD_EXIT to keep the interpreter's own exit path.
-    """
+    """Exit without a final GC pass over GL objects."""
     if os.environ.get("EMOENG_NO_HARD_EXIT"):
         raise SystemExit(code)
     try:
