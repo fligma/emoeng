@@ -6,7 +6,7 @@ import moderngl
 import numpy as np
 import pygame
 
-from . import (colors, lights as lightmod, meshes, proctex,
+from . import (colors, compat, lights as lightmod, meshes, proctex,
                shaders as shadermod)
 
 MAX_LIGHTS = 8
@@ -589,7 +589,9 @@ class Renderer:
             self.textures = {}
             _ACTIVE = self
         else:
-            self.ctx = moderngl.create_standalone_context()
+            # compat.standalone prefers EGL on Linux, where the default
+            # GLX path can hold a window black for ten seconds a pop
+            self.ctx = compat.standalone()
             self.textures = {}
             _ACTIVE = self
         self.prog = self.ctx.program(vertex_shader=VS, fragment_shader=FS)

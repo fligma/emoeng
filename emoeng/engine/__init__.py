@@ -1,7 +1,8 @@
 """Engine modules: rendering, scenes, objects, models, audio, input and"""
 
-from . import (anim, audio, camera, collision, colors, components, config,
-               input, inputmap, level, lights, loader, mapdoc, meshes, model,
+from . import (anim, audio, camera, collision, colors, compat, components,
+               config, input, inputmap, level, lights, loader, loading,
+               mapdoc, meshes, model,
                objects, particles, paths, placement, player, proctex,
                renderer, save, scene, scenedoc, sfx, shaders, templates,
                theme, timers, ui, winchrome, xp)
@@ -32,9 +33,10 @@ _TOOLS = {"build": "BuildConfig", "prune": None}
 _TOOL_OF = {name: module for module, name in _TOOLS.items() if name}
 
 __all__ = [
-    "anim", "audio", "build", "camera", "collision", "colors", "components",
-    "config", "particles",
-    "input", "inputmap", "level", "lights", "loader", "mapdoc", "meshes",
+    "anim", "audio", "build", "camera", "collision", "colors", "compat",
+    "components", "config", "particles",
+    "input", "inputmap", "level", "lights", "loader", "loading",
+    "mapdoc", "meshes",
     "model", "objects", "paths", "placement",
     "player",
     "prune", "proctex", "renderer", "save", "scene", "scenedoc", "sfx",

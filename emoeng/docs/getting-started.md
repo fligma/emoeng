@@ -25,10 +25,23 @@ one that contains `project.flig`.
 | `python -m emoeng --run [path]` | Same as `run`; the form desktop shortcuts use |
 | `python -m emoeng build [path] [options]` | Freeze a project with PyInstaller |
 | `python -m emoeng new <path> [title]` | Scaffold a new project |
+| `python -m emoeng check` | Print the machine's graphics report, no window |
 | `python -m emoeng help` | Print the CLI help |
 
 `emoeng/__main__.py` also runs directly (`python emoeng/__main__.py ...`) - it
 inserts the package's parent onto `sys.path` when run as a script.
+
+## When the window stays black
+
+The engine draws through ModernGL and needs an OpenGL 3.3 core context, so
+an old or disabled GPU driver shows up as a black window. Both the editor
+and a running game now paint a loading screen with the current step while a
+project opens - a slow machine takes a long time, but it says so instead of
+looking dead - and every start writes a report of what the machine actually
+offers to `gpureport.txt` in the per-user folder (the same text as
+`python -m emoeng check`). The report names the OpenGL version, the driver
+and the renderer; "software rendering" means llvmpipe and low frame rates,
+and a version below 3.3 means the window cannot draw at all.
 
 ## Your first project
 

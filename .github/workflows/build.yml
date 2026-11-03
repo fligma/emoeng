@@ -30,9 +30,10 @@ on:
     branches: [master]
     paths:
       - emoeng/const.py            # a version bump is a release
+      - emoeng/**                  # the app *is* the engine: build and
+      - installer/installer.py     # what the installer freeze packs
       - tools/build_release.py     # the app freeze
       - tools/build_installer.py   # the installer freeze
-      - installer/installer.py     # what the installer freeze packs
       - .github/workflows/build.yml
   workflow_dispatch:
 

@@ -11,12 +11,14 @@ from pathlib import Path
 import pygame
 
 from .. import const
-from . import config, inputmap, paths, proctex, shaders, theme, ui
+from . import (compat, config, inputmap, paths, proctex, shaders, theme,
+               ui)
 from . import wincontext, xp
 from .audio import Audio, build_starter_kit
 from .camera import CameraHost, wish
 from .input import Input, binding_labels, is_focus_lost
 from .loader import Project, int_pair
+from .loading import Loading
 from .renderer import Renderer
 from .save import SaveStore
 from .winchrome import WindowChrome, caption_buttons
@@ -207,6 +209,16 @@ class Game(CameraHost):
         self.gl_ok = False
         self.winctx = None
         self.screen = self._set_mode(win_size)
+        # a slow machine must show the work, not a black window: every
+        # boot step below repaints this card and keeps events moving
+        self.loading = Loading(self.screen, self.project.title,
+                               "a slow or broken start lands in "
+                               "gpureport.txt")
+        self.loading.begin("opening the window", 0.02)
+        # probe the machine now, while no renderer owns the thread yet:
+        # a probe context released later would leave the current GL
+        # context dangling under the renderer that follows
+        compat.write()
         self.clock = pygame.time.Clock()
         self.fonts = {
             "small": ui.load_font("tahoma", 11),
@@ -221,6 +233,7 @@ class Game(CameraHost):
             else (cfg.get("runtime.render_scale") or self.project.render_scale)
         if self.gl_ok:
             # a missing GL context falls back to the plain window
+            self.loading.step("starting the drawing engine", 0.15)
             try:
                 self.renderer = Renderer(*self.screen.get_size(),
                                          render_scale=scale,
@@ -234,15 +247,28 @@ class Game(CameraHost):
                 self.gl_wanted = self.gl_ok = False
                 self.screen = self._set_mode(win_size)
         if not self.gl_ok:
-            self.renderer = Renderer(*self.screen.get_size(),
-                                     render_scale=scale)
+            self.loading.step("starting the drawing engine", 0.15)
+            try:
+                self.renderer = Renderer(*self.screen.get_size(),
+                                         render_scale=scale)
+            except Exception as exc:
+                # every machine deserves to be told why it went black
+                rep = compat.probe()
+                where = compat.write(rep=rep)
+                self.loading.fail(
+                    "the 3D graphics engine cannot start here",
+                    f"{exc}\n{compat.summary(rep)}\nfull report: {where}")
+                startup_help(exc)
+                raise SystemExit(1)
         # a plain-word shader name resolves through the project
         self.renderer.project = self.project
+        self.loading.step("loading the artwork", 0.4)
         self._register_assets()
 
         master = master_volume if master_volume is not None \
             else self._pick("runtime.master_volume", "audio", "master", None)
         self.music_key = str(self._pick("", "audio", "music", "") or "")
+        self.loading.step("loading the sounds", 0.55)
         self.audio = build_starter_kit(Audio(
             master=master if master is not None else 0.8,
             music_volume=self._pick("runtime.music_volume", "audio",
@@ -313,7 +339,9 @@ class Game(CameraHost):
         self.scene = None
         self.scene_stack = []       # push_scene/pop_scene history
         self.mouse_capture = True
+        self.loading.step("building the first scene", 0.8)
         self.load_scene(self.project.start)
+        self.loading.step("ready", 1.0)
         self.show_help = self.help_at_boot
         if self.auto_load and self.save.path().is_file():
             self.load_game()

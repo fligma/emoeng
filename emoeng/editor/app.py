@@ -15,14 +15,15 @@ from pathlib import Path
 import pygame
 
 from .. import CODENAME, __version__, const
-from ..engine import (config, input as inputmod, model as modelmod,
-                      paths, player as playermod, scenedoc, sfx, shaders,
-                      templates, theme, ui, xp)
+from ..engine import (compat, config, input as inputmod,
+                      model as modelmod, paths, player as playermod,
+                      scenedoc, sfx, shaders, templates, theme, ui, xp)
 from ..engine.audio import Audio
 from ..engine.game import boot_pygame, startup_help
 from ..engine.loader import (META_NAME, INPUT_NAME, ASSET_NAME,
                              OBJECT_PRESETS, SCENE_PRESETS,
                              SHADER_PRESETS, Project, read_meta)
+from ..engine.loading import Loading
 from ..engine.winchrome import WindowChrome, caption_buttons
 from . import importer, mediaplayer, widgets
 from .assets import AssetBrowser
@@ -396,11 +397,19 @@ class Editor:
         self.font_size = int(cfg.get("editor.font_size"))
         self.screen = self._make_window(1280, 820)
         pygame.display.set_caption(CODENAME)
+        # everything below can take many seconds on a weak machine, and
+        # a window that paints nothing looks like a window that failed:
+        # each stage shows itself here while the events keep moving
+        self.loading = Loading(self.screen, f"{CODENAME} editor",
+                               "a slow or broken start lands in "
+                               "gpureport.txt")
+        self.loading.begin("opening the window", 0.02)
         self.clock = pygame.time.Clock()
         self.fonts = {}
         self.build_fonts()
         self.audio = Audio(master=float(cfg.get("runtime.master_volume")),
                            music_volume=float(cfg.get("runtime.music_volume")))
+        self.loading.step("building the interface", 0.12)
         self.log_panel = widgets.OutputLog()
         self.scene_tree = widgets.TreeView()
         self.file_tree = widgets.TreeView()
@@ -468,15 +477,37 @@ class Editor:
         self.tab_rects = []
         self.run_rect = pygame.Rect(0, 0, 0, 0)
         self._last_size = self.screen.get_size()
+        self.loading.step("applying settings", 0.3)
         self.apply_all()
 
+        # ask the machine what it can do before anything needs it to;
+        # the answer goes on disk, where a black window can still be read
+        self.loading.step("checking the graphics", 0.4)
+        rep = compat.probe()
+        where = compat.write(rep=rep)
+        warns = compat.verdict(rep)
+        self.log(compat.summary(rep), "warn" if warns else "muted")
+        for line in warns:
+            self.log(f"compatibility: {line}", "warn")
+
         if project_path is not None:
-            if self.open_project(project_path):
+            try:
+                opened = self.open_project(project_path)
+            except Exception as exc:
+                # dying here is exactly what used to leave a black window
+                self.log(f"startup failed: {exc!r}", "error")
+                self.loading.fail("the editor could not finish starting",
+                                  f"{exc}\n{compat.summary(rep)}\n"
+                                  f"full report: {where}")
+                self.mode = "manager"
+                opened = False
+            if opened:
                 self.log(f"{CODENAME} editor ready", "ok")
             else:
                 self.log(f"cannot open {project_path}; showing the "
                          "project manager", "warn")
         else:
+            self.loading.step("ready", 1.0)
             self.log(f"{CODENAME} project manager ready", "ok")
 
     def log(self, text, kind="info"):
@@ -661,11 +692,22 @@ class Editor:
     def open_project(self, path):
         if path is None:
             return False
+        self.loading.begin("reading the project files", 0.0)
         try:
             project = Project(path)
         except Exception as exc:
             self.log(f"cannot open project: {exc}", "error")
             return False
+
+        def attempt(frac, label, call):
+            """One stage of the open; a stage that breaks is shown and
+            skipped, because half an editor still beats a black window."""
+            self.loading.step(label, frac)
+            try:
+                call()
+            except Exception as exc:
+                self.log(f"{label}: {exc}", "warn")
+
         self.flush_code()
         if self.model.dirty:
             self.model.autosave()
@@ -678,7 +720,8 @@ class Editor:
         # engine warnings land in this project's log, heard once
         shaders.set_logger(self.log)
         self.preview.blur()
-        self.preview.set_project(project)
+        attempt(0.25, "starting the 3D preview",
+                lambda: self.preview.set_project(project))
         self.doctab.set_project(project)
         self.assets.set_project(project)
         self.pixel.set_project(project)
@@ -689,7 +732,9 @@ class Editor:
         self.blocks.set_project(project)
         self.reset_watch()
         self.manager.note_open(project.path)
-        self.model.refresh_textures()
+        attempt(0.45, "indexing the textures",
+                lambda: self.model.refresh_textures())
+        self.loading.step("loading the sounds", 0.55)
         try:
             project.load_audio(self.audio)
         except Exception as exc:
@@ -703,9 +748,13 @@ class Editor:
             start = project.start if project.start in scenes else scenes[0]
             # the script opens; a document-only scene opens its document
             script = project.scene_script(start)
-            self.open_file(script or project.scenes_dir / f"{start}.scene",
-                           switch=False)
-            self.preview.arm(start)      # the scene is chosen, not running
+
+            def open_start():
+                self.open_file(script or project.scenes_dir / f"{start}.scene",
+                               switch=False)
+                self.preview.arm(start)      # the scene is chosen, not running
+
+            attempt(0.75, "opening the start scene", open_start)
             self.tab = TAB_SCENE
         else:
             self.tab = TAB_CODE
@@ -723,6 +772,7 @@ class Editor:
             # nothing is written on open; warn about saving
             self.log(f"manifest format {project.file_format} - saving will "
                      f"upgrade it to format {project.FORMAT}", "warn")
+        self.loading.step("ready", 1.0)
         return True
 
     def open_manager(self):

@@ -1,4 +1,11 @@
-"""Motion Engine entry points."""
+"""Motion Engine entry points.
+
+editor             open the editor (or pass a project folder)
+run [project]      play a project; --frames n stops after n frames
+build [args]       package a project for release
+new [folder]       create a new project from a template
+check              print the machine's graphics report, no window
+"""
 
 import os
 import sys
@@ -114,6 +121,14 @@ def main(argv=None):
         title = args[2] if len(args) > 2 else None
         Project.create(path, title=title)
         print(f"created project: {path}")
+        return 0
+    if cmd == "check":
+        # the black-window question, answered in a terminal instead
+        from emoeng.engine import compat
+        rep = compat.probe()
+        print(compat.text(rep))
+        where = compat.write(rep=rep)
+        print(f"report written: {where}")
         return 0
     if cmd in ("-h", "--help", "help"):
         print(__doc__)
