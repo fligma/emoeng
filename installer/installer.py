@@ -106,6 +106,7 @@ DEFAULT_REPO = (f"{getattr(const, 'AUTHOR', 'fligma')}/"
                 f"{getattr(const, 'NAME', 'emoeng')}")
 
 CAP_H, TOOL_H, STATUS_H = 26, 36, 22
+INFO_H, LOG_H = 86, 84
 ROW_H = 20
 TAG_PREFIX = "engineV"
 API = "https://api.github.com"
@@ -129,7 +130,6 @@ OS_EXT = {
     "win32": (".exe", ".msi", ".zip"),
     "linux": (".appimage", ".tar.gz", ".tgz", ".zip"),
 }
-OS_LABEL = {"win32": "Windows", "linux": "Linux"}
 
 TOKEN_TIP = (
     "GitHub counts anonymous searches per IP - 60 an hour.",
@@ -486,17 +486,23 @@ def latest_engine(repo, token):
     }
 
 
+def is_installer(name):
+    """True for a release file that is a copy of this program: it
+    installs nothing, it IS the installer, so it never belongs in
+    the list of things to pick."""
+    return "installer" in str(name).lower()
+
+
 def score_asset(asset, key):
     """How well an asset serves this PC: matching words in the name and
     an ending this OS can install. The best score is picked, and a
     tie goes to the earlier word - `windows` before `portable`.
 
-    Installer programs published beside the release bundles are never
-    a download candidate: this app IS the installer, and grabbing a
-    copy of itself would loop, so any name carrying the word
-    `installer` scores zero."""
+    Installer programs published beside the release bundles score zero:
+    this app IS the installer, and grabbing a copy of itself would
+    loop, so they are also filtered out of the list entirely."""
     name = asset["name"].lower()
-    if "installer" in name:
+    if is_installer(name):
         return 0
     tokens = OS_TOKENS.get(key, ("linux", "ubuntu"))
     exts = OS_EXT.get(key, (".zip", ".tar.gz", ".tgz"))
@@ -724,6 +730,7 @@ class Installer:
         self.progress = 0.0
         self.log_rows = []
         self.asset_rows = []
+        self.asset_list = []           # what the list shows (no installers)
         self.scroll = 0
         self.running = True
         # settings dropdown
@@ -842,6 +849,9 @@ class Installer:
         if self.asset is None:
             self.log("nothing chosen - search first", "warn")
             return
+        if is_installer(self.asset["name"]):
+            self.log("that file is an installer, not the engine", "warn")
+            return
         token = self.settings.get("token", "")
         into = Path(self.settings.get("dest") or DEFAULT_DEST)
         self.epoch += 1
@@ -891,26 +901,30 @@ class Installer:
                     self.progress = rest[0]
                     self.progress_since = time.time()
                 elif kind == "found":
-                    self.info = rest[0]
-                    self.match = pick_asset(self.info["assets"])
+                    info = rest[0]
+                    # the release carries copies of this installer beside
+                    # the app builds; show only what this PC can install
+                    info["assets"] = [a for a in info["assets"]
+                                      if not is_installer(a["name"])]
+                    self.info = info
+                    self.match = pick_asset(info["assets"])
                     self.asset = self.match
+                    self.asset_list = list(info["assets"])
                     self.progress = 0.0
                     self.scroll = 0
                     self.set_state("found")
-                    tag, ver = self.info["tag"], self.info["version"]
+                    tag, ver = info["tag"], info["version"]
                     if ver == VERSION:
-                        self.log(f"newest tag is {tag} - you already run "
-                                 f"{VERSION}; Install re-installs it", "ok")
+                        self.log(f"newest is {tag} - you already run "
+                                 f"{VERSION}", "ok")
                     else:
-                        self.log(f"newest tag: {tag} "
-                                 f"(this source: {VERSION})", "ok")
+                        self.log(f"newest: {tag} (you run {VERSION})",
+                                 "ok")
                     if self.match is None:
-                        self.log(f"no build named for this PC among "
-                                 f"{len(self.info['assets'])} asset(s) - "
-                                 "pick one from the list", "warn")
+                        self.log("no file named for this PC - click one "
+                                 "in the list to pick it", "warn")
                     else:
-                        self.log(f"this PC will install: "
-                                 f"{self.match['name']}", "ok")
+                        self.log(f"picked: {self.match['name']}", "muted")
                 elif kind == "limited":
                     self.set_state("limited")
                     self.progress = 0.0
@@ -931,28 +945,32 @@ class Installer:
 
     # ------------------------------------------------------------ layout
     def layout(self):
+        """One column top to bottom: what's newest, the files to pick,
+        the log; the actions live where the eye ends up - search at the
+        top, Open and Install at the bottom next to the progress bar."""
         w, h = self.screen.get_size()
         cap = pygame.Rect(0, 0, w, CAP_H)
         bar = pygame.Rect(0, cap.bottom, w, TOOL_H)
         status = pygame.Rect(0, h - STATUS_H, w, STATUS_H)
-        controls = pygame.Rect(12, status.y - 34, w - 24, 30)
+        controls = pygame.Rect(12, status.y - 38, w - 24, 30)
+        install = pygame.Rect(controls.right - 122, controls.y, 122, 30)
+        openb = pygame.Rect(install.x - 110, controls.y, 100, 30)
+        info = pygame.Rect(12, bar.bottom + 8, w - 24, INFO_H)
+        log = pygame.Rect(12, controls.y - LOG_H - 6, w - 24, LOG_H)
         rows = {
             "cap": cap, "bar": bar, "status": status, "controls": controls,
-            "check": pygame.Rect(12, bar.y + 6, 168, bar.height - 12),
-            "open": pygame.Rect(186, bar.y + 6, 96, bar.height - 12),
+            "check": pygame.Rect(12, bar.y + 6, 170, bar.height - 12),
             "gear": pygame.Rect(bar.right - 40, bar.y + 6, 28,
                                 bar.height - 12),
-            "info": pygame.Rect(12, bar.bottom + 8, w - 24, 128),
-            "assets": pygame.Rect(12, bar.bottom + 144, w - 24, 0),
-            "log": pygame.Rect(12, 0, w - 24, 0),
-            "progress": pygame.Rect(12, controls.y + 8,
-                                    controls.width - 170, 16),
-            "install": pygame.Rect(controls.right - 150, controls.y,
-                                   150, 30),
+            "info": info,
+            "assets": pygame.Rect(12, info.bottom + 8, w - 24,
+                                  max(60, log.y - 8 - info.bottom)),
+            "log": log,
+            "progress": pygame.Rect(12, controls.y + 7,
+                                    openb.x - 60, 16),
+            "open": openb,
+            "install": install,
         }
-        rows["assets"].height = max(60, (h // 2) - rows["assets"].y)
-        rows["log"].y = rows["assets"].bottom + 8
-        rows["log"].height = max(40, controls.y - 10 - rows["log"].y)
         self.rows = rows
         return rows
 
@@ -1012,8 +1030,15 @@ class Installer:
                     self.log(f"will install: {asset['name']}", "muted")
                     return
         if e.type == pygame.MOUSEWHEEL:
-            if self.rows["assets"].collidepoint(e.pos):
-                self.scroll = max(0, self.scroll - e.y)
+            # wheel events carry no pos on every pygame build, and the
+            # missing attribute used to crash the loop straight out of
+            # the window (scroll closed the installer on Linux); ask
+            # the mouse where it is instead, and clamp to real content
+            if self.rows["assets"].collidepoint(pygame.mouse.get_pos()):
+                shown = max(1, self.rows["assets"].height // ROW_H)
+                room = max(0, len(self.asset_list) - shown)
+                self.scroll = max(0, min(self.scroll - int(e.y or 0),
+                                         room))
                 return
         if e.type == pygame.KEYDOWN:
             if e.key == pygame.K_ESCAPE and self.panel_open:
@@ -1139,15 +1164,14 @@ class Installer:
 
     def state_line(self):
         return {
-            "idle": "idle - press Check for updates (or Enter)",
-            "searching": "searching GitHub... Cancel stops it",
+            "idle": "press Check for updates (or Enter)",
+            "searching": "searching GitHub... (Cancel stops it)",
             "found": "found a build - press Install",
-            "limited": "rate limited - a token in Settings fixes this",
-            "error": "the last job failed - read the log, press Try again",
-            "downloading": f"downloading {int(self.progress * 100)}% - "
-                           "Cancel stops it",
-            "installing": "installing...",
-            "done": "installed - the files are in the install folder",
+            "limited": "rate limited - add a token in Settings",
+            "error": "last job failed - see the log",
+            "downloading": f"downloading {int(self.progress * 100)}%",
+            "installing": "unpacking...",
+            "done": "installed - files are in the install folder",
         }.get(self.state, self.state)
 
     # -------------------------------------------------------------- draw
@@ -1175,18 +1199,11 @@ class Installer:
                   else "Check for updates",
                   self.fonts["small"], icon=icon("git-sym", 14),
                   hovered=rows["check"].collidepoint(mouse))
-        xp.button(surface, rows["open"], "Open", self.fonts["small"],
-                  hovered=rows["open"].collidepoint(mouse))
-        if self.state == "limited":
-            art = icon("blocked-sym", 16)
-            if art is not None:
-                surface.blit(art, (rows["open"].right + 8,
-                                   bar.centery - 8))
         xp.button(surface, rows["gear"], "", self.fonts["small"],
                   icon=icon("settings-sym", 16), pressed=self.panel_open,
                   hovered=rows["gear"].collidepoint(mouse))
 
-        self._draw_info(surface, rows["info"], mouse)
+        self._draw_info(surface, rows["info"])
         self._draw_assets(surface, rows["assets"], mouse)
         self._draw_log(surface, rows["log"])
 
@@ -1212,8 +1229,11 @@ class Installer:
             img = text(self.fonts["small"], f"{int(frac * 100)}%",
                        xp.TEXT_MUTED)
             if img is not None:
-                surface.blit(img, (rows["progress"].right + 8,
+                surface.blit(img, (rows["progress"].right + 6,
                                    ctl.centery - img.get_height() // 2))
+        xp.button(surface, rows["open"], "Open folder",
+                  self.fonts["small"],
+                  hovered=rows["open"].collidepoint(mouse))
         can = (self.asset is not None and not self.busy()
                and self.state != "installing")
         again = (self.state in ("found", "done") and self.info is not None
@@ -1227,10 +1247,8 @@ class Installer:
 
         xp.statusbar(surface, rows["status"],
                      [self.state_line(),
-                      f"repo {self.settings.get('repo', DEFAULT_REPO)}",
-                      f"installs to "
-                      f"{self.settings.get('dest', DEFAULT_DEST)}",
-                      f"this source {VERSION}"],
+                      f"{self.settings.get('repo', DEFAULT_REPO)}  -  "
+                      f"you run {VERSION}"],
                      self.fonts["small"])
 
         if self.panel_open:
@@ -1251,50 +1269,59 @@ class Installer:
                                  pygame.Rect(box.x + 2 + x, box.y + 3,
                                              block, box.height - 6))
 
-    def _draw_info(self, surface, box, mouse):
+    def _draw_info(self, surface, box):
+        """The summary card: what is newest, what lands on this PC, and
+        where it goes. Three lines, clipped and elided, so no answer -
+        however wordy - can spill into the list or log underneath."""
         xp.field(surface, box)
-        small, normal = self.fonts["small"], self.fonts["normal"]
-        x, y = box.x + 12, box.y + 10
-        lh = small.get_height() + 6
-        found = self.info is not None
-        art = icon("git-sym" if found else "no-git-sym", 32)
+        old = surface.get_clip()
+        surface.set_clip(box.inflate(-2, -2))
+        small, normal, big = (self.fonts["small"], self.fonts["normal"],
+                              self.fonts["big"])
+        room = box.width - 72
+        art = icon("git-sym" if self.info else "no-git-sym", 32)
         if art is not None:
-            surface.blit(art, (box.right - 44, box.y + 10))
-        pairs = [
-            ("This PC", OS_LABEL.get(platform_key(), platform_key())),
-            ("This source", f"{CODENAME} {VERSION}"),
-            ("Install folder",
-             elide(normal, self.settings.get("dest", DEFAULT_DEST),
-                   box.width - 220)),
-        ]
+            surface.blit(art, (box.right - 46, box.centery - 16))
         if self.state == "searching":
-            pairs.append(("Newest tag", "searching..."))
-        elif found:
-            pairs.append(("Newest tag", f"{self.info['tag']}  "
-                          f"(published {self.info['published'] or '-'})"))
-            pairs.append(("Assets", f"{len(self.info['assets'])} file(s)"
-                          " - click one to change the pick"))
+            head = "searching GitHub..."
+            line = "Cancel stops it at any time"
+            note = ""
         elif self.state == "limited":
-            pairs.append(("Newest tag", "blocked: anonymous limit spent - "
-                          "set a token (gear)"))
+            head = "rate limited"
+            line = "the anonymous quota for this IP is spent"
+            note = "open Settings (gear) and add a read-only token"
+        elif self.info is None:
+            head = "no build found yet"
+            line = ("the last check failed - the log says why"
+                    if self.state == "error" else
+                    "press Check for updates (or Enter)")
+            note = f"searching {self.settings.get('repo', DEFAULT_REPO)}"
         else:
-            pairs.append(("Newest tag",
-                          "press Check for updates (Enter)"))
-        for label, value in pairs:
-            img = text(small, label, xp.TEXT_MUTED)
+            head = self.info["tag"]
+            if self.info["published"]:
+                head += f"  -  {self.info['published']}"
+            if self.asset:
+                line = (f"this PC: {self.asset['name']} "
+                        f"({human(self.asset['size'])})")
+            else:
+                line = "this PC: no match - click a file below to pick it"
+            note = (f"into {self.settings.get('dest', DEFAULT_DEST)}"
+                    f"   (you run {VERSION})")
+        y = box.y + 8
+        for face, s, col in ((big, head, xp.TEXT),
+                             (normal, line, xp.TEXT),
+                             (small, note, xp.TEXT_MUTED)):
+            img = text(face, elide(face, s, room), col) if s else None
             if img is not None:
-                surface.blit(img, (x, y))
-            img = text(normal, elide(normal, value,
-                                     box.width - 220), xp.TEXT)
-            if img is not None:
-                surface.blit(img, (x + 96, y - 2))
-            y += lh
+                surface.blit(img, (box.x + 12, y))
+            y += face.get_height() + 5
+        surface.set_clip(old)
 
     def _draw_assets(self, surface, box, mouse):
         xp.field(surface, box)
         small = self.fonts["small"]
         self.asset_rows = []
-        assets = list(self.info["assets"]) if self.info else []
+        assets = list(self.asset_list)
         top = box.y + 3 - self.scroll * ROW_H
         for asset in assets:
             row = pygame.Rect(box.x + 2, top + 2, box.width - 4, ROW_H)
