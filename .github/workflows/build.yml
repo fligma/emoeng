@@ -1,9 +1,14 @@
 # Build and release the engine app and its installer for Windows and Linux.
 #
-# The version comes from emoeng/const.py - nowhere else. Pushing a new
-# VERSION there (or running this workflow by hand) tags the commit
-# `engineV<version>` and publishes a GitHub release carrying one
-# installable archive per OS, plus the installer that fetches them:
+# The version comes from emoeng/const.py - nowhere else.
+#
+# A release is a one-shot event: the first run that finds `engineV<version>`
+# unpublished creates the tag at its own commit and uploads four assets.
+# Later runs of an already-published version only build and test - a pushed
+# tweak to the workflow can never rewrite the files people installed from.
+# To re-publish a version: delete its release and run this workflow again;
+# a leftover tag with no release is cleared automatically, so the new one
+# lands on the right commit instead of silently reusing the old anchor.
 #
 #   MotionEngine-windows.zip         one-file bundle, from build_release.py
 #   MotionEngine-linux.tar.gz        (carries projects/ beside the exe)
@@ -15,11 +20,9 @@
 #
 # The bundle names are what installer/installer.py searches for: it
 # looks for the newest `engineV*` release and picks the file whose name
-# matches this PC. The installer's own archives are always named with
+# matches this PC. The installer's own assets are always named with
 # the word `installer` in them, which scores zero in its asset picker -
-# it can never grab a copy of itself instead of the engine. A re-run of
-# the same version replaces the files in place rather than failing on
-# the existing tag.
+# it can never grab a copy of itself instead of the engine.
 name: Build and release
 
 on:
@@ -33,6 +36,12 @@ on:
       - .github/workflows/build.yml
   workflow_dispatch:
 
+# one release flow at a time: two runs deciding "not yet published"
+# in parallel would fight over the tag
+concurrency:
+  group: release-flow
+  cancel-in-progress: false
+
 permissions:
   contents: write                  # tag, release, assets
 jobs:
@@ -42,9 +51,12 @@ jobs:
       version: ${{ steps.read.outputs.version }}
       tag: ${{ steps.read.outputs.tag }}
       commit: ${{ steps.read.outputs.commit }}
+      publish: ${{ steps.read.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
       - id: read
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           v=$(python3 - <<'EOF'
@@ -57,10 +69,21 @@ jobs:
             echo "no VERSION line in emoeng/const.py" >&2
             exit 1
           fi
+          case "$v" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "VERSION must look like X.Y.Z, got '$v'" >&2; exit 1 ;;
+          esac
+          tag="engineV$v"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "tag=engineV$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "releasing engineV$v from $(git rev-parse --short HEAD)"
+          if gh release view "$tag" --json tagName >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$tag is already published - this run only verifies"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "$tag is not published - this run will publish it"
+          fi
 
   build:
     needs: version
@@ -70,8 +93,12 @@ jobs:
         include:
           - os: windows-latest
             label: windows
+            app_asset: MotionEngine-windows.zip
+            installer_asset: MotionEngine-installer.exe
           - os: ubuntu-24.04
             label: linux
+            app_asset: MotionEngine-linux.tar.gz
+            installer_asset: MotionEngine-installer
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -139,14 +166,14 @@ jobs:
           SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
             tools/dist/MotionEngine run tools/dist/projects/demo --frames 1
 
-      # the installer is a GUI with no frame cap, so "still alive when
-      # the clock ran out" is the pass condition: any earlier exit is
-      # a crash, and 124 is timeout killing a healthy window
+      # the installer is a GUI with no frame cap and no GL need, so
+      # "still alive when the clock ran out" is the pass condition:
+      # any earlier exit is a crash, and a crash here means the freeze
+      # or its bundled data layout is broken
       - name: Smoke test the installer (Linux)
         if: matrix.label == 'linux'
         shell: bash
         run: |
-          set +e
           SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
             timeout 30 tools/dist/MotionEngine-installer
           code=$?
@@ -155,22 +182,37 @@ jobs:
             exit 1
           fi
 
-      # the release carries the two app archives and the two installer
-      # executables - and none of the loose engine exes beside them,
-      # which would pollute the installer's own asset search
+      # The frozen *app* is not smoke-tested on Windows: a runner has no
+      # GPU and no software GL stack the way Linux has llvmpipe, so a GL
+      # context there proves nothing about real machines. The installer
+      # needs no GL, so it does get run.
+      - name: Smoke test the installer (Windows)
+        if: matrix.label == 'windows'
+        shell: pwsh
+        run: |
+          $env:SDL_AUDIODRIVER = 'dummy'
+          $p = Start-Process -FilePath 'tools\dist\MotionEngine-installer.exe' -PassThru
+          if ($p.WaitForExit(30000)) {
+            Write-Output "installer exited early with $($p.ExitCode)"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Output "installer alive at 30s (pass)"
+
+      # both release assets for this platform, named exactly: a missing
+      # file is an error here, not a warning that a later step shrugs off
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}-bundle
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
-            tools/dist/MotionEngine-*.zip
-            tools/dist/MotionEngine-*.tar.gz
-            tools/dist/MotionEngine-installer.exe
-            tools/dist/MotionEngine-installer
+            tools/dist/${{ matrix.app_asset }}
+            tools/dist/${{ matrix.installer_asset }}
 
   release:
     needs: [version, build]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -189,10 +231,33 @@ jobs:
         shell: bash
         run: |
           ls -l
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$COMMIT" \
-              --title "$TAG" \
-              --notes "Motion Engine $VER: unzip the app archive for your OS, or run the installer executable (Linux: chmod +x it first). Built from emoeng/const.py"
+          # deleting a release often leaves its tag behind; gh would then
+          # attach the new release to that stale anchor instead of this
+          # commit. Clear the orphan first so the tag is created here.
+          if git ls-remote --exit-code origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "deleting orphan tag $TAG (no release attached)"
+            git push --delete origin "refs/tags/$TAG"
           fi
-          gh release upload "$TAG" MotionEngine-* --clobber
+          gh release create "$TAG" --target "$COMMIT" \
+            --title "$TAG" \
+            --notes "Motion Engine $VER: unzip the app archive for your OS, or run the installer executable (Linux: chmod +x it first). Built from emoeng/const.py"
+          gh release upload "$TAG" MotionEngine-*
+          # the release is only done when all four assets are actually
+          # there and carry bytes: the installer's whole job is finding
+          # them, and a silent empty asset sends every user a 404
+          fail=0
+          for a in MotionEngine-windows.zip MotionEngine-linux.tar.gz \
+                   MotionEngine-installer.exe MotionEngine-installer; do
+            size=$(gh release view "$TAG" --json assets \
+                   -q ".assets[] | select(.name == \"$a\") | .size" 2>/dev/null)
+            if [ -z "$size" ] || [ "$size" -lt 100000 ]; then
+              echo "asset missing or implausibly small: $a ($size)" >&2
+              fail=1
+            else
+              echo "asset ok: $a ($size bytes)"
+            fi
+          done
+          if [ "$fail" != "0" ]; then
+            exit 1
+          fi
           gh release view "$TAG"

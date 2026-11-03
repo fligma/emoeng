@@ -44,9 +44,15 @@ non-Windows, and UPX on the bundled Windows binaries (the CI installs one;
 PyInstaller version 6 ignores UPX on Linux by design, so that build stays
 uncompressed).
 When `emoeng/const.py` bumps `VERSION` the workflow publishes the two app
-archives and the two installer executables under the tag `engineV<version>`;
-the installer looks at that same release and downloads whichever archive
-fits the PC it runs on. Do not build a
+archives and the two installer executables under the tag `engineV<version>`.
+Publishing is one-shot: a version that already has a release is rebuilt and
+re-tested by later pushes but never republished, so a pushed tweak can never
+rewrite files people have installed from. To re-publish a version, delete
+its release and run the workflow again - a leftover tag from the deleted
+release is cleared and recreated on the commit being published. The release
+is only declared complete once all four assets are verified present and
+non-trivial in size. The installer looks at that same release and downloads
+whichever archive fits the PC it runs on. Do not build a
 Windows executable on Linux or a Linux executable on Windows; use the
 matching native runner.
 The Linux job runs the frozen game for one rendered demo frame and holds
