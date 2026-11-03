@@ -478,6 +478,9 @@ class Preview:
         size = (max(64, int(size[0])), max(64, int(size[1])))
         scale = self._render_scale()
         if self.renderer is None:
+            # the first context can take a while on some drivers; say so
+            # in the log before the frame that builds it disappears in
+            self.app.log("creating 3D preview (may take a moment)")
             self.renderer = Renderer(*size, render_scale=scale)
             self.game.renderer = self.renderer
             self._load_textures()

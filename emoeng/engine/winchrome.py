@@ -812,11 +812,11 @@ class WindowChrome:
         if gm is None:
             return
         if self.drag[0] == "move":
+            # position only: re-sending the size every drag frame makes
+            # Wayland-side compositors churn configure/damage events
             _, g0, base = self.drag
             self._place(base[0] + gm[0] - g0[0],
-                        base[1] + gm[1] - g0[1],
-                        base[2] if len(base) > 2 else None,
-                        base[3] if len(base) > 3 else None)
+                        base[1] + gm[1] - g0[1], None, None)
             return
         _, edges, g0, base = self.drag
         base = self._box(base)
