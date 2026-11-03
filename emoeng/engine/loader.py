@@ -227,6 +227,9 @@ class Project:
         self._objects = {}
         self._shaders = {}
         self._script_path_added = False
+        # folder -> (mtime_ns, files): the docks ask what is in the
+        # project every drawn frame, and only a changed folder rescans
+        self._listing = {}
         self.apply_meta()
         # documents are renamed on disk, not in memory
         self.migrated = self.upgrade_documents()
@@ -425,7 +428,8 @@ class Project:
 
     def dir(self, kind):
         d = self.path / kind
-        d.mkdir(parents=True, exist_ok=True)
+        if not d.is_dir():
+            d.mkdir(parents=True, exist_ok=True)
         return d
 
     @property
@@ -491,7 +495,18 @@ class Project:
 
     def files(self, kind):
         d = self.dir(kind)
-        return sorted(p for p in d.iterdir() if p.is_file())
+        try:
+            stamp = d.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        held = self._listing.get(kind)
+        if held is None or held[0] != stamp:
+            try:
+                held = (stamp, sorted(p for p in d.iterdir() if p.is_file()))
+            except OSError:
+                held = (stamp, [])
+            self._listing[kind] = held
+        return list(held[1])
 
     def scene_names(self):
         """The project's scenes: one `scenes/*.scene` each."""

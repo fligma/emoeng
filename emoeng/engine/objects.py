@@ -92,14 +92,25 @@ class ModelObject:
         return self
 
     def set(self, pos=None, yaw=None, scale=None):
+        # flag dirty only on a real change: maps call this every frame
+        # through Map3D.update, and re-tessellating a still model each
+        # frame is the difference between 25 and 60 fps
+        changed = False
         if pos is not None:
-            self.pos = [float(c) for c in pos]
+            got = [float(c) for c in pos]
+            changed = changed or got != self.pos
+            self.pos = got
         if yaw is not None:
-            self.yaw = float(yaw)
+            got = float(yaw)
+            changed = changed or got != self.yaw
+            self.yaw = got
         if scale is not None:
-            self.scale = scale if isinstance(scale, (tuple, list)) \
+            got = scale if isinstance(scale, (tuple, list)) \
                 else (float(scale),) * 3
-        self.dirty = True
+            changed = changed or tuple(got) != tuple(self.scale)
+            self.scale = got
+        if changed:
+            self.dirty = True
         return self
 
     def set_surface(self, face, key):

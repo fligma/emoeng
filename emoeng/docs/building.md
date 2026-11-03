@@ -29,37 +29,27 @@ python -m emoeng build projects/mygame --onefile --name mygame
 The repository release workflow builds on native Windows and Linux runners
 because PyInstaller builds are platform-specific. Each runner installs
 `requirements-build.txt` on Python 3.12 - the set this engine's releases are
-frozen against - so a build made elsewhere is not the same artefact. On each
-runner, `python tools/build_release.py --no-run` creates a one-directory
-`MotionEngine/` bundle. The archive keeps this layout:
-
-```
-MotionEngine/
-├── MotionEngine[.exe]
-├── docs/       offline Markdown manual
-├── projects/   demo and starter projects
-└── _internal/  frozen Python runtime and engine package
-```
-
-The GitHub Actions workflow publishes the complete folder as
-`MotionEngine-windows.zip` or `MotionEngine-linux.tar.gz`, preserving
-executable permissions on Linux. Each release also includes a separate
-standalone installer binary: `MotionEngine-installer-windows.exe` on Windows
-and `MotionEngine-installer-linux` on Linux. The installer binary is not
-wrapped in another archive; the app archive remains the installer’s download
-target. Do not build a Windows executable on Linux or a Linux executable on
-Windows; use the matching native runner.
-The Linux CI job also runs the frozen game for one rendered demo frame and
-starts both the project manager and standalone installer under Xvfb. The
+frozen against - so a build made elsewhere is not the same artefact.
+`python tools/build_release.py --no-run` freezes the one-file app and
+archives it as `MotionEngine-windows.zip` or `MotionEngine-linux.tar.gz`,
+with `docs/` and `projects/` beside the exe and executable permissions
+preserved on Linux. `python tools/build_installer.py` then freezes
+`installer/installer.py` as `MotionEngine-installer-windows.zip` or
+`MotionEngine-installer-linux.tar.gz` - a much smaller bundle carrying
+pygame, the engine's chrome (`xp.py`, `winchrome.py`, `const.py`, fonts)
+and the installer's own assets, and no NumPy or engine runtime. When
+`emoeng/const.py` bumps `VERSION` the workflow publishes all four archives
+under the tag `engineV<version>`; the installer looks at that same release
+and downloads whichever archive fits the PC it runs on. Do not build a
+Windows executable on Linux or a Linux executable on Windows; use the
+matching native runner.
+The Linux job runs the frozen game for one rendered demo frame and holds
+the frozen installer open under Xvfb until a watchdog clock ends it -
+alive at the end of the clock is a pass, an earlier exit is a crash. The
 Linux app uses the desktop's native window decorations instead of importing
-pygame's optional SDL2 window-control extension. The installer excludes
-NumPy, which is not part of its runtime requirements. Linux bundles are built
-on the runner's pinned `actions/setup-python` interpreter, and the installer
-is smoke-tested under QEMU's baseline x86-64 CPU model; the game, project
-manager, and installer are tested there to catch illegal-instruction crashes
-on older CPUs.
-These runtime checks catch Linux GUI/OpenGL startup failures that a
-successful PyInstaller build alone cannot detect.
+pygame's optional SDL2 window-control extension. These runtime checks catch
+Linux GUI/OpenGL startup failures that a successful PyInstaller build alone
+cannot detect.
 
 `name` defaults to the project folder name with spaces replaced by `_`, and to
 `"game"` when there is no project. `icon` is picked up automatically from

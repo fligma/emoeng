@@ -116,6 +116,14 @@ between them.
   </tr>
 </table>
 
+## Download
+
+The newest build is always at
+**[Releases &rarr; latest](https://github.com/fligma/emoeng/releases/latest)**:
+unzip the app archive for your OS and run it, or grab the standalone
+installer, which finds that same archive on GitHub and unpacks it for
+you. Windows and Linux each get both.
+
 ## Getting started
 
 ```

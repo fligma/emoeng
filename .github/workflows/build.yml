@@ -7,8 +7,8 @@
 #
 #   MotionEngine-windows.zip         one-file bundle, from build_release.py
 #   MotionEngine-linux.tar.gz        (carries projects/ beside the exe)
-#   MotionEngine-installer-windows.zip   the standalone installer app
-#   MotionEngine-installer-linux.tar.gz
+#   MotionEngine-installer-windows.zip   the standalone installer app,
+#   MotionEngine-installer-linux.tar.gz  from build_installer.py
 #
 # The bundle names are what installer/installer.py searches for: it
 # looks for the newest `engineV*` release and picks the file whose name
@@ -24,10 +24,9 @@ on:
     branches: [master]
     paths:
       - emoeng/const.py            # a version bump is a release
-      - emoeng/__main__.py         # entry point / fault handling
-      - emoeng/engine/game.py      # core runtime / shutdown
-      - tools/build_release.py
-      - installer/installer.py
+      - tools/build_release.py     # the app freeze
+      - tools/build_installer.py   # the installer freeze
+      - installer/installer.py     # what the installer freeze packs
       - .github/workflows/build.yml
   workflow_dispatch:
 
@@ -105,6 +104,12 @@ jobs:
         shell: bash
         run: python tools/build_release.py --no-run
 
+      # the same for the installer: a second, much smaller one-file
+      # bundle that needs only pygame and the engine chrome
+      - name: Freeze the installer
+        shell: bash
+        run: python tools/build_installer.py
+
       # The frozen app must open a real GL window with no GPU behind it.
       # xvfb-run's own default screen is 8-bit, which is not a depth a GL
       # context is built on, so the geometry is stated here.
@@ -122,11 +127,31 @@ jobs:
           SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
             tools/dist/MotionEngine run tools/dist/projects/demo --frames 1
 
+      # the installer is a GUI with no frame cap, so "still alive when
+      # the clock ran out" is the pass condition: any earlier exit is
+      # a crash, and 124 is timeout killing a healthy window
+      - name: Smoke test the installer (Linux)
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          set +e
+          SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
+            timeout 30 tools/dist/MotionEngine-installer
+          code=$?
+          if [ "$code" != "124" ]; then
+            echo "installer exited with $code" >&2
+            exit 1
+          fi
+
+      # only the release archives go up: the loose exes beside them
+      # would pollute the installer's own asset search on the release
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}-bundle
-          path: tools/dist/MotionEngine*
+          path: |
+            tools/dist/MotionEngine-*.zip
+            tools/dist/MotionEngine-*.tar.gz
 
   release:
     needs: [version, build]

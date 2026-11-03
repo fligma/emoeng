@@ -120,15 +120,26 @@ def lerp_color(c1, c2, t):
 _lerp = lerp_color
 
 
+# per-(colours, height) scanline ramps: buttons and bars redraw the
+# same gradients every frame, and lerping each row again is pure waste
+_GRADS = {}
+
+
 def gradient_v(surf, rect, top, bottom):
     """Fill rect with a smooth vertical gradient."""
     rect = pygame.Rect(rect)
     if rect.width <= 0 or rect.height <= 0:
         return
-    for i in range(rect.height):
-        t = i / max(1, rect.height - 1)
-        pygame.draw.line(surf, _lerp(top, bottom, t),
-                         (rect.x, rect.y + i), (rect.right - 1, rect.y + i))
+    key = (tuple(top), tuple(bottom), rect.height)
+    rows = _GRADS.get(key)
+    if rows is None:
+        if len(_GRADS) > 128:
+            _GRADS.clear()
+        rows = [_lerp(top, bottom, i / max(1, rect.height - 1))
+                for i in range(rect.height)]
+        _GRADS[key] = rows
+    for i, col in enumerate(rows):
+        surf.fill(col, (rect.x, rect.y + i, rect.width, 1))
 
 
 def bevel(surf, rect, light=None, dark=None, sunken=False, width=1):
