@@ -57,7 +57,7 @@ if str(REPO) not in sys.path:
 # the frozen `ENGINE_NAME`, or edit the About dialog in `emoeng/const.py`
 # and this tool picks it up on the next build.
 from emoeng import const                      # noqa: E402
-from emoeng.engine import prune               # noqa: E402
+from emoeng.engine import build, prune        # noqa: E402
 from emoeng.engine.build import BuildConfig   # noqa: E402
 from emoeng.engine.loader import Project      # noqa: E402
 
@@ -157,12 +157,8 @@ def make_config(console: bool) -> BuildConfig:
     cfg.set("noconfirm", True)
     cfg.set("log_level", "INFO")
     cfg.set("paths", [str(REPO)])
-    # NumPy's random extension imports this stdlib module dynamically.
-    # PyInstaller's static scan misses it, but built-in texture generation
-    # uses numpy.random when the frozen game starts.
-    hidden = set(cfg.get("hidden_import") or ())
-    hidden.add("secrets")
-    cfg.set("hidden_import", sorted(hidden))
+    # hidden imports the analyser cannot see (`secrets`, for numpy's random
+    # extension) arrive with the APP plan, so nothing is added by hand here.
     # Bundle the whole `projects/` folder inside the frozen package so
     # `engine.paths.bundled_projects()` finds the demo on first run and
     # copies it beside the exe. The APP plan already points there; this is
@@ -197,7 +193,7 @@ def make_config(console: bool) -> BuildConfig:
 def run_build(cfg: BuildConfig, entry: Path) -> int:
     """Spawn PyInstaller with our entry and stream its output live."""
     if not cfg.available():
-        log("PyInstaller is not installed: pip install pyinstaller", "error")
+        log(build.missing_reason(), "error")
         return 2
     cmd = cfg.command(entry)
     try:
@@ -224,13 +220,16 @@ def stage_projects():
 
     `engine.paths.projects_dir` takes a non-empty local `projects/`
     folder as-is, so the release zip already carries `demo` next to the
-    exe and nobody has to launch the app once just to seed it."""
+    exe and nobody has to launch the app once just to seed it.
+
+    Overwriting an existing copy is the point: a second build must not
+    archive the first one's tree."""
     src = SRC / const.PROJECTS_DIRNAME
     dest = DIST / const.PROJECTS_DIRNAME
-    if not src.is_dir() or dest.exists():
+    if not src.is_dir():
         return
     try:
-        shutil.copytree(src, dest)
+        shutil.copytree(src, dest, dirs_exist_ok=True)
         log(f"projects beside the exe: {dest}", "ok")
     except OSError as exc:
         log(f"projects not staged: {exc}", "error")
@@ -253,10 +252,10 @@ def stage_fonts():
     """Copy fonts beside the executable."""
     src = SRC / "fonts"
     dest = DIST / "fonts"
-    if not src.is_dir() or dest.exists():
+    if not src.is_dir():
         return
     try:
-        shutil.copytree(src, dest)
+        shutil.copytree(src, dest, dirs_exist_ok=True)
         log(f"fonts beside the exe: {dest}", "ok")
     except OSError as exc:
         log(f"fonts not staged: {exc}", "error")
@@ -266,7 +265,7 @@ def stage_app_ui():
     """Copy editor UI assets beside the executable."""
     src = SRC / "editor" / "appUI"
     dest = DIST / "editor" / "appUI"
-    if not src.is_dir() or dest.exists():
+    if not src.is_dir():
         return
     try:
         shutil.copytree(src, dest, dirs_exist_ok=True)

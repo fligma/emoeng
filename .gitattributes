@@ -1,0 +1,43 @@
+# How git reads line endings for each file.
+#
+# `text=auto` compares and stores a normalised copy, so a Linux run rewriting
+# a project file no longer shows up here as a whole-file change - every
+# document the engine saves is JSON or Python, and none of that depends on
+# the ending it happens to sit on. `auto` chooses per file by content.
+#
+# Deliberately no `eol=lf`: the editor writes with native endings, so files
+# opened from Windows are saved with CRLF. Normalisation keeps that off the
+# diff, while forcing lf would only turn every such file permanently modified.
+* text=auto
+
+# ...and the engine's own document formats, spelled out so a file whose
+# content git would otherwise call binary is still normalised
+*.scene text
+*.map2d text
+*.map3d text
+*.ent3d text
+*.obj3d text
+*.model3d text
+*.flig text
+*.spec text
+
+# never let a byte of these be touched
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ase binary
+*.ttf binary
+*.otf binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.mp4 binary
+*.webp binary
+*.bundle binary
+*.tar.gz binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.so binary

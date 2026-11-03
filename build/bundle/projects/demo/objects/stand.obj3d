@@ -1,0 +1,40 @@
+{
+ "format": 1,
+ "_help": "an object document: script is the class, type is the node, the rest is where it sits and how it looks",
+ "name": "stand",
+ "type": "object3d",
+ "script": "scripts/objects/pedestal.py",
+ "pos": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "yaw": 0.0,
+ "scale": 1.0,
+ "knobs": {
+  "uv_tile": 2.2,
+  "height": 0.28
+ },
+ "nodes": [
+  {
+   "id": "block",
+   "type": "collision3d",
+   "pos": [
+    0.0,
+    0.14,
+    0.0
+   ],
+   "knobs": {
+    "shape": "box",
+    "half": [
+      1.3,
+      0.14,
+      1.3
+    ],
+    "solid": true,
+    "group": ""
+   },
+   "children": []
+  }
+ ]
+}

@@ -1,0 +1,18 @@
+# The exact set a release is built with.
+#
+# CI installs from this file, and a local machine that wants to produce the
+# same artefact uses it too:
+#
+#     python -m venv .venv && .venv/bin/pip install -r requirements-build.txt
+#
+# Pinned because these versions are frozen *into* the published executable -
+# an unpinned numpy is a different binary shipped to every user, and a new
+# minor can reach for a stdlib module the analyser never sees (numpy 2.x's
+# random extension imports `secrets` while it initialises). Python 3.12 is the
+# interpreter this set was validated on, in WSL Ubuntu 24.04.
+
+pygame==2.6.1
+moderngl==5.13.0
+numpy==2.5.4
+pillow==13.0.0
+pyinstaller==6.22.3

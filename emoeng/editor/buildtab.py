@@ -37,12 +37,15 @@ class BuildTab:
         plan = cfg.plan
         rows = [
             ("Builder", build.BUILDER),
-            ("Installed", "yes" if cfg.available() else "no - pip install"),
+            ("Installed", "yes" if cfg.available() else "no"),
             ("Name", str(cfg.get("name"))),
             ("Output", "one file" if cfg.get("onefile") else "folder"),
             ("Dist", str(cfg.output_dir())),
             ("Command", str(len(cfg.command())) + " args"),
         ]
+        py = build.builder_python()
+        if py and py != sys.executable:
+            rows.append(("Python", py))
         if plan is not None:
             rows.append(("Trim", f"{len(plan.excludes)} excluded, "
                                  f"{plan.files_kept} data files"))
@@ -60,8 +63,7 @@ class BuildTab:
             self.app.log("a build is already running", "warn")
             return
         if not self.config.available():
-            self.app.log("PyInstaller is missing: pip install pyinstaller",
-                         "error")
+            self.app.log(build.missing_reason(), "error")
             return
         # bake after staging: only PyInstaller's copy is pre-lit
         project = self.app.project

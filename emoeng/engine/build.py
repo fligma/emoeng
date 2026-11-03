@@ -194,6 +194,42 @@ def shlex_join(parts):
         shlex.join(parts)
 
 
+# the interpreters a machine might have, best first
+PYTHONS = ("python3", "python", "py")
+
+
+def builder_python():
+    """The interpreter PyInstaller should be started from.
+
+    From a source tree that is this one. A frozen app is not an
+    interpreter - `sys.executable` is the engine - so a python on the
+    PATH is asked for instead, and None when the machine offers none.
+    """
+    if not paths.frozen():
+        return sys.executable
+    for name in PYTHONS:
+        got = shutil.which(name)
+        if got:
+            return got
+    return None
+
+
+def missing_reason():
+    """Why a build cannot run here, in one line the user can act on."""
+    if not paths.frozen():
+        return f"{BUILDER} is not installed: pip install pyinstaller"
+    if builder_python() is None:
+        return ("the built engine needs a python to freeze a game: install "
+                "Python with pyinstaller, or build from a source copy")
+    return (f"{builder_python()} has no {BUILDER}: "
+            "python -m pip install pyinstaller")
+
+
+# asked every Build tab frame, and a frozen app answers it by running a
+# child interpreter, so the verdict is kept per (frozen, interpreter)
+_AVAILABLE = {}
+
+
 class BuildConfig:
     """One project's option values, plus the runner machinery."""
 
@@ -404,7 +440,8 @@ class BuildConfig:
 
     def command(self, entry=None):
         entry = Path(entry) if entry is not None else self.entry_path()
-        return [sys.executable, "-m", BUILDER, *self.flag_args(), str(entry)]
+        py = builder_python() or sys.executable
+        return [py, "-m", BUILDER, *self.flag_args(), str(entry)]
 
     def text(self, entry=None):
         return shlex_join(self.command(entry))
@@ -454,9 +491,29 @@ class BuildConfig:
         return None
 
     def available(self):
+        """Can a PyInstaller be started from here, frozen or not?"""
+        py = builder_python()
+        key = (paths.frozen(), py)
+        got = _AVAILABLE.get(key)
+        if got is None:
+            got = self._probe(py)
+            _AVAILABLE[key] = got
+        return got
+
+    @staticmethod
+    def _probe(py):
+        """Ask one interpreter whether it can answer for the builder."""
+        if py is None:
+            return False
+        if not paths.frozen():
+            try:
+                return importlib.util.find_spec(BUILDER) is not None
+            except (ImportError, ValueError):
+                return False
         try:
-            return importlib.util.find_spec(BUILDER) is not None
-        except (ImportError, ValueError):
+            return subprocess.run([py, "-c", f"import {BUILDER}"],
+                                  capture_output=True).returncode == 0
+        except OSError:
             return False
 
     def busy(self):
@@ -607,8 +664,7 @@ class BuildConfig:
         """Blocking build, for the command line."""
         if not self.available():
             if log:
-                log(f"{BUILDER} is not installed: pip install pyinstaller",
-                    "error")
+                log(missing_reason(), "error")
             return 1
         self.start(save=False)
         if self.process is None:
@@ -757,7 +813,7 @@ def main(argv=None):
         cfg.set("specpath", cfg.get("workpath"))
     cfg.set("extra_args", extra)
     if not cfg.available():
-        print(f"{BUILDER} is not installed: pip install pyinstaller")
+        print(missing_reason())
         return 2
     for line in cfg.prepare():
         print(f"  {line}")

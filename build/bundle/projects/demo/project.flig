@@ -1,0 +1,133 @@
+{
+  "format": 2,
+  "name": "demo",
+  "title": "demo",
+  "start": "main",
+  "seed": 13,
+  "version": "1.0.0",
+  "description": "Two rooms, each a map file, that start plain and are re-dressed by nine switches: a lectern screen you click in the 3D hall, floor plates you walk onto in the flat one. M swaps each room for its second map while you stand in it.",
+  "window": {
+    "size": [
+      1152,
+      700
+    ],
+    "fullscreen": false,
+    "resizable": true,
+    "min_size": [
+      800,
+      480
+    ]
+  },
+  "render": {
+    "scale": 1.0,
+    "post": [],
+    "clear_color": [
+      0.055,
+      0.065,
+      0.09
+    ],
+    "bake_on_run": false,
+    "bake_size": 512,
+    "vsync": true,
+    "fps_cap": 60
+  },
+  "audio": {
+    "master": 0.8,
+    "music_volume": 0.6,
+    "music": ""
+  },
+  "save": {
+    "slot": "autosave",
+    "autosave": 0.0,
+    "auto_load": false
+  },
+  "debug": {
+    "show_fps": true,
+    "show_help": false,
+    "overlay": true
+  },
+  "input": {
+    "actions": {},
+    "triggers": {
+      "_note": "the nine switches both demo rooms wear, keys 1 to 9, and m to swap the map",
+      "look_floor": [
+        "1"
+      ],
+      "look_walls": [
+        "2"
+      ],
+      "look_arches": [
+        "3"
+      ],
+      "look_portals": [
+        "4"
+      ],
+      "look_props": [
+        "5"
+      ],
+      "look_lectern": [
+        "6"
+      ],
+      "look_screen": [
+        "7"
+      ],
+      "look_room": [
+        "8"
+      ],
+      "look_clear": [
+        "9"
+      ],
+      "swap_map": [
+        "m"
+      ]
+    }
+  },
+  "inputmapper": {
+    "enabled": false,
+    "map_file": "input.map.json"
+  },
+  "pausetrigger": {
+    "mode": 1,
+    "scene": "",
+    "script": ""
+  },
+  "defaults": {
+    "ambient": [
+      0.3,
+      0.32,
+      0.4
+    ],
+    "sun_dir": [
+      -0.35,
+      0.9,
+      -0.45
+    ],
+    "sun_col": [
+      0.52,
+      0.5,
+      0.44
+    ],
+    "fog_color": [
+      0.055,
+      0.065,
+      0.09
+    ],
+    "fog_near": 26.0,
+    "fog_far": 78.0,
+    "fov": 68.0,
+    "near": 0.05,
+    "far": 400.0,
+    "eye_height": 1.72,
+    "move_speed": [
+      3.4,
+      6.0
+    ],
+    "gravity": 0.0,
+    "jump_speed": 0.0,
+    "world_radius": 0.0,
+    "camera": "walk",
+    "lock_input": false,
+    "master": 1.0,
+    "post": []
+  }
+}

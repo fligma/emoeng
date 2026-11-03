@@ -1,0 +1,21 @@
+{
+ "format": 1,
+ "_help": "an object document: script is the class, type is the node, the rest is where it sits and how it looks",
+ "name": "readout",
+ "type": "text3d",
+ "script": "scripts/objects/readout.py",
+ "pos": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "yaw": 0.0,
+ "scale": 1.0,
+ "knobs": {
+  "text": "the trigger bus",
+  "height": 0.24,
+  "billboard": false,
+  "color": "#cfe0ea"
+ },
+ "nodes": []
+}

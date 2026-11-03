@@ -44,6 +44,12 @@ DEAD = (
             "libssl (libcrypto stays, hashlib links it)"),
 )
 
+# stdlib modules a compiled extension reaches by name only while it runs, so
+# no `ast` scan finds them: numpy.random.bit_generator imports `secrets` as it
+# initialises, and proctex/audio/particles/sfx all use np.random. Every bundle
+# needs this list, game or app.
+RUNTIME_HIDDEN = ("secrets",)
+
 # authoring junk: caches, dev saves, editor sources
 SKIP_DIRS = frozenset({
     "__pycache__", "saves", ".git", ".idea", ".vscode",
@@ -273,6 +279,7 @@ class TrimPlan:
         self.excludes = [m for m, _why in DEAD if not self._asked(m)]
         if self.mode == GAME:
             self.excludes = list(TOOLING) + self.excludes
+        self.hidden = sorted(set(self.hidden) | set(RUNTIME_HIDDEN))
         if self.project is not None:
             self.stage(dry=True)
         return self
@@ -389,6 +396,5 @@ def untrimmed(project=None, mode=None):
     """No pruning: the pre-trim layout, for debugging excludes."""
     p = TrimPlan(project, mode or (GAME if project is not None else APP))
     p.excludes = []
-    p.hidden = []
     p.staged = None
     return p

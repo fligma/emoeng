@@ -22,13 +22,15 @@ python -m emoeng build projects/mygame --onefile --name mygame
 | Sound projects | `audio/*.sfxproject` in the staged copy are rendered to `audio/<name>.wav` and the documents dropped; the project folder keeps the patterns |
 | Engine release data | `tools/build_release.py` stages `projects/` and `docs/` beside the executable, so the demo and offline manual ship in the unpacked release folder |
 | After a good build | `prune.dedupe()` drops duplicated DLLs, `icon.png` goes beside the exe, the output is zipped to `<distpath>/<name>.zip`, and the bundle's size and file count are printed |
-| Requirement | `pip install pyinstaller`; `BuildConfig.available()` reports whether it is present |
+| Requirement | `pip install -r requirements-build.txt` (or `pip install pyinstaller`); `BuildConfig.available()` reports whether a builder can be started from here, and `build.missing_reason()` says what to do about it when it cannot. A frozen engine looks for a `python3` / `python` / `py` on `PATH` through `build.builder_python()`, because its own `sys.executable` is the engine, not an interpreter |
 
 ## Motion Engine release builds
 
 The repository release workflow builds on native Windows and Linux runners
-because PyInstaller builds are platform-specific. On each runner,
-`python tools/build_release.py --no-run` creates a one-directory
+because PyInstaller builds are platform-specific. Each runner installs
+`requirements-build.txt` on Python 3.12 - the set this engine's releases are
+frozen against - so a build made elsewhere is not the same artefact. On each
+runner, `python tools/build_release.py --no-run` creates a one-directory
 `MotionEngine/` bundle. The archive keeps this layout:
 
 ```
@@ -52,9 +54,10 @@ starts both the project manager and standalone installer under Xvfb. The
 Linux app uses the desktop's native window decorations instead of importing
 pygame's optional SDL2 window-control extension. The installer excludes
 NumPy, which is not part of its runtime requirements. Linux bundles are built
-with Ubuntu's system Python and the installer is smoke-tested under QEMU's
-baseline x86-64 CPU model; the game, project manager, and installer are tested
-there to catch illegal-instruction crashes on older CPUs.
+on the runner's pinned `actions/setup-python` interpreter, and the installer
+is smoke-tested under QEMU's baseline x86-64 CPU model; the game, project
+manager, and installer are tested there to catch illegal-instruction crashes
+on older CPUs.
 These runtime checks catch Linux GUI/OpenGL startup failures that a
 successful PyInstaller build alone cannot detect.
 
@@ -220,7 +223,7 @@ p.lines()                        # report for the Build tab / CLI log
 | --- | --- |
 | `plan(project=None, mode=None)` | `GAME` when a project is given, else `APP` |
 | `full_plan(project=None)` | The app/editor bundle: `TOOLING` stays in, every project ships |
-| `untrimmed(project=None, mode=None)` | No excludes, no hidden imports - for chasing a bad exclusion |
+| `untrimmed(project=None, mode=None)` | No excludes - for chasing a bad exclusion. The runtime hidden imports stay, since nothing scans them |
 | `scan_source(text)` | `(names, engine_names)` from one module, including features reached through an alias (`import emoeng as fe` then `fe.proctex...`) |
 | `scan_folder(folder, pattern="**/*.py")` | The union over a folder, skipping junk |
 | `scan_project(project)` | Both sets across `scenes/`, `objects/`, `scripts/` |
@@ -235,7 +238,7 @@ p.lines()                        # report for the Build tab / CLI log
 | --- | --- |
 | `mode` / `name` | `game` or `app`, and the bundle name |
 | `imports` / `engine` / `base_engine` / `extra` / `uses` | What the scan found and what the bundle must keep |
-| `hidden` / `excludes` | The two flag lists `apply_plan()` pushes into the build |
+| `hidden` / `excludes` | The two flag lists `apply_plan()` pushes into the build; `hidden` always carries `RUNTIME_HIDDEN` on top of what the scan found |
 | `staged` | The mirror folder once `stage()` has written it, else `None` |
 | `files_kept`, `bytes_kept`, `files_skipped`, `bytes_skipped`, `source_bytes` | Counters for the report |
 | `data_dest()` | `emoeng/projects/<name>` (game) or `emoeng/projects` (app) |
@@ -253,6 +256,7 @@ p.lines()                        # report for the Build tab / CLI log
 | `SKIP_SUFFIX` | `.pyc`, `.pyo`, `.ase`, `.psd`, `.xcf`, `.blend`, `.tmp`, `.bak`, `.orig`, `.swp`, `.log`, `.drain`, `.thumb` |
 | `SKIP_NAMES` | `Thumbs.db`, `desktop.ini`, `.DS_Store`, `ehthumbs.db` |
 | `LOCAL` | `scenes`, `objects`, `scripts` - a project's own folders, resolved by the loader, never hidden imports |
+| `RUNTIME_HIDDEN` | `secrets` - added to every bundle's hidden imports. A compiled extension reaches it by name while it runs (numpy's random bit generator, as it initialises), so no `ast` scan and no import graph sees it, and a Linux game built without it dies on `ModuleNotFoundError: No module named 'secrets'` the first time a procedural texture asks for a generator |
 | `DUPLICATE_DIRS` / `DUPLICATE_SUFFIX` | `pygame` / `.dll` - written twice by PyInstaller; the top level is on the DLL search path, so the nested copies are dropped after the build |
 
 `DEAD` entries are only excluded when nothing asked for them, and a plugin is
