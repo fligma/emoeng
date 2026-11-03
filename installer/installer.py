@@ -15,6 +15,11 @@ the install folder and a Git token field. Anonymous GitHub search is
 capped at 60 calls an hour per IP; the token is what keeps the search
 working after that.
 
+Nothing on screen ever waits forever: a search that stops answering is
+given up on by a watchdog with a plain explanation in the log, Cancel
+is one click away during a search or a download, and network failures
+name their reason instead of spinning.
+
 Nothing leaves the two folders it is told about: settings (token
 included) live in `installer.json` beside this file, and every
 downloaded and extracted file lands inside the install folder chosen
@@ -105,6 +110,14 @@ ROW_H = 20
 TAG_PREFIX = "engineV"
 API = "https://api.github.com"
 UA = f"{USER_DIR}-installer/{VERSION}"
+# Network patience. One API call may take NET_TIMEOUT seconds; a whole
+# search gets SEARCH_TIMEOUT before the UI gives up on its own - DNS
+# lookups and silent firewall blackholes ignore socket timeouts, so
+# only a watchdog can keep "searching" from lasting forever; a
+# download that sends no bytes for DOWNLOAD_STALL is called dead.
+NET_TIMEOUT = 15
+SEARCH_TIMEOUT = 45.0
+DOWNLOAD_STALL = 60.0
 
 # Words a release asset name must carry to count as this PC's build,
 # and the file endings that can actually be installed, best first.
@@ -343,7 +356,10 @@ class RateLimited(GitHubError):
 def api_json(path, token):
     """One GitHub REST call as parsed JSON, with the token header when
     there is one. Rate-limit replies become RateLimited so the UI can
-    point at the settings dropdown instead of just failing."""
+    point at the settings dropdown instead of just failing, a rejected
+    token says so by name, and the empty or still-being-generated
+    answers the API sometimes gives become plain errors instead of a
+    JSON crash. An unanswered request is the UI watchdog's problem."""
     headers = {"User-Agent": UA,
                "Accept": "application/vnd.github+json",
                "X-GitHub-Api-Version": "2022-11-28"}
@@ -351,8 +367,9 @@ def api_json(path, token):
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(API + path, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=20) as fh:
-            return json.loads(fh.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as fh:
+            code = fh.getcode()
+            body = fh.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         remaining = None
         if exc.headers is not None:
@@ -363,6 +380,11 @@ def api_json(path, token):
                 "the anonymous GitHub API is exhausted (60 calls an "
                 "hour per IP). Put a personal access token in the "
                 "settings dropdown and try again.") from exc
+        if exc.code == 401:
+            raise GitHubError(
+                "github rejected the token (401) - it needs read "
+                "access to this repository; fix or clear it in "
+                "Settings") from exc
         try:
             note = json.loads(exc.read().decode("utf-8")).get("message")
         except (ValueError, OSError):
@@ -370,6 +392,14 @@ def api_json(path, token):
         raise GitHubError(f"github said {exc.code}: {note or exc.reason}")
     except OSError as exc:
         raise GitHubError(f"cannot reach github: {exc}") from exc
+    if code == 202 or not body.strip():
+        raise GitHubError("github is still warming up for that answer - "
+                          "try again in a moment")
+    try:
+        return json.loads(body)
+    except ValueError as exc:
+        raise GitHubError(f"github sent an unreadable reply: {exc}") \
+            from exc
 
 
 def tag_version(name):
@@ -401,11 +431,22 @@ def latest_engine(repo, token):
     Releases come first, because a release carries the built files per
     OS; a repository tagged but never released falls back to the tag's
     source archive, which installs the same folder of python anyway.
+    A failed release lookup is remembered and reported with whatever
+    the tag lookup said, so a dead repo name never reads as "no
+    releases exist".
     """
-    self = f"/repos/{repo}/releases?per_page=100"
+    repo = re.sub(r"\s+", "", str(repo or DEFAULT_REPO)).strip("/")
+    parts = repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise GitHubError(f"{repo!r} is not a repository name - it "
+                          "should look like owner/name")
+    problems = []
     try:
-        rows = api_json(self, token)
-    except GitHubError:
+        rows = api_json(f"/repos/{repo}/releases?per_page=100", token)
+    except RateLimited:
+        raise                        # a second call burns the same quota
+    except GitHubError as exc:
+        problems.append(str(exc))
         rows = []
     tagged = [r for r in rows if isinstance(r, dict)
               and tag_version(r.get("tag_name"))
@@ -424,11 +465,17 @@ def latest_engine(repo, token):
                         "size": int(a.get("size") or 0), "source": False}
                        for a in best.get("assets") or []],
         }
-    rows = api_json(f"/repos/{repo}/tags?per_page=100", token)
+    try:
+        rows = api_json(f"/repos/{repo}/tags?per_page=100", token)
+    except GitHubError as exc:
+        problems.append(str(exc))
+        raise GitHubError("; ".join(dict.fromkeys(problems))) from exc
     names = [str(t.get("name")) for t in rows if isinstance(t, dict)
              and tag_version(t.get("name"))]
     if not names:
-        raise GitHubError(f"no {TAG_PREFIX}*-tagged build found in {repo}")
+        note = f" ({problems[-1]})" if problems else ""
+        raise GitHubError(f"no {TAG_PREFIX}*-tagged release or tag "
+                          f"found in {repo}{note}")
     tag = max(names, key=version_key)
     return {
         "tag": tag, "version": tag_version(tag), "name": tag,
@@ -483,11 +530,13 @@ def human(size):
     return f"{size} B" if size else "-"
 
 
-def download(url, name, token, report, into):
+def download(url, name, token, report, into, stop=None):
     """Fetch one asset into the chosen install folder, feeding `report`
     the 0..1 fraction as chunks land; the bar reads that each frame.
     The part-file trick keeps a killed download from leaving a broken
-    archive looking complete."""
+    archive looking complete, and `stop` - the app's cancel event -
+    ends the transfer between chunks without orphaning the part file.
+    """
     headers = {"User-Agent": UA}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -496,19 +545,29 @@ def download(url, name, token, report, into):
     dest.mkdir(parents=True, exist_ok=True)
     path = dest / re.sub(r"[^\w.\-+]", "_", name)
     tmp = path.with_suffix(path.suffix + ".part")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        with open(tmp, "wb") as fh:
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                fh.write(chunk)
-                done += len(chunk)
-                if total:
-                    report(min(1.0, done / total))
-    tmp.replace(path)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            with open(tmp, "wb") as fh:
+                while True:
+                    if stop is not None and stop.is_set():
+                        raise GitHubError("the download was cancelled")
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        report(min(1.0, done / total))
+        tmp.replace(path)
+    except Exception:
+        # nothing half-finished may look like a complete archive
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     report(1.0)
     return path
 
@@ -655,6 +714,10 @@ class Installer:
             self.settings["dest"] = str(dest)
         self.messages = queue.Queue()
         self.state = "idle"
+        self.epoch = 0             # job token: late replies get dropped
+        self.state_since = time.time()
+        self.progress_since = self.state_since
+        self.stop_flag = threading.Event()
         self.info = None               # the release found, or None
         self.asset = None              # the asset chosen for this PC
         self.match = None              # the best asset by OS score
@@ -698,90 +761,146 @@ class Installer:
     def _start(self, job, *args):
         """Run one network job off the UI thread; the worker only ever
         talks through the queue, so all state lands between frames."""
-        if self.busy():
-            self.log("still working - wait for the current job", "warn")
-            return False
         threading.Thread(target=job, args=args, daemon=True).start()
-        return True
+
+    def _say(self, epoch, *payload):
+        """A worker's message, stamped with the job that owns it, so
+        a cancelled job's late answers can be ignored."""
+        self.messages.put((epoch,) + payload)
 
     def busy(self):
         return self.state in ("searching", "downloading", "installing")
 
+    def set_state(self, state):
+        self.state = state
+        self.state_since = time.time()
+
+    def cancel(self):
+        """Abandon the job on screen: the epoch moves on so its replies
+        fall on deaf ears, and a download sees the stop flag and quits
+        between chunks."""
+        self.epoch += 1
+        self.stop_flag.set()
+        self.set_state("idle")
+        self.progress = 0.0
+        self.log("stopped - the job was cancelled", "warn")
+
+    def _watchdog(self):
+        """A request can die quietly in DNS or a firewall blackhole,
+        and then no worker ever answers; the UI decides on its own
+        after the timeout instead of showing 'searching' forever."""
+        if self.state == "searching":
+            if time.time() - self.state_since > SEARCH_TIMEOUT:
+                self.epoch += 1
+                self.set_state("error")
+                self.log(f"the check gave up after "
+                         f"{int(SEARCH_TIMEOUT)}s of silence - look at "
+                         "the network and the repo name, then press "
+                         "Try again", "blocked")
+        elif self.state == "downloading":
+            if time.time() - self.progress_since > DOWNLOAD_STALL:
+                self.epoch += 1
+                self.stop_flag.set()
+                self.set_state("error")
+                self.log("the download stopped sending data and was "
+                         "given up on - try again", "blocked")
+
     def check(self):
+        """The one button: start a search, or stop a job that is still
+        interruptible (a search, or a download in flight)."""
+        if self.state in ("searching", "downloading"):
+            self.cancel()
+            return
+        if self.busy():
+            self.log("still installing - wait for it to finish", "warn")
+            return
         repo = self.settings.get("repo") or DEFAULT_REPO
         token = self.settings.get("token", "")
-        self.state = "searching"
+        self.epoch += 1
+        self.stop_flag.clear()
         self.progress = 0.0
-        self._start(self._job_search, repo, token)
+        self.set_state("searching")
+        self._start(self._job_search, self.epoch, repo, token)
 
-    def _job_search(self, repo, token):
+    def _job_search(self, epoch, repo, token):
         try:
-            self.messages.put(("log", f"searching {repo} for "
-                               f"{TAG_PREFIX}*", "muted"))
+            self._say(epoch, "log", f"searching {repo} for "
+                      f"{TAG_PREFIX}*", "muted")
             info = latest_engine(repo, token)
-            self.messages.put(("found", info))
+            self._say(epoch, "found", info)
         except RateLimited as exc:
-            self.messages.put(("limited", str(exc)))
+            self._say(epoch, "limited", str(exc))
         except GitHubError as exc:
-            self.messages.put(("error", str(exc)))
+            self._say(epoch, "error", str(exc))
         except Exception as exc:                    # never kill a worker
-            self.messages.put(("error", f"unexpected: {exc}"))
+            self._say(epoch, "error", f"unexpected: {exc}")
 
     def install(self):
+        if self.busy():
+            self.log("still working - wait or press Cancel", "warn")
+            return
         if self.asset is None:
             self.log("nothing chosen - search first", "warn")
             return
         token = self.settings.get("token", "")
         into = Path(self.settings.get("dest") or DEFAULT_DEST)
-        self.state = "downloading"
+        self.epoch += 1
+        self.stop_flag.clear()
         self.progress = 0.0
-        self._start(self._job_install, self.asset, self.info, token, into)
+        self.progress_since = time.time()
+        self.set_state("downloading")
+        self._start(self._job_install, self.epoch, self.asset,
+                    self.info, token, into)
 
-    def _job_install(self, asset, info, token, into):
+    def _job_install(self, epoch, asset, info, token, into):
         try:
-            self.messages.put(("log", f"downloading {asset['name']} "
-                               f"into {into}", "muted"))
+            self._say(epoch, "log", f"downloading {asset['name']} "
+                      f"into {into}", "muted")
             path = download(asset["url"], asset["name"], token,
-                            lambda frac: self.messages.put(
-                                ("progress", frac)), into)
-            self.state_put("installing")
+                            lambda frac: self._say(epoch, "progress",
+                                                   frac), into,
+                            stop=self.stop_flag)
+            self._say(epoch, "state", "installing")
             note = unpack(path, into)
-            self.messages.put(("installed",
-                               f"{CODENAME} {info['version']}: {note}"))
+            self._say(epoch, "installed",
+                      f"{CODENAME} {info['version']}: {note}")
         except RateLimited as exc:
-            self.messages.put(("limited", str(exc)))
+            self._say(epoch, "limited", str(exc))
         except (GitHubError, OSError, zipfile.BadZipFile,
                 tarfile.TarError) as exc:
-            self.messages.put(("error", str(exc)))
+            self._say(epoch, "error", str(exc))
         except Exception as exc:
-            self.messages.put(("error", f"unexpected: {exc}"))
-
-    def state_put(self, state):
-        self.messages.put(("state", state))
+            self._say(epoch, "error", f"unexpected: {exc}")
 
     def _poll(self):
-        """Move everything the worker said into the app's own state."""
+        """Move everything the worker said into the app's own state.
+        Messages carry the epoch of the job that sent them; a cancelled
+        job's late replies are dropped here rather than resurrecting
+        a state the user already left behind."""
         try:
             while True:
-                kind, *rest = self.messages.get_nowait()
+                epoch, kind, *rest = self.messages.get_nowait()
+                if epoch != self.epoch:
+                    continue
                 if kind == "log":
                     self.log(rest[0], rest[1] if len(rest) > 1 else "info")
                 elif kind == "state":
-                    self.state = rest[0]
+                    self.set_state(rest[0])
                 elif kind == "progress":
-                    self.state = "downloading"
+                    self.set_state("downloading")
                     self.progress = rest[0]
+                    self.progress_since = time.time()
                 elif kind == "found":
                     self.info = rest[0]
                     self.match = pick_asset(self.info["assets"])
                     self.asset = self.match
                     self.progress = 0.0
                     self.scroll = 0
-                    self.state = "found"
+                    self.set_state("found")
                     tag, ver = self.info["tag"], self.info["version"]
                     if ver == VERSION:
-                        self.log(f"newest tag is {tag} - this source "
-                                 "tree already matches", "ok")
+                        self.log(f"newest tag is {tag} - you already run "
+                                 f"{VERSION}; Install re-installs it", "ok")
                     else:
                         self.log(f"newest tag: {tag} "
                                  f"(this source: {VERSION})", "ok")
@@ -793,18 +912,18 @@ class Installer:
                         self.log(f"this PC will install: "
                                  f"{self.match['name']}", "ok")
                 elif kind == "limited":
-                    self.state = "limited"
+                    self.set_state("limited")
                     self.progress = 0.0
                     self.log(rest[0], "blocked")
                     self.panel_open = True
                     self.token_box.focus(True)
                     self.repo_box.focus(False)
                 elif kind == "error":
-                    self.state = "error"
+                    self.set_state("error")
                     self.progress = 0.0
                     self.log(rest[0], "error")
                 elif kind == "installed":
-                    self.state = "done"
+                    self.set_state("done")
                     self.progress = 1.0
                     self.log(rest[0], "ok")
         except queue.Empty:
@@ -900,8 +1019,9 @@ class Installer:
             if e.key == pygame.K_ESCAPE and self.panel_open:
                 self._close_panel()
                 return
-            if e.key == pygame.K_RETURN and self.state not in (
-                    "searching", "downloading", "installing"):
+            if e.key == pygame.K_RETURN:
+                # the button's own key: it checks, and while a job is
+                # on screen it cancels - Enter never does nothing
                 self.check()
                 return
         if e.type in (pygame.TEXTINPUT, pygame.KEYDOWN):
@@ -1020,13 +1140,14 @@ class Installer:
     def state_line(self):
         return {
             "idle": "idle - press Check for updates (or Enter)",
-            "searching": "searching GitHub...",
+            "searching": "searching GitHub... Cancel stops it",
             "found": "found a build - press Install",
             "limited": "rate limited - a token in Settings fixes this",
-            "error": "the search failed - see the log",
-            "downloading": "downloading...",
+            "error": "the last job failed - read the log, press Try again",
+            "downloading": f"downloading {int(self.progress * 100)}% - "
+                           "Cancel stops it",
             "installing": "installing...",
-            "done": "installed",
+            "done": "installed - the files are in the install folder",
         }.get(self.state, self.state)
 
     # -------------------------------------------------------------- draw
@@ -1044,11 +1165,15 @@ class Installer:
         surface.fill(xp.FACE, bar)
         pygame.draw.line(surface, xp.SHADOW, (bar.x, bar.bottom - 1),
                          (bar.right, bar.bottom - 1))
-        searching = self.state == "searching"
+        # while a job that can be stopped is on screen this button is
+        # its Cancel; otherwise it starts the next search (and after a
+        # failed one it says so: Try again)
+        stoppable = self.state in ("searching", "downloading")
         xp.button(surface, rows["check"],
-                  "Searching..." if searching else "Check for updates",
+                  "Cancel" if stoppable
+                  else "Try again" if self.state == "error"
+                  else "Check for updates",
                   self.fonts["small"], icon=icon("git-sym", 14),
-                  pressed=searching,
                   hovered=rows["check"].collidepoint(mouse))
         xp.button(surface, rows["open"], "Open", self.fonts["small"],
                   hovered=rows["open"].collidepoint(mouse))
@@ -1066,26 +1191,37 @@ class Installer:
         self._draw_log(surface, rows["log"])
 
         ctl = rows["controls"]
-        frac = self.progress if self.state in ("downloading",
-                                               "installing", "done") else 0
         pygame.draw.rect(surface, xp.FIELD, rows["progress"])
         xp.sunken(surface, rows["progress"])
-        fillw = int((rows["progress"].width - 2) * max(0.0, min(1.0, frac)))
-        if fillw > 0:
-            pygame.draw.rect(
-                surface, (72, 158, 74),
-                pygame.Rect(rows["progress"].x + 1, rows["progress"].y + 1,
-                            fillw, rows["progress"].height - 2))
-        img = text(self.fonts["small"], f"{int(frac * 100)}%",
-                   xp.TEXT_MUTED)
-        if img is not None:
-            surface.blit(img, (rows["progress"].right + 8,
-                               ctl.centery - img.get_height() // 2))
+        if self.state == "searching":
+            # XP's "still trying" marquee: an empty bar reads as a dead
+            # program, sliding blocks read as a busy one
+            self._draw_marquee(surface, rows["progress"])
+        else:
+            frac = self.progress if self.state in ("downloading",
+                                                   "installing",
+                                                   "done") else 0
+            fillw = int((rows["progress"].width - 2)
+                        * max(0.0, min(1.0, frac)))
+            if fillw > 0:
+                pygame.draw.rect(
+                    surface, (72, 158, 74),
+                    pygame.Rect(rows["progress"].x + 1,
+                                rows["progress"].y + 1, fillw,
+                                rows["progress"].height - 2))
+            img = text(self.fonts["small"], f"{int(frac * 100)}%",
+                       xp.TEXT_MUTED)
+            if img is not None:
+                surface.blit(img, (rows["progress"].right + 8,
+                                   ctl.centery - img.get_height() // 2))
         can = (self.asset is not None and not self.busy()
                and self.state != "installing")
+        again = (self.state in ("found", "done") and self.info is not None
+                 and self.info["version"] == VERSION)
         xp.button(surface, rows["install"],
                   "Installing..." if self.state == "installing"
-                  else "Install", self.fonts["small"], default=can,
+                  else "Reinstall" if again else "Install",
+                  self.fonts["small"], default=can,
                   enabled=can,
                   hovered=rows["install"].collidepoint(mouse))
 
@@ -1099,6 +1235,21 @@ class Installer:
 
         if self.panel_open:
             self._draw_panel(surface, mouse)
+
+    def _draw_marquee(self, surface, box):
+        """Four blocks sliding on the wall clock, wrapping through the
+        trough - the classic Windows busy indicator, time-based so it
+        never depends on frame count or a worker's cooperation."""
+        span = max(1, box.width - 4)
+        block, step, speed = 10, 18, 140.0
+        cycle = span + 2 * step
+        head = int((time.time() * speed) % cycle) - step
+        for i in range(4):
+            x = head + i * step
+            if 0 <= x <= span - block:
+                pygame.draw.rect(surface, (72, 158, 74),
+                                 pygame.Rect(box.x + 2 + x, box.y + 3,
+                                             block, box.height - 6))
 
     def _draw_info(self, surface, box, mouse):
         xp.field(surface, box)
@@ -1298,6 +1449,7 @@ class Installer:
                 if self.chrome.drag and pygame.mouse.get_pressed()[0]:
                     self.chrome.update()
                 self._poll()
+                self._watchdog()
                 self._sync_surface()
                 self.draw()
                 pygame.display.flip()
