@@ -750,6 +750,20 @@ class WindowChrome:
         self.win.position = (int(px), int(py))
         self.maximized = False
 
+    def _sdl_size(self, w, h):
+        """Change the size through SDL, not Xlib. A raw XMoveResizeWindow
+        leaves SDL's presentation buffers at the old pitch until its
+        ConfigureNotify lands, and a compositor that misses the handover
+        keeps showing a torn mix of the old and new frames."""
+        try:
+            from pygame._sdl2 import video
+            win = video.Window.from_display_module()
+            if tuple(win.size) != (w, h):
+                win.size = (w, h)
+            return True
+        except Exception:
+            return False
+
     def _move_resize(self, x, y, w, h):
         """Drive the window through X11; a no-op anywhere else."""
         if not IS_LINUX:
@@ -763,7 +777,11 @@ class WindowChrome:
         h = max(MIN_H, int(h))
         px, py = self._to_parent(int(x), int(y))
         try:
-            _x11.XMoveResizeWindow(self.display, self.window, px, py, w, h)
+            if self._sdl_size(w, h):
+                _x11.XMoveWindow(self.display, self.window, px, py)
+            else:
+                _x11.XMoveResizeWindow(self.display, self.window, px, py,
+                                       w, h)
             _x11.XFlush(self.display)
         except Exception:
             pass
