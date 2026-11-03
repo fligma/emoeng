@@ -7,8 +7,11 @@
 #
 #   MotionEngine-windows.zip         one-file bundle, from build_release.py
 #   MotionEngine-linux.tar.gz        (carries projects/ beside the exe)
-#   MotionEngine-installer-windows.zip   the standalone installer app,
-#   MotionEngine-installer-linux.tar.gz  from build_installer.py
+#   MotionEngine-installer.exe       the standalone installer app,
+#   MotionEngine-installer           from build_installer.py - plain
+#                                    executables, not archived; the
+#                                    Linux one needs `chmod +x` after
+#                                    download, GitHub strips that bit
 #
 # The bundle names are what installer/installer.py searches for: it
 # looks for the newest `engineV*` release and picks the file whose name
@@ -88,13 +91,22 @@ jobs:
           python -m pip install -r requirements-build.txt
 
       # Linux: SDL2 and OpenGL dev libraries for pygame, plus xvfb and
-      # glxinfo to run and diagnose a headless window
+      # glxinfo to run and diagnose a headless window. No upx here:
+      # PyInstaller ignores UPX on non-Windows regardless of it being
+      # installed, so the Linux installer ships uncompressed.
       - name: Install SDL2 and OpenGL (Linux)
         if: matrix.label == 'linux'
         shell: bash
         run: |
           sudo apt-get update && sudo apt-get install -y \
             libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev xvfb x11-utils
+
+      # Windows: PyInstaller compresses the bundled SDL and Python
+      # binaries with whatever upx it finds on PATH, halving size
+      - name: Install UPX (Windows)
+        if: matrix.label == 'windows'
+        shell: bash
+        run: choco install upx --no-progress -y
 
       # The repo's own build tool: freezes emoeng into
       # tools/dist/MotionEngine.exe (Windows) or MotionEngine (Linux)
@@ -143,15 +155,19 @@ jobs:
             exit 1
           fi
 
-      # only the release archives go up: the loose exes beside them
-      # would pollute the installer's own asset search on the release
+      # the release carries the two app archives and the two installer
+      # executables - and none of the loose engine exes beside them,
+      # which would pollute the installer's own asset search
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}-bundle
+          if-no-files-found: warn
           path: |
             tools/dist/MotionEngine-*.zip
             tools/dist/MotionEngine-*.tar.gz
+            tools/dist/MotionEngine-installer.exe
+            tools/dist/MotionEngine-installer
 
   release:
     needs: [version, build]
@@ -176,7 +192,7 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --target "$COMMIT" \
               --title "$TAG" \
-              --notes "Motion Engine $VER, built from emoeng/const.py"
+              --notes "Motion Engine $VER: unzip the app archive for your OS, or run the installer executable (Linux: chmod +x it first). Built from emoeng/const.py"
           fi
           gh release upload "$TAG" MotionEngine-* --clobber
           gh release view "$TAG"

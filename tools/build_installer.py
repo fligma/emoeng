@@ -14,15 +14,23 @@ by file path, exactly where a frozen installer.py looks for it:
     emoeng/fonts                         _MEIPASS/emoeng/fonts/
     installer/assets                     _MEIPASS/assets/
 
-The finished archives are what the release carries beside the app:
+The finished binaries are what the release carries beside the app, as
+plain executables - no wrapping archive:
 
-    MotionEngine-installer-windows.zip   MotionEngine-installer.exe
-    MotionEngine-installer-linux.tar.gz  MotionEngine-installer
+    MotionEngine-installer.exe   Windows
+    MotionEngine-installer       Linux (chmod +x after download: GitHub
+                                 strips the exec bit off bare uploads)
 
 The word `installer` in every name is load-bearing: the installer
 scores a release's asset list to pick this PC's engine archive, and
 files carrying it can never be chosen - the installer must not
 install itself.
+
+Size is the point of this one: it ships the smallest PyInstaller can
+make - optimised bytecode, `strip` on non-Windows, and UPX on the
+bundled SDL/Python binaries where PyInstaller applies it (Windows
+only: version 6 deliberately ignores UPX on *nix, so an installed
+`upx` simply goes unused there and the build is never broken).
 """
 
 from __future__ import annotations
@@ -31,9 +39,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
-import zipfile
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent
@@ -71,7 +77,7 @@ def exe_path():
 
 
 def make_config(console: bool) -> BuildConfig:
-    """A plain untrimmed freeze: the installer imports nothing custom."""
+    """The smallest freeze this platform can produce."""
     cfg = BuildConfig(mode=None, trim=False)
     cfg.reset()
     cfg.set("name", APP_NAME)
@@ -83,6 +89,12 @@ def make_config(console: bool) -> BuildConfig:
     cfg.set("clean", True)
     cfg.set("noconfirm", True)
     cfg.set("log_level", "INFO")
+    # -OO bytecode: docstrings the installer never reads stay out
+    cfg.set("optimize", 2)
+    # UPX is most of the win: the bulk here is SDL and the Python
+    # library, and those compress by roughly half
+    cfg.set("noupx", shutil.which("upx") is None)
+    cfg.set("strip", not IS_WINDOWS and shutil.which("strip") is not None)
     cfg.set("paths", [str(REPO), str(INSTALLER_DIR)])
     cfg.set("add_data", [
         f"{SRC / 'engine' / 'xp.py'}{SEP}emoeng/engine",
@@ -119,43 +131,13 @@ def run_build(cfg: BuildConfig) -> int:
 
 
 def ensure_executable(exe: Path):
-    """Keep the exec bit on POSIX so the packed installer unpacks runnable."""
+    """Keep the exec bit on POSIX so the shipped installer stays runnable."""
     if IS_WINDOWS:
         return
     try:
         exe.chmod(exe.stat().st_mode | 0o111)
     except OSError:
         pass
-
-
-def pack():
-    """Archive the finished installer as MotionEngine-installer-<os>."""
-    exe = exe_path()
-    if not exe.is_file():
-        log(f"expected exe missing: {exe}", "error")
-        return None
-    suffix = ("windows.zip" if IS_WINDOWS else
-              "macos.zip" if IS_MACOS else "linux.tar.gz")
-    archive = DIST / f"{APP_NAME}-{suffix}"
-    ensure_executable(exe)
-    with tempfile.TemporaryDirectory() as scratch:
-        # exe and archive are siblings in the scratch tree: an archive
-        # never packs the file it is busy writing
-        local = Path(scratch) / archive.name
-        if IS_WINDOWS:
-            with zipfile.ZipFile(local, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.write(exe, exe.name)
-        elif IS_MACOS:
-            subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc",
-                            str(exe.parent / exe.name), str(local)],
-                           check=True, capture_output=True, text=True)
-        else:
-            subprocess.run(["tar", "-czf", str(local), "-C", str(exe.parent),
-                            exe.name],
-                           check=True, capture_output=True, text=True)
-        shutil.copy2(local, archive)
-    log(f"packed: {archive}", "ok")
-    return archive
 
 
 def launch(exe: Path) -> int:
@@ -197,9 +179,11 @@ def main(argv=None):
         log(f"expected exe missing: {exe}", "error")
         return 3
     size_mb = exe.stat().st_size / (1024 * 1024)
-    log(f"built    {exe} ({size_mb:.1f} MB) in {time.time() - t0:.1f}s", "ok")
+    upx = "" if shutil.which("upx") is None else ", upx"
+    log(f"built    {exe} ({size_mb:.1f} MB{upx}) in "
+        f"{time.time() - t0:.1f}s", "ok")
 
-    pack()
+    ensure_executable(exe)
     if run:
         return launch(exe)
     return 0

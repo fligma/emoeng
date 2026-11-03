@@ -34,13 +34,19 @@ frozen against - so a build made elsewhere is not the same artefact.
 archives it as `MotionEngine-windows.zip` or `MotionEngine-linux.tar.gz`,
 with `docs/` and `projects/` beside the exe and executable permissions
 preserved on Linux. `python tools/build_installer.py` then freezes
-`installer/installer.py` as `MotionEngine-installer-windows.zip` or
-`MotionEngine-installer-linux.tar.gz` - a much smaller bundle carrying
-pygame, the engine's chrome (`xp.py`, `winchrome.py`, `const.py`, fonts)
-and the installer's own assets, and no NumPy or engine runtime. When
-`emoeng/const.py` bumps `VERSION` the workflow publishes all four archives
-under the tag `engineV<version>`; the installer looks at that same release
-and downloads whichever archive fits the PC it runs on. Do not build a
+`installer/installer.py` as the plain executables `MotionEngine-installer.exe`
+(Windows) and `MotionEngine-installer` (Linux; GitHub strips the exec bit off
+bare uploads, so `chmod +x` once after downloading) - a much smaller build
+carrying pygame, the engine's chrome (`xp.py`, `winchrome.py`, `const.py`,
+fonts) and the installer's own assets, with no NumPy or engine runtime, and
+pressed as small as PyInstaller allows: optimised bytecode, `strip` on
+non-Windows, and UPX on the bundled Windows binaries (the CI installs one;
+PyInstaller version 6 ignores UPX on Linux by design, so that build stays
+uncompressed).
+When `emoeng/const.py` bumps `VERSION` the workflow publishes the two app
+archives and the two installer executables under the tag `engineV<version>`;
+the installer looks at that same release and downloads whichever archive
+fits the PC it runs on. Do not build a
 Windows executable on Linux or a Linux executable on Windows; use the
 matching native runner.
 The Linux job runs the frozen game for one rendered demo frame and holds
