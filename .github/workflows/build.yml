@@ -169,14 +169,16 @@ jobs:
       # the installer is a GUI with no frame cap and no GL need, so
       # "still alive when the clock ran out" is the pass condition:
       # any earlier exit is a crash, and a crash here means the freeze
-      # or its bundled data layout is broken
+      # or its bundled data layout is broken. The 124 is grabbed with
+      # `||` because Actions' bash runs -e, which would treat the
+      # expected kill as a step failure before $? could ever be read
       - name: Smoke test the installer (Linux)
         if: matrix.label == 'linux'
         shell: bash
         run: |
+          code=0
           SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
-            timeout 30 tools/dist/MotionEngine-installer
-          code=$?
+            timeout 30 tools/dist/MotionEngine-installer || code=$?
           if [ "$code" != "124" ]; then
             echo "installer exited with $code" >&2
             exit 1
