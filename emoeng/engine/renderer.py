@@ -594,6 +594,12 @@ class Renderer:
             self.ctx = compat.standalone()
             self.textures = {}
             _ACTIVE = self
+        if share is None:
+            # the compatibility report reads this context; the app must
+            # never make a throwaway one beside it, because a released
+            # second context has been known to segfault Mesa drivers
+            compat.attach(self.ctx)
+            compat.write()
         self.prog = self.ctx.program(vertex_shader=VS, fragment_shader=FS)
         self.prog["u_tex"].value = 0
         self.prog["u_cookie"].value = 1

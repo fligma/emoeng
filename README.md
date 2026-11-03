@@ -121,8 +121,10 @@ between them.
 The newest build is always at
 **[Releases &rarr; latest](https://github.com/fligma/emoeng/releases/latest)**:
 unzip the app archive for your OS and run it, or grab the standalone
-installer executable, which finds that same archive on GitHub and unpacks
-it for you. Windows and Linux each get both.
+installer executable, which finds that same archive on GitHub, unpacks it
+into a proper per-user folder (never your Desktop), and leaves a shortcut
+on the Desktop and in the Start menu / applications list so you can launch
+the engine with one double-click. Windows and Linux each get both.
 
 ## Getting started
 

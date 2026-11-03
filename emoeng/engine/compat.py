@@ -2,10 +2,15 @@
 
 The engine draws through ModernGL and every shader is GLSL 330, so a
 machine that cannot offer OpenGL 3.3 opens onto a black window. That is
-impossible to see from the outside, so this module probes the stack at
-startup, keeps a `gpureport.txt` in the user's folder as a trace, and
-sorts the findings into plain warnings. `python -m emoeng check` runs
-the same probe without opening any window at all.
+impossible to see from the outside, so this module keeps a
+`gpureport.txt` in the user's folder as a trace and sorts the findings
+into plain warnings. `python -m emoeng check` runs the same probe
+without opening any window at all.
+
+Inside a running app the report is read from the live renderer context
+(`attach`), never from a second throwaway context: some Mesa drivers
+segfault in gallium when a released standalone context sits in the
+process before another one is made.
 """
 
 import os
@@ -41,8 +46,8 @@ def standalone():
     raise last
 
 
-def probe():
-    """Every fact worth knowing about this machine, errors included."""
+def base():
+    """The facts that need no OpenGL: machine, python, libraries."""
     try:
         driver = pygame.display.get_driver()
     except pygame.error:
@@ -73,9 +78,12 @@ def probe():
         rep["moderngl"] = getattr(moderngl, "__version__", "?")
     except Exception:
         pass
-    ctx = None
+    return rep
+
+
+def read(rep, ctx):
+    """Fill a report's GL fields from a context that already exists."""
     try:
-        ctx = standalone()
         rep["gl_version"] = str(ctx.info.get("GL_VERSION", ""))
         rep["gl_vendor"] = str(ctx.info.get("GL_VENDOR", ""))
         rep["gl_renderer"] = str(ctx.info.get("GL_RENDERER", ""))
@@ -86,6 +94,44 @@ def probe():
         rep["max_texture"] = str(ctx.info.get("GL_MAX_TEXTURE_SIZE", ""))
         rep["gl_api"] = "%d.%d" % (ctx.version_code // 100,
                                    ctx.version_code % 100)
+    except Exception as exc:
+        rep["gl_error"] = " ".join(str(exc).split())[:300] or repr(exc)
+    return rep
+
+
+_LIVE = None               # the context the running app draws with
+
+
+def attach(ctx):
+    """Remember the renderer's context; called by Renderer on creation."""
+    global _LIVE
+    _LIVE = ctx
+
+
+def live():
+    """A report from the app's own context, or None before there is one."""
+    return read(base(), _LIVE) if _LIVE is not None else None
+
+
+def bare():
+    """A report for a process that never reached a 3D context."""
+    return base()
+
+
+def probe():
+    """Every fact worth knowing about this machine, errors included.
+
+    This makes a throwaway context and releases it, which is only safe
+    in a process that will not create another one: `python -m emoeng
+    check`, or the failure path where the renderer never came up. An
+    app mid-flight reads `live()` instead."""
+    rep = base()
+    if rep["gl_error"]:
+        return rep                  # moderngl itself is the story
+    ctx = None
+    try:
+        ctx = standalone()
+        read(rep, ctx)
     except Exception as exc:
         rep["gl_error"] = " ".join(str(exc).split())[:300] or repr(exc)
     finally:
@@ -178,12 +224,15 @@ def text(rep=None):
 
 
 def write(folder=None, rep=None):
-    """Leave the report on disk; where it lands matters more than speed."""
+    """Leave the report on disk; where it lands matters more than speed.
+    With no report given, the app's own context answers if there is one;
+    only a process that will never render falls through to `probe()`."""
     try:
         folder = Path(folder) if folder else paths.user_dir()
         folder.mkdir(parents=True, exist_ok=True)
         made = folder / REPORT_NAME
-        made.write_text(text(rep or probe()) + "\n", encoding="utf-8")
+        rep = rep if rep is not None else (live() or probe())
+        made.write_text(text(rep) + "\n", encoding="utf-8")
         return made
     except OSError:
         return None

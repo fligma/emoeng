@@ -480,22 +480,14 @@ class Editor:
         self.loading.step("applying settings", 0.3)
         self.apply_all()
 
-        # ask the machine what it can do before anything needs it to;
-        # the answer goes on disk, where a black window can still be read
-        self.loading.step("checking the graphics", 0.4)
-        rep = compat.probe()
-        where = compat.write(rep=rep)
-        warns = compat.verdict(rep)
-        self.log(compat.summary(rep), "warn" if warns else "muted")
-        for line in warns:
-            self.log(f"compatibility: {line}", "warn")
-
         if project_path is not None:
             try:
                 opened = self.open_project(project_path)
             except Exception as exc:
                 # dying here is exactly what used to leave a black window
                 self.log(f"startup failed: {exc!r}", "error")
+                rep = compat.live() or compat.bare()
+                where = compat.write(rep=rep)
                 self.loading.fail("the editor could not finish starting",
                                   f"{exc}\n{compat.summary(rep)}\n"
                                   f"full report: {where}")
@@ -722,6 +714,18 @@ class Editor:
         self.preview.blur()
         attempt(0.25, "starting the 3D preview",
                 lambda: self.preview.set_project(project))
+        # the report the renderer wrote from its own context, spoken of
+        # in the log; before a 3D context exists there is nothing true
+        # to say, and the renderer says it when it arrives
+        rep = compat.live()
+        if rep is None:
+            self.log("graphics: gpureport.txt is written when the 3D "
+                     "preview first starts", "muted")
+        else:
+            warns = compat.verdict(rep)
+            self.log(compat.summary(rep), "warn" if warns else "muted")
+            for line in warns:
+                self.log(f"compatibility: {line}", "warn")
         self.doctab.set_project(project)
         self.assets.set_project(project)
         self.pixel.set_project(project)

@@ -23,7 +23,8 @@ name their reason instead of spinning.
 Nothing leaves the two folders it is told about: settings (token
 included) live in `installer.json` beside this file, and every
 downloaded and extracted file lands inside the install folder chosen
-in the dropdown. No per-user app data, no hidden caches.
+in the dropdown - a proper per-user place by default, never the
+Desktop, with a shortcut put where beginners look for one afterwards.
 """
 
 import argparse
@@ -255,7 +256,37 @@ def load_font(name, size, bold=False):
 # the app keeps its data only in the directory it is installed in.
 
 SETTINGS_PATH = APP_DIR / "installer.json"
-DEFAULT_DEST = str(APP_DIR)
+
+
+def default_dest():
+    """A proper per-user home for the engine: standard for the OS,
+    outside any Desktop, and never needing administrator rights."""
+    home = Path.home()
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(
+            home / "AppData" / "Local")
+        return str(Path(base) / "Programs" / USER_DIR)
+    if sys.platform.startswith("linux"):
+        base = os.environ.get("XDG_DATA_HOME") or str(
+            home / ".local" / "share")
+        return str(Path(base) / USER_DIR)
+    return str(home / "Applications" / USER_DIR)
+
+
+DEFAULT_DEST = default_dest()
+
+
+def _kept_dest(raw):
+    """The remembered folder, unless it is the installer's own: older
+    builds defaulted onto the download's Desktop, and the proper
+    default replaces that rather than honouring it."""
+    got = str(raw.get("dest") or "")
+    try:
+        if got and Path(got).resolve() == Path(APP_DIR).resolve():
+            return DEFAULT_DEST
+    except OSError:
+        pass
+    return got or DEFAULT_DEST
 
 
 def load_settings():
@@ -264,7 +295,7 @@ def load_settings():
         if isinstance(raw, dict):
             return {"repo": str(raw.get("repo") or DEFAULT_REPO),
                     "token": str(raw.get("token") or ""),
-                    "dest": str(raw.get("dest") or DEFAULT_DEST)}
+                    "dest": _kept_dest(raw)}
     except (OSError, ValueError):
         pass
     return {"repo": DEFAULT_REPO, "token": "", "dest": DEFAULT_DEST}
@@ -610,6 +641,118 @@ def unpack(path, into):
     return f"kept the file as {path}"
 
 
+# ---------------------------------------------------------- shortcuts
+# the program names each bundle format leaves in the install folder
+APP_NAMES = ("MotionEngine.exe", "MotionEngine", "AppRun")
+
+
+def find_app(into):
+    """The engine program inside the install folder, or None. Bundles
+    put it at the top; a source archive nests one folder, so a second
+    level is searched too."""
+    into = Path(into)
+    for depth in (1, 2):
+        try:
+            kids = sorted(into.glob("/".join(["*"] * depth)))
+        except OSError:
+            return None
+        for cand in kids:
+            if cand.is_file() and cand.name in APP_NAMES:
+                return cand
+    return None
+
+
+def _ps_quote(value):
+    """One single-quoted powershell string; doubled quotes survive it."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _make_lnk(link, app):
+    """One Windows .lnk, made by the shell itself - WScript.Shell is
+    the only supported way, and the exe carries its own icon."""
+    script = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut("
+              + _ps_quote(link) + ");"
+              + "$s.TargetPath=" + _ps_quote(app) + ";"
+              + "$s.WorkingDirectory=" + _ps_quote(app.parent) + ";"
+              + "$s.WindowStyle=1;$s.Save()")
+    subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+                    "-ExecutionPolicy", "Bypass", "-Command", script],
+                   capture_output=True, timeout=30)
+    if not link.is_file():
+        raise OSError("the shell did not create the link")
+
+
+def _desktop_folder():
+    """The real Desktop folder, whatever this locale calls it; None
+    when this machine has none - the apps-menu entry still lands."""
+    try:
+        out = subprocess.run(["xdg-user-dir", "DESKTOP"],
+                             capture_output=True, text=True, timeout=10)
+        got = out.stdout.strip()
+        if out.returncode == 0 and got:
+            return Path(got)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    plain = Path.home() / "Desktop"
+    return plain if plain.is_dir() else None
+
+
+def make_shortcuts(app):
+    """Put a launcher where beginners look: Desktop and Start menu on
+    Windows, Desktop and the applications list on Linux. Returns
+    (paths made, reason nothing was made)."""
+    made, why = [], ""
+    app = Path(app)
+    if sys.platform == "win32":
+        home = Path(os.environ.get("USERPROFILE") or Path.home())
+        roaming = Path(os.environ.get("APPDATA")
+                       or home / "AppData" / "Roaming")
+        spots = [home / "Desktop",
+                 roaming / "Microsoft" / "Windows" / "Start Menu"
+                 / "Programs"]
+    elif sys.platform.startswith("linux"):
+        try:
+            app.chmod(app.stat().st_mode | 0o111)
+        except OSError as exc:
+            why = f" ({exc}) - the program is not executable"
+        data = Path(os.environ.get("XDG_DATA_HOME")
+                    or Path.home() / ".local" / "share")
+        entry = (f"[Desktop Entry]\nType=Application\nName={CODENAME}\n"
+                 f"Exec=\"{app}\"\nPath={app.parent}\n"
+                 "Terminal=false\n")
+        if (app.parent / "icon.png").is_file():
+            entry += f"Icon={app.parent / 'icon.png'}\n"
+        spots = [data / "applications"]
+        desk = _desktop_folder()
+        if desk is not None:
+            spots.append(desk)
+    else:
+        return [], " (this OS keeps its own installer)"
+    for folder in spots:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                link = folder / f"{CODENAME}.lnk"
+                _make_lnk(link, app)
+            else:
+                link = folder / "motionengine.desktop"
+                link.write_text(entry, encoding="utf-8")
+                # a desktop icon must be marked executable or the
+                # desktop refuses to launch it
+                link.chmod(link.stat().st_mode | 0o111)
+            made.append(link)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            why = f" ({exc})"
+    if made and sys.platform.startswith("linux"):
+        try:
+            subprocess.run(["update-desktop-database",
+                            str(data / "applications")],
+                           capture_output=True, timeout=15)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass                        # the entry works without it
+    return made, why
+
+
 # ------------------------------------------------------------- text box
 class TextBox:
     """One line of typed text: caret, typing, arrows, backspace. The
@@ -732,6 +875,7 @@ class Installer:
         self.asset_rows = []
         self.asset_list = []           # what the list shows (no installers)
         self.scroll = 0
+        self.installed = None          # the engine program, once installed
         self.running = True
         # settings dropdown
         self.panel_open = False
@@ -872,8 +1016,16 @@ class Installer:
                             stop=self.stop_flag)
             self._say(epoch, "state", "installing")
             note = unpack(path, into)
+            app = find_app(into)
+            if app is not None:
+                made, why = make_shortcuts(app)
+                self._say(epoch, "log",
+                          ("shortcut created: " + "; ".join(
+                              str(m) for m in made)) if made else
+                          f"no shortcut{why}", "ok" if made else "warn")
             self._say(epoch, "installed",
-                      f"{CODENAME} {info['version']}: {note}")
+                      f"{CODENAME} {info['version']}: {note}",
+                      str(app) if app else "")
         except RateLimited as exc:
             self._say(epoch, "limited", str(exc))
         except (GitHubError, OSError, zipfile.BadZipFile,
@@ -939,6 +1091,8 @@ class Installer:
                 elif kind == "installed":
                     self.set_state("done")
                     self.progress = 1.0
+                    got = rest[1] if len(rest) > 1 else ""
+                    self.installed = Path(got) if got else None
                     self.log(rest[0], "ok")
         except queue.Empty:
             pass
@@ -955,6 +1109,7 @@ class Installer:
         controls = pygame.Rect(12, status.y - 38, w - 24, 30)
         install = pygame.Rect(controls.right - 122, controls.y, 122, 30)
         openb = pygame.Rect(install.x - 110, controls.y, 100, 30)
+        launch = pygame.Rect(openb.x - 98, controls.y, 90, 30)
         info = pygame.Rect(12, bar.bottom + 8, w - 24, INFO_H)
         log = pygame.Rect(12, controls.y - LOG_H - 6, w - 24, LOG_H)
         rows = {
@@ -967,7 +1122,8 @@ class Installer:
                                   max(60, log.y - 8 - info.bottom)),
             "log": log,
             "progress": pygame.Rect(12, controls.y + 7,
-                                    openb.x - 60, 16),
+                                    launch.x - 60, 16),
+            "launch": launch,
             "open": openb,
             "install": install,
         }
@@ -1011,6 +1167,10 @@ class Installer:
                 return
             if self.rows["check"].collidepoint(e.pos):
                 self.check()
+                return
+            if self.rows["launch"].collidepoint(e.pos):
+                if self.installed is not None and not self.busy():
+                    self._launch()
                 return
             if self.rows["open"].collidepoint(e.pos):
                 self._open_dest()
@@ -1149,6 +1309,25 @@ class Installer:
         except OSError as exc:
             self.log(f"cannot open {dest}: {exc}", "warn")
 
+    def _launch(self):
+        """Start the engine that was just installed, detached from this
+        window's console, and say so in the log."""
+        app = self.installed
+        if app is None or not app.is_file():
+            self.log("nothing is installed to launch yet", "warn")
+            return
+        kw = {}
+        if sys.platform == "win32":
+            kw["creationflags"] = 0x00000008        # DETACHED_PROCESS
+        try:
+            subprocess.Popen([str(app)], cwd=str(app.parent),
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, **kw)
+            self.log(f"launching {CODENAME} - good luck", "ok")
+        except OSError as exc:
+            self.log(f"could not launch {app.name}: {exc}", "error")
+
     # ------------------------------------------------------------ states
     LOGKINDS = {
         # colour + symbol per log kind; the kinds are the ones the
@@ -1171,7 +1350,7 @@ class Installer:
             "error": "last job failed - see the log",
             "downloading": f"downloading {int(self.progress * 100)}%",
             "installing": "unpacking...",
-            "done": "installed - files are in the install folder",
+            "done": "installed - double-click the new icon, or press Launch",
         }.get(self.state, self.state)
 
     # -------------------------------------------------------------- draw
@@ -1234,6 +1413,10 @@ class Installer:
         xp.button(surface, rows["open"], "Open folder",
                   self.fonts["small"],
                   hovered=rows["open"].collidepoint(mouse))
+        can_go = self.installed is not None and not self.busy()
+        xp.button(surface, rows["launch"], "Launch",
+                  self.fonts["small"], enabled=can_go,
+                  hovered=rows["launch"].collidepoint(mouse))
         can = (self.asset is not None and not self.busy()
                and self.state != "installing")
         again = (self.state in ("found", "done") and self.info is not None
@@ -1490,8 +1673,9 @@ def main():
                     help="owner/name to search (default "
                          f"{DEFAULT_REPO})")
     ap.add_argument("--dest", default=None,
-                    help="install folder (default the installer's own "
-                         "folder); everything lands inside it")
+                    help="install folder (default a per-user "
+                         "MotionEngine folder, never the Desktop); "
+                         "everything lands inside it")
     args = ap.parse_args()
     Installer(repo=args.repo, dest=args.dest).run()
 

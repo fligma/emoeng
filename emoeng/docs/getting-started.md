@@ -37,11 +37,15 @@ The engine draws through ModernGL and needs an OpenGL 3.3 core context, so
 an old or disabled GPU driver shows up as a black window. Both the editor
 and a running game now paint a loading screen with the current step while a
 project opens - a slow machine takes a long time, but it says so instead of
-looking dead - and every start writes a report of what the machine actually
-offers to `gpureport.txt` in the per-user folder (the same text as
-`python -m emoeng check`). The report names the OpenGL version, the driver
-and the renderer; "software rendering" means llvmpipe and low frame rates,
-and a version below 3.3 means the window cannot draw at all.
+looking dead - and the drawing engine writes a report of what the machine
+actually offers to `gpureport.txt` in the per-user folder the moment it
+starts (a game boot, or the editor's first 3D preview). The report names
+the OpenGL version, the driver and the renderer; "software rendering" means
+llvmpipe and low frame rates, and a version below 3.3 means the window
+cannot draw at all. `python -m emoeng check` answers the same questions in
+a terminal without opening any window, which is also the safe move on a
+machine whose driver crashes: the report is read off the context the app
+really draws with, so the engine itself never makes throwaway GL contexts.
 
 ## Your first project
 

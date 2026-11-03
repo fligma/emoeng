@@ -215,10 +215,6 @@ class Game(CameraHost):
                                "a slow or broken start lands in "
                                "gpureport.txt")
         self.loading.begin("opening the window", 0.02)
-        # probe the machine now, while no renderer owns the thread yet:
-        # a probe context released later would leave the current GL
-        # context dangling under the renderer that follows
-        compat.write()
         self.clock = pygame.time.Clock()
         self.fonts = {
             "small": ui.load_font("tahoma", 11),
