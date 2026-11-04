@@ -301,6 +301,9 @@ class WindowChrome:
         self.maximized = False
         self.fullscreen = False
         self._restore_rect = None
+        # the size chrome has been asked to reach but pygame has not
+        # reallocated its surface to yet; see _sdl_size
+        self._pending_size = None
 
     # ------------------------------------------------------------------ boot
     def _ensure(self):
@@ -593,13 +596,37 @@ class WindowChrome:
         return pygame.Rect(px, py, sw, sh)
 
     def frame_size(self):
-        """The window's current size, whichever backend is driving it."""
+        """The size the window is meant to reach, pending resizes included.
+
+        Reading X11 geometry alone lags an `SDL_SetWindowSize` by a
+        round trip, and that gap is exactly when a KDE/GNOME compositor
+        can pick up a mismatch between the window's new pitch and
+        pygame's still-old surface and show a diagonal.
+        SDL's own cached size updates as soon as a set_mode or
+        SetWindowSize call lands, so once it matches the pending target
+        the pending is dropped and geometry takes over again."""
         if IS_LINUX:
-            r = self._rect()
-            return (r.w, r.h) if r else None
+            actual = self._sdl_size_cached()
+            if actual is None:
+                r = self._rect()
+                actual = (r.w, r.h) if r else None
+            if self._pending_size is not None:
+                if actual == tuple(self._pending_size):
+                    self._pending_size = None
+                else:
+                    return self._pending_size
+            return actual
         if self.win is None:
             return None
         return tuple(self.win.size)
+
+    def _sdl_size_cached(self):
+        """SDL's idea of the window size, or None if SDL has no window."""
+        try:
+            from pygame._sdl2 import video
+            return tuple(video.Window.from_display_module().size)
+        except Exception:
+            return None
 
     def _desktop_boxes(self):
         try:
@@ -750,12 +777,32 @@ class WindowChrome:
         self.win.position = (int(px), int(py))
         self.maximized = False
 
-    def _sdl_size(self, w, h):
-        """Change the size through SDL, not Xlib. A raw XMoveResizeWindow
-        leaves SDL's presentation buffers at the old pitch until its
-        ConfigureNotify lands, and a compositor that misses the handover
-        keeps showing a torn mix of the old and new frames."""
+    def _is_gl(self):
+        """True when the live display owns a GL window: the game surface.
+        A GL swap is atomic, so a resize can go straight to SDL. A
+        software surface has to change window and pygame surface in one
+        step, so its resize is deferred to the host's set_mode."""
         try:
+            surf = pygame.display.get_surface()
+            return surf is not None and bool(surf.get_flags() & pygame.OPENGL)
+        except (pygame.error, AttributeError):
+            return False
+
+    def _sdl_size(self, w, h):
+        """Route a size change so the compositor never sees pitch and
+        window disagree.
+
+        A raw XMoveResizeWindow leaves SDL's presentation buffers at the
+        old pitch until its ConfigureNotify lands, and a compositor that
+        picks up the window during that gap shows a torn mix of the old
+        and new frames. A GL window takes the resize straight from SDL;
+        a software window instead records the target and lets the host's
+        `pygame.display.set_mode` change the SDL window and pygame's
+        surface in the same call, so no intermediate frame exists."""
+        try:
+            if not self._is_gl():
+                self._pending_size = (int(w), int(h))
+                return True
             from pygame._sdl2 import video
             win = video.Window.from_display_module()
             if tuple(win.size) != (w, h):
