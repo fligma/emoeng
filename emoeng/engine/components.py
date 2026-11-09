@@ -7,6 +7,7 @@ import pygame
 
 from . import colors, meshes, particles, ui
 from . import collision as collmod
+from .model import model2d_transforms
 from .objects import ModelObject, Object2D, Object3D, UV_KNOBS
 
 
@@ -581,26 +582,35 @@ class Sprite2D(Object2D):
         # the rig's box wins; parts are cut in sheet pixels
         self.size = (float(self.rig.size[0]), float(self.rig.size[1]))
         self.parts = []
-        for part in self.rig.parts:
+        for part, transform in zip(
+                self.rig.parts, model2d_transforms(self.rig)):
             uv = tuple(part.get("uv") or (0.0, 0.0, 1.0, 1.0))
+            if part.get("visible", True) is False:
+                self.parts.append([part, uv, None])
+                continue
             mesh = self.dynamic(
-                self._part_quad(part, uv),
+                self._part_quad(part, uv, transform),
                 texture=part.get("texture") or self.rig.texture or "white",
                 blend=self.blend)
             self.parts.append([part, uv, mesh])
         return self
 
-    def _part_quad(self, part, uv):
+    def _part_quad(self, part, uv, transform):
         """One rig part posed by its own track."""
-        p = _as_vec(part.get("pos"), 2, (0.0, 0.0))
-        size = self.size
+        pos, part_rot, part_scale = transform
+        rig = self.rig
+        offset = (pos[0] - rig.size[0] * (0.5 - rig.pivot[0]),
+                  pos[1] - rig.size[1] * (0.5 - rig.pivot[1]))
+        sx = self.size[0] / max(rig.size[0], 1.0)
+        sy = self.size[1] / max(rig.size[1], 1.0)
         c, s = math.cos(self.rot), math.sin(self.rot)
-        k = float(size[0] / max(self.rig.size[0], 1.0)) if self.rig else 1.0
-        lx, ly = p[0] * k, p[1] * k
+        lx, ly = offset[0] * sx, offset[1] * sy
         x = self.pos[0] + lx * c - ly * s
         y = self.pos[1] + lx * s + ly * c
+        size = (self.size[0] * part_scale[0],
+                self.size[1] * part_scale[1])
         return meshes.quad2d((x, y), size, col=self.col, uv=uv,
-                             rot=self.rot + float(part.get("rot") or 0.0),
+                             rot=self.rot + part_rot,
                              anchor=(0.5, 0.5))
 
     def track_value(self, part, prop, t):
@@ -630,14 +640,16 @@ class Sprite2D(Object2D):
         if self.playing:
             self.t += dt * float(self.speed)
             self.timers.update(dt)
-        for row in self.parts:
+        offsets = {str(part.get("name") or ""):
+                   self.track_value(part, "rot", self.t)
+                   for part, _uv, _mesh in self.parts}
+        transforms = model2d_transforms(self.rig, offsets)
+        for row, transform in zip(self.parts, transforms):
             part, uv, mesh = row
-            got = dict(part)
-            rot = self.track_value(part, "rot", self.t)
-            if rot:
-                got["rot"] = float(part.get("rot") or 0.0) + rot
+            if mesh is None:
+                continue
             row[1] = uv
-            mesh.update(self._part_quad(got, uv))
+            mesh.update(self._part_quad(part, uv, transform))
         return self
 
     def __repr__(self):

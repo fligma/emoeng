@@ -823,13 +823,15 @@ class ModelEditor:
     def _part_shown(self, part):
         return part.get("visible", True) is not False
 
-    def _part_world(self, part, t=None):
-        """A part's centre in rig pixels, after the rig turn."""
-        p = part.get("pos") or POS_DEFAULT
-        return (self.model2d.size[0] * (0.5 - self.model2d.pivot[0]) +
-                float(p[0]),
-                self.model2d.size[1] * (0.5 - self.model2d.pivot[1]) +
-                float(p[1]))
+    def _flat_transforms(self, t=None):
+        """Resolve parent transforms and animation for the whole rig."""
+        time_at = self.play_t if t is None else t
+        offsets = {
+            str(part.get("name") or ""):
+            self._track_offset(str(part.get("name") or ""), time_at)
+            for part in self.model2d.parts
+        }
+        return modelmod.model2d_transforms(self.model2d, offsets)
 
     def _to_local(self, x, y):
         z = self.flat_view["zoom"]
@@ -837,9 +839,10 @@ class ModelEditor:
                 (y - self.inner.centery) / z + self.flat_view["cy"])
 
     def _to_world(self, x, y):
+        """Convert rig coordinates to viewport pixels."""
         z = self.flat_view["zoom"]
-        return ((x - self.inner.centerx) * z + self.flat_view["cx"],
-                (y - self.inner.centery) * z + self.flat_view["cy"])
+        return ((x - self.flat_view["cx"]) * z + self.inner.centerx,
+                (y - self.flat_view["cy"]) * z + self.inner.centery)
 
     def _rig_rot(self):
         """The whole rig turned by the name field's arrow."""
@@ -857,16 +860,25 @@ class ModelEditor:
         return (self.flat_view["cx"] - px * c + py * s,
                 self.flat_view["cy"] - px * s - py * c)
 
-    def _world_of(self, part, t=None):
+    def _world_of(self, part, t=None, transform=None):
         """Where a part's centre sits, in viewport-local pixels."""
-        w = self._part_world(part, t)
+        if transform is None:
+            index = next((i for i, candidate in
+                          enumerate(self.model2d.parts)
+                          if candidate is part), None)
+            if index is None:
+                index = next((i for i, candidate in
+                              enumerate(self.model2d.parts)
+                              if candidate.get("name") ==
+                              part.get("name")), 0)
+            transform = self._flat_transforms(t)[index]
+        w, part_rot, scale = transform
         rot = self._rig_rot()
         c, s = math.cos(rot), math.sin(rot)
         ox, oy = self._rig_origin()
         lx = ox + self.flat_view["zoom"] * (w[0] * c - w[1] * s)
         ly = oy + self.flat_view["zoom"] * (w[0] * s + w[1] * c)
-        return (lx, ly, rot + self._part_eff_rot(part, t if t is not None
-                                                 else self.play_t))
+        return (lx, ly, rot + part_rot, scale)
 
     def _corner_local(self, w, h, u, v, centre, prot):
         """One uv corner of a part, in viewport-local pixels."""
@@ -882,15 +894,15 @@ class ModelEditor:
         local = self._to_local(*pos)
         m = self.model2d
         t = self.play_t
+        transforms = self._flat_transforms(t)
         for i in range(len(m.parts) - 1, -1, -1):
             part = m.parts[i]
             if not self._part_shown(part):
                 continue
-            w, h = (m.size[0] * self._part_scale(part)[0],
-                    m.size[1] * self._part_scale(part)[1])
+            x, y, prot, scale = self._world_of(part, t, transforms[i])
+            w, h = m.size[0] * scale[0], m.size[1] * scale[1]
             if w <= 0.0 or h <= 0.0:
                 continue
-            x, y, prot = self._world_of(part, t)
             dx, dy = local[0] - x, local[1] - y
             c, s = math.cos(-prot), math.sin(-prot)
             ux = dx * c - dy * s
@@ -953,12 +965,10 @@ class ModelEditor:
         new = max(FLAT_MIN, min(FLAT_MAX, old * (1.25 if step > 0 else 0.8)))
         if new == old:
             return
-        lx, ly = self._to_local(*pos)
+        wx, wy = self._to_local(*pos)
         self.flat_view["zoom"] = new
-        # keep the point under the pointer exactly where it was
-        wx, wy = self._to_world(lx, ly)
-        self.flat_view["cx"] += lx - wx
-        self.flat_view["cy"] += ly - wy
+        self.flat_view["cx"] = wx - (pos[0] - self.inner.centerx) / new
+        self.flat_view["cy"] = wy - (pos[1] - self.inner.centery) / new
 
     def _flat_pan(self, rel):
         z = self.flat_view["zoom"]
@@ -1036,11 +1046,6 @@ class ModelEditor:
                 k = 0.0 if span <= 0.0 else (t - float(t0)) / span
                 return float(v0) + (float(v1) - float(v0)) * k
         return float(keys[-1][1])
-
-    def _part_eff_rot(self, part, t):
-        name = part.get("name")
-        base = float(part.get("rot") or 0.0)
-        return base + self._track_offset(name, t)
 
     # a snapshot is a deep copy of plain data
     def _flat_snap(self):
@@ -3977,17 +3982,19 @@ class ModelEditor:
         """Every part in file order: first back, last top."""
         m = self.model2d
         t = self.play_t
+        transforms = self._flat_transforms(t)
         for i, part in enumerate(m.parts):
             if not self._part_shown(part):
                 continue
-            sx, sy = self._part_scale(part)
+            x, y, prot, (sx, sy) = self._world_of(
+                part, t, transforms[i])
             w, h = m.size[0] * sx, m.size[1] * sy
             if w <= 0.0 or h <= 0.0:
                 continue
             uv = [float(c) for c in (part.get("uv") or UV_DEFAULT)]
             while len(uv) < 4:
                 uv.append(1.0)
-            x, y, prot = self._world_of(part, t)
+            x, y, prot, _scale = self._world_of(part, t)
             key = part.get("texture") or m.texture or "white"
             tint = colors.rgba(key)
             size = (max(1, int(round(w * self.flat_view["zoom"]))),

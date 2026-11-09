@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -36,6 +37,7 @@ from .docstab import DocsTab
 from .modeleditor import ModelEditor
 from .pixeleditor import PixelEditor
 from .preview import Preview
+from . import projectmanager
 from .projectmanager import ProjectManager
 from .projecttab import ProjectTab
 from .settingstab import SettingsTab
@@ -1340,17 +1342,36 @@ class Editor:
 
     def _delete_project(self, path):
         """Drop a closed project's folder, then rescan the list."""
-        path = Path(path)
-        if self.project is not None and self.project.path == path:
+        path = Path(os.path.abspath(path))
+        root = Path(projectmanager.PROJECTS).resolve()
+        if path.parent.resolve() != root or path.resolve() == root or \
+                not (path / META_NAME).is_file():
+            self.log(f"delete failed: {path} is not a project in {root}",
+                     "error")
+            return
+        if self.project is not None and \
+                self.project.path.resolve() == path.resolve():
             self.log("close the project before deleting it", "warn")
             return
+
+        def remove_readonly(function, target, error):
+            exc = error[1]
+            if os.name == "nt" and isinstance(exc, PermissionError):
+                os.chmod(target, stat.S_IWRITE)
+                function(target)
+                return
+            raise exc
+
         try:
-            shutil.rmtree(path)
+            shutil.rmtree(path, onerror=remove_readonly)
         except OSError as exc:
             self.log(f"delete failed: {exc}", "error")
             return
-        self.manager.recent = [p for p in self.manager.recent
-                               if p != str(path)]
+        deleted = os.path.normcase(os.path.abspath(path))
+        self.manager.recent = [
+            p for p in self.manager.recent
+            if os.path.normcase(os.path.abspath(p)) != deleted
+        ]
         self.manager.refresh()
         self.log(f"project deleted: {path.name}", "ok")
 

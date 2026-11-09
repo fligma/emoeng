@@ -290,15 +290,16 @@ class UVPaint:
                 return True
         if e.type == pygame.MOUSEMOTION and self.drag is not None:
             if self.drag.get("surface"):
-                if self.owner.model is not None and \
+                if self.owner.model is None or not \
                         self.preview_viewport.width:
+                    self.continue_surface_stroke(None)
+                else:
                     local = (pos[0] - self.preview_viewport.x,
                              pos[1] - self.preview_viewport.y)
                     uv = self.owner._paint_uv_at(
                         self.owner.orbit.camera(),
                         self.preview_viewport.size, local)
-                    if uv is not None:
-                        self.continue_surface_stroke(uv)
+                    self.continue_surface_stroke(uv)
                 return True
             if self.drag.get("kind") == "preview_pan":
                 self.owner.orbit.orbit(*getattr(e, "rel", (0, 0)))
@@ -560,15 +561,19 @@ class UVPaint:
         """Continue a 3D brush stroke at a normalized model UV."""
         if not self.drag or self.drag.get("kind") not in ("brush", "eraser"):
             return
+        if uv is None:
+            self.drag["last"] = None
+            return
         p = self._from_uv(uv)
         kind = self.drag["kind"]
-        if max(abs(p[0] - self.drag["last"][0]),
-               abs(p[1] - self.drag["last"][1])) > self.size[0] * 0.2:
+        last = self.drag.get("last")
+        if last is None or max(abs(p[0] - last[0]),
+                               abs(p[1] - last[1])) > self.size[0] * 0.2:
             self.drag["last"] = p
             self._stamp(p, erase=kind == "eraser")
             self._after_stroke()
             return
-        self._stroke_to(self.drag["last"], p, erase=kind == "eraser")
+        self._stroke_to(last, p, erase=kind == "eraser")
         self.drag["last"] = p
         self._after_stroke()
 
@@ -588,11 +593,16 @@ class UVPaint:
             return
         p = self._to_canvas(e.pos)
         if p is None:
+            if self.drag.get("kind") in ("brush", "eraser"):
+                self.drag["last"] = None
             return
         kind = self.drag["kind"]
         if kind in ("brush", "eraser"):
-            self._stroke_to(self.drag["last"], p,
-                           erase=kind == "eraser")
+            last = self.drag.get("last")
+            if last is None:
+                self._stamp(p, erase=kind == "eraser")
+            else:
+                self._stroke_to(last, p, erase=kind == "eraser")
             self.drag["last"] = p
             self._after_stroke()
         elif kind == "rect":

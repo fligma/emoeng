@@ -1528,6 +1528,61 @@ class Model2D:
         return p
 
 
+def model2d_transforms(model, rotation_offsets=None):
+    """Resolve each rig part to its pivot-relative position, turn and scale."""
+    parts = model.parts
+    by_name = {}
+    for index, part in enumerate(parts):
+        by_name.setdefault(str(part.get("name") or ""), index)
+    offsets = rotation_offsets or {}
+    resolved = {}
+
+    def local_scale(part):
+        value = part.get("scale") or (1.0, 1.0)
+        if isinstance(value, (int, float)):
+            return float(value), float(value)
+        return float(value[0]), float(value[1])
+
+    def resolve(index, visiting):
+        if index in resolved:
+            return resolved[index]
+        part = parts[index]
+        name = str(part.get("name") or "")
+        pos = part.get("pos") or (0.0, 0.0)
+        local_pos = float(pos[0]), float(pos[1])
+        scale = local_scale(part)
+        rotation = float(part.get("rot") or 0.0) + \
+            float(offsets.get(name, 0.0))
+        parent_name = part.get("parent")
+        parent_index = by_name.get(str(parent_name)) \
+            if parent_name is not None else None
+        if parent_index is not None and parent_index not in visiting \
+                and parent_index != index:
+            parent_pos, parent_rotation, parent_scale = resolve(
+                parent_index, visiting | {index})
+            scaled = (local_pos[0] * parent_scale[0],
+                      local_pos[1] * parent_scale[1])
+            cosine, sine = math.cos(parent_rotation), math.sin(parent_rotation)
+            result = (
+                (parent_pos[0] + scaled[0] * cosine - scaled[1] * sine,
+                 parent_pos[1] + scaled[0] * sine + scaled[1] * cosine),
+                parent_rotation + rotation,
+                (parent_scale[0] * scale[0],
+                 parent_scale[1] * scale[1]),
+            )
+        else:
+            result = (
+                (model.size[0] * (0.5 - model.pivot[0]) + local_pos[0],
+                 model.size[1] * (0.5 - model.pivot[1]) + local_pos[1]),
+                rotation,
+                scale,
+            )
+        resolved[index] = result
+        return result
+
+    return [resolve(index, set()) for index in range(len(parts))]
+
+
 def new_model2d(name=None, size=(64.0, 64.0), texture=None):
     """A blank 2D model: one body part."""
     return Model2D(name=name or "model2d", size=size, texture=texture,

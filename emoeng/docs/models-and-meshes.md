@@ -265,13 +265,14 @@ instead of flipping through a sheet.
 
 | Field | Meaning |
 | --- | --- |
-| `size` | The rig's box in pixels; every part is drawn at this size, so a part is a window on a sheet rather than a shape of its own |
+| `size` | The rig's box in pixels; each part uses this as its base size, adjusted by its own and its parents' scales |
 | `texture` | The sheet a part with no `texture` of its own is cut from; a colour works in its place |
 | `pivot` | `0..1` inside that box, which the node's `pos` sits on |
 | `parts[].uv` | `0..1` rect cut from the texture |
 | `parts[].pos` | Pixels from the pivot |
 | `parts[].rot` | Radians |
 | `parts[].parent` | Another part name, so limbs hinge |
+| `parts[].visible` | `false` hides the part in the editor and at runtime |
 | `tracks[].prop` | One numeric part property |
 | `tracks[].keys` | `[time, value]` pairs, linear between them |
 
