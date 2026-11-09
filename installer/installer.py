@@ -110,6 +110,7 @@ CAP_H, TOOL_H, STATUS_H = 26, 36, 22
 INFO_H, LOG_H = 86, 84
 ROW_H = 20
 TAG_PREFIX = "engineV"
+INSTALL_VERSION_FILE = ".motionengine-install.json"
 API = "https://api.github.com"
 UA = f"{USER_DIR}-installer/{VERSION}"
 # Network patience. One API call may take NET_TIMEOUT seconds; a whole
@@ -637,7 +638,7 @@ def unpack(path, into):
                 subprocess.Popen(["xdg-open", str(path)])
             return f"launched the installer ({path.name})"
         except OSError as exc:
-            return f"could not launch {path.name}: {exc}"
+            raise OSError(f"could not launch {path.name}: {exc}") from exc
     return f"kept the file as {path}"
 
 
@@ -659,7 +660,37 @@ def find_app(into):
         for cand in kids:
             if cand.is_file() and cand.name in APP_NAMES:
                 return cand
+    try:
+        appimages = sorted(into.glob("*.appimage"))
+    except OSError:
+        return None
+    if appimages:
+        return appimages[0]
     return None
+
+
+def read_installed_version(into):
+    """Return the version recorded by this installer, if present."""
+    try:
+        record = json.loads(
+            (Path(into) / INSTALL_VERSION_FILE).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
+    version = record.get("version") if isinstance(record, dict) else None
+    return str(version) if isinstance(version, str) and version else None
+
+
+def write_installed_version(into, version):
+    """Atomically record which engine release this folder contains."""
+    dest = Path(into)
+    dest.mkdir(parents=True, exist_ok=True)
+    path = dest / INSTALL_VERSION_FILE
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps({"version": str(version)}, indent=2) + "\n",
+                    encoding="utf-8")
+    temp.replace(path)
 
 
 def _ps_quote(value):
@@ -875,7 +906,9 @@ class Installer:
         self.asset_rows = []
         self.asset_list = []           # what the list shows (no installers)
         self.scroll = 0
-        self.installed = None          # the engine program, once installed
+        install_dir = Path(self.settings.get("dest") or DEFAULT_DEST)
+        self.installed = find_app(install_dir)
+        self.installed_version = read_installed_version(install_dir)
         self.running = True
         # settings dropdown
         self.panel_open = False
@@ -1016,6 +1049,20 @@ class Installer:
                             stop=self.stop_flag)
             self._say(epoch, "state", "installing")
             note = unpack(path, into)
+            if Path(asset["name"]).suffix.lower() in (".exe", ".msi",
+                                                       ".dmg", ".pkg"):
+                self._say(epoch, "external",
+                          f"opened {asset['name']} - finish any setup "
+                          "prompts to continue")
+                return
+            if str(asset["name"]).lower().endswith(
+                    (".zip", ".tar.gz", ".tgz", ".appimage")):
+                try:
+                    write_installed_version(into, info["version"])
+                except OSError as exc:
+                    self._say(epoch, "log",
+                              f"could not record the installed version: "
+                              f"{exc}", "warn")
             app = find_app(into)
             if app is not None:
                 made, why = make_shortcuts(app)
@@ -1025,7 +1072,7 @@ class Installer:
                           f"no shortcut{why}", "ok" if made else "warn")
             self._say(epoch, "installed",
                       f"{CODENAME} {info['version']}: {note}",
-                      str(app) if app else "")
+                      str(app) if app else "", info["version"])
         except RateLimited as exc:
             self._say(epoch, "limited", str(exc))
         except (GitHubError, OSError, zipfile.BadZipFile,
@@ -1066,12 +1113,19 @@ class Installer:
                     self.scroll = 0
                     self.set_state("found")
                     tag, ver = info["tag"], info["version"]
-                    if ver == VERSION:
-                        self.log(f"newest is {tag} - you already run "
-                                 f"{VERSION}", "ok")
+                    installed = self.installed_version
+                    if installed and version_key(ver) == version_key(
+                            installed):
+                        self.log(f"latest is {tag} - already installed "
+                                 f"in this folder", "ok")
+                    elif installed and version_key(ver) < version_key(
+                            installed):
+                        self.log(f"installed v{installed} is newer than "
+                                 f"latest v{ver}", "warn")
                     else:
-                        self.log(f"newest: {tag} (you run {VERSION})",
-                                 "ok")
+                        current = (f"installed v{installed}" if installed
+                                   else "no installed version detected")
+                        self.log(f"latest: {tag} ({current})", "ok")
                     if self.match is None:
                         self.log("no file named for this PC - click one "
                                  "in the list to pick it", "warn")
@@ -1093,6 +1147,12 @@ class Installer:
                     self.progress = 1.0
                     got = rest[1] if len(rest) > 1 else ""
                     self.installed = Path(got) if got else None
+                    self.installed_version = (rest[2] if len(rest) > 2
+                                              else None)
+                    self.log(rest[0], "ok")
+                elif kind == "external":
+                    self.set_state("external")
+                    self.progress = 1.0
                     self.log(rest[0], "ok")
         except queue.Empty:
             pass
@@ -1282,6 +1342,9 @@ class Installer:
             self.log(f"cannot use {dest}: {exc}", "error")
             return
         self.settings["dest"] = dest
+        install_dir = Path(dest)
+        self.installed = find_app(install_dir)
+        self.installed_version = read_installed_version(install_dir)
         if save_settings(self.settings):
             self.log(f"settings saved to {SETTINGS_PATH.name}", "ok")
         else:
@@ -1350,7 +1413,8 @@ class Installer:
             "error": "last job failed - see the log",
             "downloading": f"downloading {int(self.progress * 100)}%",
             "installing": "unpacking...",
-            "done": "installed - double-click the new icon, or press Launch",
+            "done": "install complete - press Launch to start the engine",
+            "external": "download opened - complete any setup prompts",
         }.get(self.state, self.state)
 
     # -------------------------------------------------------------- draw
@@ -1419,19 +1483,35 @@ class Installer:
                   hovered=rows["launch"].collidepoint(mouse))
         can = (self.asset is not None and not self.busy()
                and self.state != "installing")
-        again = (self.state in ("found", "done") and self.info is not None
-                 and self.info["version"] == VERSION)
+        same_version = (self.info is not None
+                        and self.installed_version is not None
+                        and version_key(self.info["version"]) ==
+                        version_key(self.installed_version))
+        if self.state == "installing":
+            install_label = "Installing..."
+        elif same_version:
+            install_label = "Reinstall"
+        elif (self.info is not None and self.installed_version is not None
+              and version_key(self.info["version"]) >
+              version_key(self.installed_version)):
+            install_label = "Update"
+        elif (self.info is not None and self.installed_version is not None
+              and version_key(self.info["version"]) <
+              version_key(self.installed_version)):
+            install_label = "Downgrade"
+        else:
+            install_label = "Install"
         xp.button(surface, rows["install"],
-                  "Installing..." if self.state == "installing"
-                  else "Reinstall" if again else "Install",
+                  install_label,
                   self.fonts["small"], default=can,
                   enabled=can,
                   hovered=rows["install"].collidepoint(mouse))
 
         xp.statusbar(surface, rows["status"],
                      [self.state_line(),
-                      f"{self.settings.get('repo', DEFAULT_REPO)}  -  "
-                      f"you run {VERSION}"],
+                      (f"Installed: v{self.installed_version}"
+                       if self.installed_version else
+                       "Installed: not detected")],
                      self.fonts["small"])
 
         if self.panel_open:
@@ -1474,13 +1554,15 @@ class Installer:
             line = "the anonymous quota for this IP is spent"
             note = "open Settings (gear) and add a read-only token"
         elif self.info is None:
-            head = "no build found yet"
+            head = "Motion Engine installer"
             line = ("the last check failed - the log says why"
                     if self.state == "error" else
                     "press Check for updates (or Enter)")
-            note = f"searching {self.settings.get('repo', DEFAULT_REPO)}"
+            installed = (f"v{self.installed_version}"
+                         if self.installed_version else "not detected")
+            note = f"Installed here: {installed}"
         else:
-            head = self.info["tag"]
+            head = f"Latest release: v{self.info['version']}"
             if self.info["published"]:
                 head += f"  -  {self.info['published']}"
             if self.asset:
@@ -1488,8 +1570,10 @@ class Installer:
                         f"({human(self.asset['size'])})")
             else:
                 line = "this PC: no match - click a file below to pick it"
-            note = (f"into {self.settings.get('dest', DEFAULT_DEST)}"
-                    f"   (you run {VERSION})")
+            installed = (f"v{self.installed_version}"
+                         if self.installed_version else "not detected")
+            note = (f"Installed here: {installed}  |  "
+                    f"{self.settings.get('dest', DEFAULT_DEST)}")
         y = box.y + 8
         for face, s, col in ((big, head, xp.TEXT),
                              (normal, line, xp.TEXT),
