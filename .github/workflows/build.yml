@@ -176,9 +176,13 @@ jobs:
         run: |
           $project = Join-Path $env:RUNNER_TEMP ("emoeng-smoke-" + [guid]::NewGuid().ToString("N"))
           try {
-            & 'tools\dist\MotionEngine.exe' new $project 'Windows CI Smoke'
-            if ($LASTEXITCODE -ne 0) {
-              throw "app project-creation command exited with $LASTEXITCODE"
+            $app = (Resolve-Path 'tools\dist\MotionEngine.exe').Path
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new($app)
+            $startInfo.Arguments = "new `"$project`" `"Windows CI Smoke`""
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) {
+              throw "app project-creation command exited with $($process.ExitCode)"
             }
             if (-not (Test-Path (Join-Path $project 'project.flig'))) {
               throw "app did not create project.flig at $project"
