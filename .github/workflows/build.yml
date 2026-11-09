@@ -96,7 +96,8 @@ jobs:
             label: windows
             app_asset: MotionEngine-windows.zip
             installer_asset: MotionEngine-installer.exe
-          - os: ubuntu-24.04
+          # Build against the oldest supported Linux baseline (glibc 2.35).
+          - os: ubuntu-22.04
             label: linux
             app_asset: MotionEngine-linux.tar.gz
             installer_asset: MotionEngine-installer
@@ -166,6 +167,29 @@ jobs:
         run: |
           SDL_AUDIODRIVER=dummy xvfb-run -a -s "-screen 0 1280x720x24" \
             tools/dist/MotionEngine run tools/dist/projects/demo --frames 1
+
+      # Exercise the frozen Windows app's dispatcher and project payload
+      # without opening a graphics window; the hosted runner has no GL stack.
+      - name: Smoke test the app (Windows)
+        if: matrix.label == 'windows'
+        shell: pwsh
+        run: |
+          $project = Join-Path $env:RUNNER_TEMP ("emoeng-smoke-" + [guid]::NewGuid().ToString("N"))
+          try {
+            & 'tools\dist\MotionEngine.exe' new $project 'Windows CI Smoke'
+            if ($LASTEXITCODE -ne 0) {
+              throw "app project-creation command exited with $LASTEXITCODE"
+            }
+            if (-not (Test-Path (Join-Path $project 'project.flig'))) {
+              throw "app did not create project.flig at $project"
+            }
+            Write-Output 'frozen app created a project without opening a graphics window'
+          }
+          finally {
+            if (Test-Path $project) {
+              Remove-Item -LiteralPath $project -Recurse -Force
+            }
+          }
 
       # the installer is a GUI with no frame cap and no GL need, so
       # "still alive when the clock ran out" is the pass condition:

@@ -27,6 +27,13 @@ def _scratch_dir():
         return Path(got).expanduser()
     if os.name == "nt" and os.environ.get("APPDATA"):
         return Path(os.environ["APPDATA"]) / "MotionEngine"
+    if sys.platform.startswith("linux"):
+        raw = os.environ.get("XDG_DATA_HOME", "")
+        fallback = Path.home() / ".local" / "share"
+        base = Path(raw).expanduser() if raw else fallback
+        if not base.is_absolute():
+            base = fallback
+        return base / "MotionEngine"
     return Path.home() / ".motionengine"
 
 

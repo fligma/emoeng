@@ -385,6 +385,19 @@ def _ps_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _desktop_exec_arg(value):
+    """Quote one argument using the Desktop Entry Exec syntax."""
+    escaped = (str(value).replace("\\", "\\\\").replace('"', '\\"')
+               .replace("$", "\\$").replace("`", "\\`").replace("%", "%%"))
+    return f'"{escaped}"'
+
+
+def _desktop_entry_value(value):
+    """Escape a string value for a Desktop Entry key."""
+    return (str(value).replace("\\", "\\\\").replace("\n", "\\n")
+            .replace("\t", "\\t").replace("\r", "\\r"))
+
+
 class Editor:
     """Owns the window, the project manager and the editor docks."""
 
@@ -2299,16 +2312,16 @@ class Editor:
 
     def _shortcut_linux(self, desktop, title, target, args, cwd):
         stem = clean_stem(title, "project").lower()
-        exec_line = " ".join(shlex.quote(a) for a in [target, *args])
+        exec_line = " ".join(_desktop_exec_arg(a) for a in [target, *args])
         body = (
             "[Desktop Entry]\n"
             "Version=1.0\n"
             "Type=Application\n"
-            f"Name={title}\n"
+            f"Name={_desktop_entry_value(title)}\n"
             "GenericName=Motion Engine Project\n"
             "Comment=Launched by Motion Engine\n"
             f"Exec={exec_line}\n"
-            f"Path={cwd}\n"
+            f"Path={_desktop_entry_value(cwd)}\n"
             "Terminal=false\n"
             "Categories=Game;Development;\n"
         )

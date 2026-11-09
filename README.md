@@ -33,6 +33,10 @@ class Main(fe.Scene3D):
   together; it is only ever written as Python
 - **Games are folders** - copy a project anywhere; `python -m emoeng
   run <folder>` plays it
+- **Portable projects** - frozen builds keep projects beside the app when
+  writable, and use the per-user Motion Engine data folder otherwise
+- **Desktop-friendly data** - Linux settings and saves use XDG config and
+  data folders, with existing data carried over from `~/.motionengine`
 - **One-click freeze** - the Build tab drives PyInstaller with every
   switch visible, trims the bundle to what the project imports, bakes
   lights, carries the project icon and zips the result
@@ -41,6 +45,9 @@ class Main(fe.Scene3D):
 - **Windows and Linux releases** - native GitHub Actions runners build
   app archives with offline `docs/` and starter `projects/`, plus a
   separate standalone installer binary for each platform
+- **Linux compatibility** - release archives target Ubuntu 22.04 and newer
+  (glibc 2.35+); without X11/XWayland, the desktop's native window frame
+  handles moving, resizing and window controls
 
 ## The editor
 

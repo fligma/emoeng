@@ -197,13 +197,14 @@ def portable_path():
 
 
 def user_path():
-    return paths.user_dir() / FILE_NAME
+    return paths.config_dir() / FILE_NAME
 
 
 def legacy_paths():
-    """The theme-only files written before `config` existed."""
+    """Files from before config and XDG-aware locations existed."""
     return (paths.package_root() / LEGACY_NAME,
-            paths.user_dir() / LEGACY_NAME)
+            paths.legacy_user_dir() / LEGACY_NAME,
+            paths.config_dir() / LEGACY_NAME)
 
 
 def env_layer():
@@ -269,6 +270,11 @@ class Config:
             legacy = _migrate_legacy()
             if legacy:
                 self.layers.append(("migrated", legacy))
+            if not os.environ.get("EMOTION_ENGINE_HOME") and \
+                    paths.legacy_user_dir() != paths.config_dir():
+                old_user = paths.legacy_user_dir() / FILE_NAME
+                if old_user.is_file():
+                    self.layers.append(("user-migrated", _read(old_user)))
         if self.project is not None:
             self.layers.append(("project", self._project_layer()))
         self.layers.append(("env", env_layer()))

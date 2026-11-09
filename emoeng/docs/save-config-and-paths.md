@@ -83,9 +83,9 @@ One flat table of dotted keys, resolved from layers, low to high:
 | Layer | File / source | Written by |
 | --- | --- | --- |
 | defaults | `config.SCHEMA` | The engine |
-| portable | `<app_dir>/config.json` | `save()` when the user dir is unwritable |
-| user | `paths.user_dir()/config.json` | `save()` (tried first) |
-| migrated | an old `settings.json`'s `theme` | Adopted once, read-only |
+| portable | `<app_dir>/config.json` | `save()` when the user config folder is unwritable |
+| user | `paths.config_dir()/config.json` | `save()` (tried first) |
+| migrated | old user `config.json` or `settings.json` theme | Read from the previous location; saved to the new one |
 | project | the `config` object inside `project.flig` | `write_project()` |
 | env | `EMOTION_CONFIG_<GROUP>_<KEY>` | The shell |
 | session | `config.set(...)` this run | Your code, until `save()` |
@@ -212,7 +212,8 @@ by the screen edges. Movement keys continue to work in either mode.
 | `bundle_dir()` | The folder above `emoeng/` | `sys._MEIPASS` |
 | `package_root()` | `.../emoeng` | The unpacked copy inside the bundle |
 | `app_dir()` | The repo root | The exe's folder |
-| `user_dir()` | `%APPDATA%/MotionEngine`, or `~/.motionengine`, or `$EMOTION_ENGINE_HOME` | The same |
+| `user_dir()` | Windows `%APPDATA%/MotionEngine`; Linux `${XDG_DATA_HOME:-~/.local/share}/MotionEngine`; otherwise `~/.motionengine`; or `$EMOTION_ENGINE_HOME` | The same |
+| `config_dir()` | Windows `%APPDATA%/MotionEngine`; Linux `${XDG_CONFIG_HOME:-~/.config}/MotionEngine`; otherwise `~/.motionengine`; or `$EMOTION_ENGINE_HOME` | The same |
 | `bundled_projects()` | `emoeng/projects` | Bundle `projects/`, else the package's |
 | `projects_dir()` | `bundled_projects()` | A writable `projects/` beside the exe, seeded from the bundle on first run |
 | `bundled_docs()` | `emoeng/docs` | Bundle `docs/`, else the package's |
@@ -225,18 +226,28 @@ by the screen edges. Movement keys continue to work in either mode.
 | `EMOTION_CONFIG_<GROUP>_<KEY>` | One config value, highest ordinary layer |
 | `sys._MEIPASS` / `sys.frozen` | Set by PyInstaller; read, never set |
 
-`user_dir()` creates the folder on the way out, so a first run has somewhere to
-write settings. `projects_dir()` copies the bundled projects beside the exe only
-when the local folder is missing or empty - a player's edited projects are never
-overwritten by a re-run. Motion Engine release archives include both `projects/`
-and `docs/` beside the executable; the docs also remain inside the frozen
-package for the Docs tab. `paths.PROJECTS` is `const.PROJECTS_DIRNAME`.
+On Linux, `user_dir()` stores saves and reports under the XDG data folder and
+`config_dir()` stores settings under the XDG config folder. Both XDG variables
+must be absolute paths; relative values use their standard defaults. Existing
+files in `~/.motionengine` are copied into the new data folder without replacing
+files already there; old configuration is read from its former location and
+written to the new config folder on save. `$EMOTION_ENGINE_HOME` continues to
+override both locations. `user_dir()` creates the folder on the way out, so a
+first run has somewhere to write data. `projects_dir()` copies the bundled
+projects beside the exe only when the local folder is missing or empty - a
+player's edited projects are never overwritten by a re-run. Motion Engine
+release archives include both `projects/` and `docs/` beside the executable;
+the docs also remain inside the frozen package for the Docs tab.
+The Project Manager header shows the active projects folder, including when
+the writable per-user fallback is selected. `paths.PROJECTS` is
+`const.PROJECTS_DIRNAME`.
 
 ```python
 from emoeng.engine import paths
 
 print(paths.projects_dir())            # where Project.default_path() looks
-print(paths.user_dir() / "config.json")
+print(paths.config_dir() / "config.json")
+print(paths.user_dir() / "saves")
 if not paths.writable(project.path):
     ...                                # saves will land in user_dir()
 ```
