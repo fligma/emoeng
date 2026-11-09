@@ -111,6 +111,9 @@ class PixelEditor(UVPaint):
     def open(self, path, force=False):
         """Load a PNG or JPG as one layer named after the file."""
         path = Path(path)
+        if not force and self.path is not None and \
+                path.resolve() == self.path.resolve():
+            return True
         if self.dirty and not force:
             self.message = "save this image before opening another"
             self.app.log("pixel: save this image before opening another",

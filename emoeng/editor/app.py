@@ -46,6 +46,7 @@ CAP_H = 28
 MENU_H = 22
 FLASH_MS = 140          # how long a chosen menu cell keeps its click mark
 TAB_H = 24
+DOC_TAB_H = 22
 STATUS_H = 22
 TREE_W = 232
 INSPECT_W = 260
@@ -130,6 +131,7 @@ MENUS = {
              ("-", None),
              ("Project Manager", "manager"),
              ("Save", "save"),
+             ("Close File Tab   Ctrl+W", "close_document"),
              ("Run Game          F5", "run"),
              ("-", None),
              ("Exit", "exit")],
@@ -484,12 +486,20 @@ class Editor:
         self.scene_tree_rect = pygame.Rect(0, 0, 0, 0)
         self.file_tree_rect = pygame.Rect(0, 0, 0, 0)
         self.dock_area = pygame.Rect(0, 0, 0, 0)
+        self.document_strip_rect = pygame.Rect(0, 0, 0, 0)
         self.output_area = pygame.Rect(0, 0, 0, 0)
         self.output_copy = pygame.Rect(0, 0, 0, 0)
         self.output_clear = pygame.Rect(0, 0, 0, 0)
         self.content_area = pygame.Rect(0, 0, 0, 0)
         self.inspector_area = pygame.Rect(0, 0, 0, 0)
         self.tab_rects = []
+        self.document_tabs = []
+        self.document_views = {}
+        self.document_active = None
+        self.document_scroll = 0
+        self.document_tab_rects = []
+        self.document_close_rects = []
+        self.document_nav_rects = []
         self.run_rect = pygame.Rect(0, 0, 0, 0)
         self._last_size = self.screen.get_size()
         self.loading.step("applying settings", 0.3)
@@ -720,6 +730,10 @@ class Editor:
             self.model.autosave()
         if self.doctab.dirty:
             self.doctab.save_all()
+        self.document_tabs.clear()
+        self.document_views.clear()
+        self.document_active = None
+        self.document_scroll = 0
         self.model.close_model()
         self.media.stop()
         self.project = project
@@ -1001,6 +1015,8 @@ class Editor:
         path = Path(path)
         suffix = path.suffix.lower()
         if suffix == ".py":
+            if self.tab == TAB_BLOCKS and self.blocks.dirty:
+                self.set_tab(TAB_CODE)
             if self.model.dirty:
                 self.model.autosave()
             if str(path) != self.code.path:
@@ -1012,6 +1028,10 @@ class Editor:
                     return False
             if switch:
                 self.show_python()
+            view = (TAB_CODE if self.dialog_kind and
+                    str(self.dialog_kind).startswith("open_as:")
+                    else self.tab)
+            self._register_document(path, view)
             self.status = f"editing {path.name}"
             return True
         if suffix == scenedoc.SCENE_EXT or \
@@ -1022,6 +1042,7 @@ class Editor:
             if self.doctab.open(path):
                 if switch:
                     self.set_tab(TAB_DOC)
+                self._register_document(path)
                 self.status = f"document {path.name}"
                 return True
             # no project yet: keep the text view
@@ -1029,6 +1050,7 @@ class Editor:
                 return False
             if switch:
                 self.set_tab(TAB_CODE)
+            self._register_document(path)
             self.status = f"document {path.name}"
             return True
         if suffix == scenedoc.SHADER_EXT:
@@ -1039,6 +1061,7 @@ class Editor:
                 return False
             if switch:
                 self.set_tab(TAB_CODE)
+            self._register_document(path)
             self.status = f"shader {path.name}"
             return True
         if suffix in (scenedoc.MODEL3D_EXT, scenedoc.MODEL_EXT,
@@ -1046,21 +1069,28 @@ class Editor:
             # both model halves open in Model, chosen by suffix
             if self.code.dirty:
                 self.code.save()
+            if self.model.dirty:
+                self.model.autosave()
             if self.model.open(path):
                 self.select_asset(path)
                 if switch:
                     self.set_tab(TAB_MODEL)
+                self._register_document(path)
                 self.status = f"model {path.name}"
                 return True
             return False
         if suffix == sfx.SFX_EXT:
             # a sound project opens in the maker; the wav it makes does not
             self.select_asset(path)
+            if self.media.maker.dirty:
+                self.media.maker.store()
             if not self.media.maker.open(path):
                 return False
             self.media.set_mode("maker")
+            self._register_document(path)
             if switch:
                 self.set_tab(TAB_AUDIO)
+                self._register_document(path)
             self.status = f"sound {path.name}"
             return True
         if suffix in AUDIO_EXT:
@@ -1068,27 +1098,32 @@ class Editor:
             self.select_asset(path)
             if switch:
                 self.set_tab(TAB_AUDIO)
+            self._register_document(path)
             self.status = f"audio {path.name}"
             return True
         if suffix in IMAGE_EXT:
             # a picture opens in the pixel editor, on layers
             self.select_asset(path)
-            if self.pixel.open(path):
-                if switch:
-                    self.set_tab(TAB_PIXEL)
-                self.status = f"image {path.name}"
+            if not self.pixel.open(path):
+                return False
+            if switch:
+                self.set_tab(TAB_PIXEL)
+            self._register_document(path)
+            self.status = f"image {path.name}"
             return True
         if suffix == ".flig" or path.name == INPUT_NAME:
             # the manifest and its input map are one form, on the Project tab
             self.select_asset(path)
             if switch:
                 self.set_tab(TAB_PROJECT)
+            self._register_document(path)
             self.status = path.name
             return True
         if path.name == ASSET_NAME:
             self.select_asset(path)
             if switch:
                 self.set_tab(TAB_ASSETS)
+            self._register_document(path)
             self.status = path.name
             return True
         self.log(f"{path.name}: open it with an external program", "muted")
@@ -1127,10 +1162,149 @@ class Editor:
         if not self.code.open(path):
             return False
         self.set_tab(TAB_CODE)
+        self._register_document(path)
         self.status = f"raw {path.name}"
         return True
 
+    @staticmethod
+    def _document_key(path):
+        try:
+            return os.path.normcase(str(Path(path).resolve()))
+        except OSError:
+            return os.path.normcase(str(Path(path).absolute()))
+
+    def _register_document(self, path, view=None):
+        key = self._document_key(path)
+        if not any(self._document_key(item) == key
+                   for item in self.document_tabs):
+            self.document_tabs.append(Path(path))
+        self.document_views[key] = self.tab if view is None else view
+        self.document_active = key
+        self._reveal_document(key)
+
+    def _reveal_document(self, key):
+        """Keep the selected file tab visible in the clipped row."""
+        visible = max(1, (self.screen.get_width() - 64) // 150)
+        index = next((i for i, path in enumerate(self.document_tabs)
+                      if self._document_key(path) == key), 0)
+        if index < self.document_scroll:
+            self.document_scroll = index
+        elif index >= self.document_scroll + visible:
+            self.document_scroll = index - visible + 1
+        self.document_scroll = max(
+            0, min(self.document_scroll,
+                   max(0, len(self.document_tabs) - visible)))
+
+    def _activate_document(self, path):
+        key = self._document_key(path)
+        if key == self.document_active:
+            return True
+        if Path(path).suffix.lower() == ".py" and \
+                key in self.document_views:
+            target = self.document_views[key]
+            if self.tab != TAB_CODE:
+                self.set_tab(TAB_CODE)
+            if self.code.path != str(path):
+                if self.code.dirty:
+                    if self.autosave and not self.code.save():
+                        return False
+                    self.code.park()
+                if not self.code.open(path):
+                    return False
+            if target == TAB_BLOCKS:
+                self.blocks.sync()
+            self.set_tab(target)
+            self._register_document(path, target)
+            self.status = f"editing {Path(path).name}"
+            return True
+        if not self.open_file(path):
+            return False
+        self.document_active = key
+        return True
+
+    def _document_is_dirty(self, path):
+        key = self._document_key(path)
+        if any(self._document_key(parked_path) == key
+               for parked_path in self.code.parked):
+            return True
+        for owner, owner_path in (
+                (self.code, self.code.path),
+                (self.model, self.model.path),
+                (self.pixel, self.pixel.path),
+                (self.media.maker, self.media.maker.path),
+                (self.blocks, self.blocks.path)):
+            if owner_path and self._document_key(owner_path) == key:
+                if getattr(owner, "dirty", False):
+                    return True
+        return self.doctab.title_of(path).endswith("*")
+
+    def _close_document(self, index):
+        if not 0 <= index < len(self.document_tabs):
+            return False
+        path = self.document_tabs[index]
+        key = self._document_key(path)
+        active = key == self.document_active
+        if self.code.path and self._document_key(self.code.path) == key and \
+                self.code.dirty and not self.code.save():
+            return False
+        parked_key = next((parked_path for parked_path in self.code.parked
+                           if self._document_key(parked_path) == key), None)
+        parked = self.code.parked.get(parked_key)
+        if parked is not None:
+            try:
+                Path(path).write_text("\n".join(parked[0]), encoding="utf-8")
+            except OSError as exc:
+                self.log(f"cannot save {path.name} before closing: {exc}",
+                         "error")
+                return False
+            self.code.parked.pop(parked_key, None)
+        if self.model.path and self._document_key(self.model.path) == key \
+                and self.model.dirty and not self.model.save():
+            return False
+        if self.blocks.path and self._document_key(self.blocks.path) == key \
+                and self.blocks.dirty and not self.blocks.save():
+            return False
+        if self.pixel.path and self._document_key(self.pixel.path) == key \
+                and self.pixel.dirty:
+            self.log("save the image before closing its tab", "warn")
+            return False
+        if self.media.maker.path and \
+                self._document_key(self.media.maker.path) == key and \
+                self.media.maker.dirty and not self.media.maker.store():
+            return False
+        if self.doctab.is_open(path):
+            tab = next((i for i, item in enumerate(self.doctab.tabs)
+                        if self._document_key(item.path) == key), None)
+            if tab is not None:
+                self.doctab.active = tab
+                if self.doctab.current().dirty and \
+                        not self.doctab.save():
+                    return False
+                self.doctab.close_current()
+        if active:
+            if self.media.maker.path and \
+                    self._document_key(self.media.maker.path) == key:
+                self.media.maker.close()
+                self.media.mode = "player"
+            if self.model.path and self._document_key(self.model.path) == key:
+                self.model.close_model()
+            if self.pixel.path and self._document_key(self.pixel.path) == key:
+                self.pixel.path = None
+        del self.document_tabs[index]
+        self.document_views.pop(key, None)
+        if active:
+            if self.document_tabs:
+                next_index = min(index, len(self.document_tabs) - 1)
+                self.document_active = None
+                return self._activate_document(self.document_tabs[next_index])
+            self.document_active = None
+            self.set_tab(TAB_SCENE)
+        elif self.document_active is not None:
+            self._reveal_document(self.document_active)
+        return True
+
     def set_tab(self, index):
+        self.document_active = None
         index = max(0, min(len(TAB_LABELS) - 1, int(index)))
         if index == self.tab:
             return
@@ -1140,9 +1314,13 @@ class Editor:
             self.model.autosave()
         elif self.tab == TAB_DOC and self.doctab.dirty and self.autosave:
             self.doctab.save_all()
+        elif self.tab == TAB_BLOCKS and self.blocks.dirty:
+            self.blocks.save()
         if self.tab == TAB_SCENE:
             self.preview.blur()
         if self.tab == TAB_AUDIO:
+            if self.media.maker.dirty:
+                self.media.maker.store()
             self.media.pause()
         if self.tab == TAB_PIXEL and self.pixel.dirty:
             self.log("pixel: the layers stay in this tab until you save",
@@ -1539,6 +1717,7 @@ class Editor:
                 self.set_tab(TAB_CODE)
             else:
                 self.set_tab(TAB_CODE)
+            self._register_document(path)
             return
         if kind == "quit":
             if text == "Save and quit":
@@ -1713,6 +1892,7 @@ class Editor:
         self.refresh_tree()
         self.model.open(path)
         self.set_tab(TAB_MODEL)
+        self._register_document(path)
         self.log(f"created models/{stem}{path.suffix}", "ok")
 
     def _new_model_2d(self, stem):
@@ -1726,6 +1906,7 @@ class Editor:
         self.refresh_tree()
         self.model.open(path)
         self.set_tab(TAB_MODEL)
+        self._register_document(path)
         self.log(f"created models/{stem}{scenedoc.MODEL2D_EXT}", "ok")
 
     def _new_map(self, stem, kind="map3d", starter=None):
@@ -1746,6 +1927,8 @@ class Editor:
             if path is not None:
                 self.model.open(path)
             self.set_tab(TAB_MODEL)
+            if path is not None:
+                self._register_document(path)
             self.log(f"created {self.project.relative(path)} from the "
                      f"{starter} - carve it into parts, then Save", "ok")
             return
@@ -1754,6 +1937,7 @@ class Editor:
         self.model.name_field.set(stem)
         if not self.model.save():
             return
+        self._register_document(self.model.path)
         self.log(f"created {self.project.relative(self.model.path)} - "
                  "carve it into parts, then Save", "ok")
 
@@ -1986,6 +2170,7 @@ class Editor:
             self.log("cannot open the scene document", "warn")
             return False
         self.set_tab(TAB_DOC)
+        self._register_document(path)
         return True
 
     def add_doc_to_scene(self, path):
@@ -2231,11 +2416,28 @@ class Editor:
 
     def _forget_tab(self, path):
         """Drop a tab whose file was renamed or deleted."""
-        path = str(path)
-        keep = [t for t in self.doctab.tabs if str(t.path) != path]
+        key = self._document_key(path)
+        current = self.doctab.current()
+        current_key = (self._document_key(current.path)
+                       if current is not None else None)
+        keep = [t for t in self.doctab.tabs
+                if self._document_key(t.path) != key]
         if len(keep) != len(self.doctab.tabs):
             self.doctab.tabs = keep
-            self.doctab.active = min(self.doctab.active, len(keep) - 1)
+            self.doctab.active = next(
+                (i for i, tab in enumerate(keep)
+                 if self._document_key(tab.path) == current_key),
+                min(self.doctab.active, len(keep) - 1))
+        self.document_tabs = [
+            item for item in self.document_tabs
+            if self._document_key(item) != key]
+        self.document_views.pop(key, None)
+        if self.document_active == key:
+            self.document_active = None
+            if self.document_tabs:
+                self._activate_document(self.document_tabs[0])
+            else:
+                self.set_tab(TAB_SCENE)
 
     def run_game(self):
         if self.project is None:
@@ -2446,6 +2648,13 @@ class Editor:
             self.request_quit()
         elif action == "save":
             self.save_current()
+        elif action == "close_document":
+            if self.document_active is not None:
+                index = next((i for i, path in enumerate(self.document_tabs)
+                              if self._document_key(path) ==
+                              self.document_active), None)
+                if index is not None:
+                    self._close_document(index)
         elif action == "run":
             self.run_game()
         elif action == "open_project":
@@ -2677,6 +2886,25 @@ class Editor:
             if edges:
                 self.chrome.begin_resize(edges, e.pos)
                 return
+            for index, rect in self.document_close_rects:
+                if rect.collidepoint(e.pos):
+                    self._close_document(index)
+                    return
+            if len(self.document_nav_rects) == 2:
+                back, forward = self.document_nav_rects
+                if back.collidepoint(e.pos):
+                    self.document_scroll = max(0, self.document_scroll - 1)
+                    return
+                if forward.collidepoint(e.pos):
+                    visible = max(1, (self.screen.get_width() - 64) // 150)
+                    self.document_scroll = min(
+                        max(0, len(self.document_tabs) - visible),
+                        self.document_scroll + 1)
+                    return
+            for index, rect in self.document_tab_rects:
+                if rect.collidepoint(e.pos):
+                    self._activate_document(self.document_tabs[index])
+                    return
             for i, rect in enumerate(self.tab_rects):
                 if rect.collidepoint(e.pos):
                     self.set_tab(i)
@@ -2704,6 +2932,12 @@ class Editor:
                 return
         if e.type == pygame.MOUSEWHEEL:
             mouse = pygame.mouse.get_pos()
+            if self.document_strip_rect.collidepoint(mouse):
+                visible = max(1, (self.screen.get_width() - 64) // 150)
+                self.document_scroll = max(
+                    0, min(max(0, len(self.document_tabs) - visible),
+                           self.document_scroll - int(e.y)))
+                return
             if self.scene_tree_rect.collidepoint(mouse):
                 self.scene_tree.scroll_by(-e.y * 2, self.scene_tree_rect)
                 return
@@ -2890,6 +3124,20 @@ class Editor:
             self.set_tab(TAB_DOC)
         elif ctrl and e.key == pygame.K_s:
             self.save_current()
+        elif ctrl and e.key == pygame.K_w:
+            if self.document_active is not None:
+                index = next((i for i, path in enumerate(self.document_tabs)
+                              if self._document_key(path) ==
+                              self.document_active), None)
+                if index is not None:
+                    self._close_document(index)
+        elif ctrl and e.key == pygame.K_TAB and self.document_tabs:
+            current = next((i for i, path in enumerate(self.document_tabs)
+                            if self._document_key(path) ==
+                            self.document_active), -1)
+            step = -1 if e.mod & pygame.KMOD_SHIFT else 1
+            index = (current + step) % len(self.document_tabs)
+            self._activate_document(self.document_tabs[index])
         elif ctrl and e.key == pygame.K_o:
             self.open_manager()
         elif ctrl and e.key == pygame.K_r:
@@ -2909,7 +3157,9 @@ class Editor:
     def _layout(self):
         w, h = self.screen.get_size()
         tabs = pygame.Rect(0, CAP_H + MENU_H, w, TAB_H)
-        top = tabs.bottom
+        self.document_strip_rect = pygame.Rect(
+            0, tabs.bottom, w, DOC_TAB_H)
+        top = self.document_strip_rect.bottom
         status = pygame.Rect(0, h - STATUS_H, w, STATUS_H)
         self.dock_area = pygame.Rect(0, top, TREE_W, status.y - top)
         tree, insp = self._dock_widths(w)
@@ -2984,6 +3234,7 @@ class Editor:
             return
         self._draw_menubar(surface)
         self._draw_tabstrip(surface)
+        self._draw_document_strip(surface)
         self._draw_docks(surface)
         self._draw_work(surface)
         if self.show_inspector:
@@ -3017,17 +3268,25 @@ class Editor:
                 xp.tooltip(surface, self.file_tree.hover_point, [tree_tip],
                            self.fonts["small"])
             else:
-                for index, rect in enumerate(self.tab_rects):
+                for index, rect in self.document_tab_rects:
                     if rect.collidepoint(mouse):
-                        xp.tooltip(surface, mouse, [TAB_TIPS[index]],
+                        xp.tooltip(surface, mouse,
+                                   [str(self.document_tabs[index]),
+                                    "Click x to close; Ctrl+W closes the active file"],
                                    self.fonts["small"])
                         break
                 else:
-                    if self.run_rect.collidepoint(mouse):
-                        xp.tooltip(surface, mouse,
-                                   ["Run the project with the current changes.",
-                                    "Shortcut: F5"],
-                                   self.fonts["small"])
+                    for index, rect in enumerate(self.tab_rects):
+                        if rect.collidepoint(mouse):
+                            xp.tooltip(surface, mouse, [TAB_TIPS[index]],
+                                       self.fonts["small"])
+                            break
+                    else:
+                        if self.run_rect.collidepoint(mouse):
+                            xp.tooltip(surface, mouse,
+                                       ["Run the project with the current changes.",
+                                        "Shortcut: F5"],
+                                       self.fonts["small"])
 
     def _draw_ctx(self, surface):
         """The right-click menu over a file, folder or scene row."""
@@ -3190,6 +3449,76 @@ class Editor:
             if rect.collidepoint(hot):
                 return i
         return -1
+
+    def _draw_document_strip(self, surface):
+        """Draw closeable file tabs below the permanent workspace tabs."""
+        bar = self.document_strip_rect
+        surface.fill(xp.PANEL, bar)
+        pygame.draw.line(surface, xp.SHADOW, (bar.x, bar.bottom - 1),
+                         (bar.right, bar.bottom - 1))
+        nav_w = 20
+        self.document_nav_rects = [
+            pygame.Rect(bar.right - nav_w * 2 - 4, bar.y + 2,
+                        nav_w, bar.height - 4),
+            pygame.Rect(bar.right - nav_w - 2, bar.y + 2,
+                        nav_w, bar.height - 4),
+        ]
+        visible = max(1, (bar.width - nav_w * 2 - 16) // 150)
+        maximum = max(0, len(self.document_tabs) - visible)
+        self.document_scroll = max(0, min(self.document_scroll, maximum))
+        first = self.document_scroll
+        shown = self.document_tabs[first:first + visible]
+        room = max(1, bar.width - nav_w * 2 - 16)
+        width = max(72, min(180, room // max(1, len(shown))))
+        self.document_tab_rects = []
+        self.document_close_rects = []
+        for offset, path in enumerate(shown):
+            index = first + offset
+            x = bar.x + 4 + offset * width
+            rect = pygame.Rect(x, bar.y + 2, min(width - 3,
+                                                 bar.right - x - 48),
+                               bar.height - 4)
+            if rect.width < 45:
+                continue
+            key = self._document_key(path)
+            active = key == self.document_active
+            name = path.name + (" *" if self._document_is_dirty(path) else "")
+            body = rect.copy()
+            body.width -= 18
+            art_name = ("file-scene-3d"
+                        if path.suffix.lower() == scenedoc.SCENE_EXT else
+                        "file-object-3d"
+                        if path.suffix.lower() in scenedoc.OBJECT_EXTS +
+                        scenedoc.ENTITY_EXTS else
+                        "tab-code-sym" if path.suffix.lower() == ".py" else
+                        "tab-model-sym" if path.suffix.lower() in
+                        (scenedoc.MODEL3D_EXT, scenedoc.MODEL_EXT,
+                         scenedoc.MODEL2D_EXT) + scenedoc.MAP_EXTS else
+                        "file-image-sym" if path.suffix.lower() in IMAGE_EXT
+                        else "tab-audio-sym" if path.suffix.lower() in
+                        AUDIO_EXT + (sfx.SFX_EXT,) else "block-sym")
+            art = widgets.icon(art_name, 12)
+            label = widgets.elide(self.fonts["small"], name,
+                                  max(8, body.width - 30))
+            xp.button(surface, body, label, self.fonts["small"],
+                      pressed=active, hovered=body.collidepoint(
+                          widgets.mouse_pos()),
+                      icon=art)
+            close = pygame.Rect(rect.right - 17, rect.y + 3, 14,
+                                rect.height - 6)
+            xp.button(surface, close, "x", self.fonts["small"],
+                      hovered=close.collidepoint(widgets.mouse_pos()))
+            self.document_tab_rects.append((index, rect))
+            self.document_close_rects.append((index, close))
+        self.document_nav_rects[0] = pygame.Rect(
+            bar.right - nav_w * 2 - 4, bar.y + 2, nav_w, bar.height - 4)
+        self.document_nav_rects[1] = pygame.Rect(
+            bar.right - nav_w - 2, bar.y + 2, nav_w, bar.height - 4)
+        xp.button(surface, self.document_nav_rects[0], "<",
+                  self.fonts["small"], enabled=self.document_scroll > 0)
+        xp.button(surface, self.document_nav_rects[1], ">",
+                  self.fonts["small"],
+                  enabled=self.document_scroll < maximum)
 
     def _draw_docks(self, surface):
         area = self.dock_area

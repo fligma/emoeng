@@ -8,7 +8,6 @@ import pygame
 from ..engine import scenedoc, xp
 from . import api, widgets
 
-STRIP_H = 22           # the open-document tab row inside the tab
 TOOL_H = 26            # the Add / Scene / Save toolbar
 NODE_ROW = 18          # one tree row
 PROP_ROW = 20          # one property row
@@ -119,8 +118,6 @@ class DocTab:
         self.popup = None                # {"x","y","items","target","tab"}
         self.popup_rows = []
         self.buttons = []                # toolbar (action, rect) this frame
-        self.strip_rects = []            # document-tab rects this frame
-        self.strip_close = []            # their close-button rects
         self.node_rows = []              # tree (id, rect) this frame
         self.node_toggles = []           # fold (id, rect) this frame
         self.prop_fields = {}            # editable-row spec -> rect
@@ -674,16 +671,6 @@ class DocTab:
         return False
 
     def _press(self, pos):
-        for i, rect in enumerate(self.strip_rects):
-            if rect.collidepoint(pos):
-                self.active = i
-                self.grip = self.popup = None
-                return True
-        for i, rect in enumerate(self.strip_close):
-            if rect.collidepoint(pos):
-                self.active = i
-                self.close_current()
-                return True
         for action, rect in self.buttons:
             if rect.collidepoint(pos):
                 return self._toolbar(action, rect)
@@ -972,8 +959,6 @@ class DocTab:
 
     def draw(self, surface, area, dt):
         self.buttons = []
-        self.strip_rects = []
-        self.strip_close = []
         self.node_rows = []
         self.node_toggles = []
         self.prop_fields = {}
@@ -982,9 +967,7 @@ class DocTab:
             self._draw_empty(surface, area)
             return
         tab = self.current()
-        strip = pygame.Rect(area.x, area.y, area.width, STRIP_H)
-        self._draw_strip(surface, strip)
-        bar = pygame.Rect(area.x, strip.bottom, area.width, TOOL_H)
+        bar = pygame.Rect(area.x, area.y, area.width, TOOL_H)
         self._draw_toolbar(surface, bar, tab)
         body = pygame.Rect(area.x, bar.bottom, area.width,
                            max(0, area.bottom - bar.bottom))
@@ -1007,48 +990,6 @@ class DocTab:
                                   xp.TEXT_MUTED)
         if img is not None:
             surface.blit(img, (area.x + 12, area.y + 12))
-
-    def _draw_strip(self, surface, strip):
-        """The open-document tab row."""
-        surface.fill(xp.FACE, strip)
-        pygame.draw.line(surface, xp.SHADOW, (strip.x, strip.bottom - 1),
-                         (strip.right, strip.bottom - 1))
-        small = self.fonts["small"]
-        mouse = pygame.mouse.get_pos()
-        x = strip.x + 4
-        for i, tab in enumerate(self.tabs):
-            label = widgets.elide(small, tab.title(), 132)
-            w = small.size(label)[0] + 26
-            rect = pygame.Rect(x, strip.y + 3, w, strip.height - 3)
-            self.strip_rects.append(rect)
-            bg = xp.FIELD_ALT if i == self.active else xp.FACE
-            surface.fill(bg, rect)
-            edge = xp.SELECTION if i == self.active else xp.OUTLINE
-            pygame.draw.rect(surface, edge, rect, 1, border_radius=2)
-            if rect.collidepoint(mouse) and i != self.active:
-                surface.fill(xp.BTN_HOVER_BG, rect)
-            art = None
-            if tab.kind == "scene":
-                art = SCENE_ICONS.get(str(tab.doc.get("kind")))
-            else:
-                art = widgets.node_icon(tab.doc.get("type"))
-            tx = rect.x + 4
-            img = widgets.icon(art, 12) if art else None
-            if img is not None:
-                surface.blit(img, (tx, rect.centery - img.get_height() // 2))
-                tx += img.get_width() + 4
-            text = widgets.cached_text(small, label, xp.TEXT)
-            if text is not None:
-                surface.blit(text, (tx, rect.centery - text.get_height() // 2))
-            close = pygame.Rect(rect.right - 16, rect.y + 3, 13, 13)
-            self.strip_close.append(close)
-            if tab.dirty:
-                pygame.draw.rect(surface, xp.DK_SHADOW, close, 1)
-                pygame.draw.line(surface, xp.TEXT, (close.x + 3, close.y + 3),
-                                 (close.right - 4, close.bottom - 4))
-                pygame.draw.line(surface, xp.TEXT, (close.right - 4, close.y + 3),
-                                 (close.x + 3, close.bottom - 4))
-            x = rect.right + 3
 
     def _draw_toolbar(self, surface, bar, tab):
         surface.fill(xp.MODEL_ROW_BG, bar)

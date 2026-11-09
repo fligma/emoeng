@@ -138,6 +138,8 @@ class SfxEditor:
         if project is None:
             self.app.log("open a project first", "warn")
             return False
+        if self.dirty and not self.store():
+            return False
         from .app import clean_stem
 
         kind = kind or self.pending_kind or "sfx"
@@ -152,7 +154,8 @@ class SfxEditor:
         except OSError as exc:
             self.app.log(f"cannot make {path.name}: {exc}", "error")
             return False
-        self.open(path, force=True)
+        if not self.app.open_file(path):
+            return False
         self.app.refresh_tree()
         self.message = f"new {kind} {path.name}"
         self.app.status = f"sound {path.name}"
@@ -712,7 +715,7 @@ class SfxEditor:
                     return True
             for path, rect in self.file_rows:
                 if rect.collidepoint(pos):
-                    return self.open(path)
+                    return self.app.open_file(path)
             row = self._sample_at(pos)
             if row is not None:
                 return self.place_sample(row)
